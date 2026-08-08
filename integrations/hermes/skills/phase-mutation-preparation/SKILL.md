@@ -2,7 +2,7 @@
 name: phase-mutation-preparation
 description: Deterministically prepare payload, candidate, paths, roots, evidence root, and run ID outside canonical targets for an exact Phase mutation request.
 version: 1.0.0
-platforms: [linux, macos, windows]
+platforms: [linux]
 ---
 
 # Phase Mutation Preparation

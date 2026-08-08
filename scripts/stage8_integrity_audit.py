@@ -17,6 +17,24 @@ def digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def generation_errors(entries: list[dict[str, Any]]) -> list[str]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in entries:
+        if entry.get("kind") == "contract":
+            key = ("contract", f"{entry.get('id')}@{entry.get('version')}")
+        elif entry.get("kind") == "schema":
+            key = ("schema", str(entry.get("schema_ref")))
+        else:
+            continue
+        groups.setdefault(key, []).append(entry)
+    errors: list[str] = []
+    for key, group in sorted(groups.items()):
+        current = [entry for entry in group if entry.get("current", True) is True]
+        if len(current) != 1:
+            errors.append(f"ambiguous current generation {key!r}: {len(current)}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--wheel", type=Path, required=True)
@@ -29,21 +47,28 @@ def main() -> int:
     entries: list[dict[str, Any]] = registry["entries"]
     entry_keys: set[tuple[object, ...]] = set()
     for entry in entries:
-        key = (entry.get("kind"), entry.get("id"), entry.get("version"))
+        key = (
+            entry.get("kind"),
+            entry.get("id"),
+            entry.get("version"),
+            entry.get("artifact_digest"),
+            entry.get("package_digest"),
+        )
         if key in entry_keys:
             errors.append(f"duplicate registry entry {key!r}")
         entry_keys.add(key)
+    errors.extend(generation_errors(entries))
 
     package_artifacts: dict[str, str] = {}
     artifacts: dict[str, str] = {}
     for entry in entries:
-        resource = entry["artifact"]
+        resource = entry.get("archive_resource", entry["artifact"])
         expected = entry["artifact_digest"]
         prior = artifacts.setdefault(resource, expected)
         if prior != expected:
             errors.append(f"conflicting artifact digest {resource}")
         for artifact in entry.get("package_artifacts", []):
-            resource = artifact["resource"]
+            resource = artifact.get("archive_resource", artifact["resource"])
             expected = artifact["digest"]
             prior = package_artifacts.setdefault(resource, expected)
             if prior != expected:
@@ -74,7 +99,11 @@ def main() -> int:
         actual = [
             {
                 "resource": item["resource"],
-                "digest": digest(resources.files("phase_tool.data").joinpath(item["resource"]).read_bytes()),
+                "digest": digest(
+                    resources.files("phase_tool.data")
+                    .joinpath(item.get("archive_resource", item["resource"]))
+                    .read_bytes()
+                ),
             }
             for item in declared
         ]

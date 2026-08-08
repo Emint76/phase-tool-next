@@ -8,7 +8,7 @@ from typing import Callable
 from ..canonical import digest_bytes
 from ..errors import PhaseError
 from ..paths import _is_reparse_point
-from .target_authority import TargetAuthority
+from .authority import AuthorityProvider, TargetAuthority
 
 _MAX_CONTENT_BYTES = 512 * 1024
 
@@ -109,6 +109,7 @@ def _ensure_object(
     run_id: str,
     maximum_write_size: int | None,
     fail_after: int | None,
+    authority_provider: AuthorityProvider,
 ) -> tuple[dict[str, object], dict[str, object], int]:
     expected_length = len(content)
     before = authority.observe()
@@ -118,7 +119,7 @@ def _ensure_object(
     if before["exists"] is True:
         raise PhaseError("publish.object_conflict", authority.locator)
     token = digest_bytes(run_id.encode("utf-8")).removeprefix("sha256:")[:16]
-    temporary = TargetAuthority(
+    temporary = authority_provider.open_authority(
         authority.root,
         authority.locator + ".phase-tmp-object-" + token,
         authority.reparse_detector,
@@ -174,6 +175,7 @@ def execute_object_store_publish(
     run_id: str,
     timestamp: str,
     faults: ObjectStorePublishFaults | None = None,
+    authority_provider: AuthorityProvider,
 ) -> dict[str, object]:
     active = faults or ObjectStorePublishFaults()
     if len(content) > _MAX_CONTENT_BYTES:
@@ -186,9 +188,9 @@ def execute_object_store_publish(
         raise PhaseError("publish.object_root_mismatch")
 
     detector = active.reparse_detector or _is_reparse_point
-    current = TargetAuthority(current_root, str(effect["target"]["relative_locator"]), detector)  # type: ignore[index]
-    old_object = TargetAuthority(objects_root, str(effect["archive_target"]["relative_locator"]), detector)  # type: ignore[index]
-    new_object = TargetAuthority(objects_root, str(effect["content_object_target"]["relative_locator"]), detector)  # type: ignore[index]
+    current = authority_provider.open_authority(current_root, str(effect["target"]["relative_locator"]), detector)  # type: ignore[index]
+    old_object = authority_provider.open_authority(objects_root, str(effect["archive_target"]["relative_locator"]), detector)  # type: ignore[index]
+    new_object = authority_provider.open_authority(objects_root, str(effect["content_object_target"]["relative_locator"]), detector)  # type: ignore[index]
     old_before = old_after = new_before = new_after = _unknown()
     bytes_written = 0
     temporary: TargetAuthority | None = None
@@ -234,6 +236,7 @@ def execute_object_store_publish(
                 run_id=run_id + ".old",
                 maximum_write_size=active.maximum_write_size,
                 fail_after=active.fail_old_object_write_after_bytes,
+                authority_provider=authority_provider,
             )
             bytes_written += written
             new_before, new_after, written = _ensure_object(
@@ -243,6 +246,7 @@ def execute_object_store_publish(
                 run_id=run_id + ".new",
                 maximum_write_size=active.maximum_write_size,
                 fail_after=active.fail_new_object_write_after_bytes,
+                authority_provider=authority_provider,
             )
             bytes_written += written
         except (OSError, PhaseError) as exc:
@@ -263,7 +267,7 @@ def execute_object_store_publish(
             )
 
         temporary_locator = str(effect["target"]["relative_locator"]) + ".phase-tmp-" + run_id[-32:]  # type: ignore[index]
-        temporary = TargetAuthority(current_root, temporary_locator, detector)
+        temporary = authority_provider.open_authority(current_root, temporary_locator, detector)
         descriptor: int | None = None
         try:
             descriptor = temporary.open_exclusive()

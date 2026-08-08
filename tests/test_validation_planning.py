@@ -178,6 +178,20 @@ def test_plan_rejects_duplicate_ids_locator_collisions_and_wrong_mechanism(tmp_p
     with pytest.raises(PhaseError, match="plan.mechanism_mismatch"):
         validate_static_plan(wrong_mechanism, contract, {"fixture_result_root": target_root}, registry)
 
+    unauthorized_effect_mechanism = deepcopy(plan)
+    entry = next(
+        item
+        for item in registry.to_document()["entries"]
+        if item.get("kind") == "mechanism" and item.get("id") == "mechanism.exclusive_create_v1"
+    )
+    unauthorized_effect_mechanism["effects"][0]["mechanism"] = {
+        "id": entry["id"],
+        "version": entry["version"],
+        "package_digest": entry["package_digest"],
+    }
+    with pytest.raises(PhaseError, match="plan.effect_mechanism_not_allowed"):
+        validate_static_plan(unauthorized_effect_mechanism, contract, {"fixture_result_root": target_root}, registry)
+
 
 def test_plan_requires_complete_root_bindings(tmp_path: Path) -> None:
     registry, contract = resolved("fixture_append.v1")

@@ -16,14 +16,20 @@ import pytest
 from phase_tool.canonical import canonical_bytes, parse_json_bytes
 from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
+from phase_tool.installation import host_installation
 from phase_tool.inspection import inspect_run
 from phase_tool.mutation import BrokerFaults
-from phase_tool.mutation.content_addressed_copy import ContentAddressedCopyFaults, execute_content_addressed_copy
+from phase_tool.mutation.content_addressed_copy import ContentAddressedCopyFaults, execute_content_addressed_copy as _execute_content_addressed_copy
 from phase_tool.planning import validate_static_plan
 from phase_tool.registry import BundledRegistry
 
 NOW = "2026-07-27T05:00:00Z"
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def execute_content_addressed_copy(*args: object, **kwargs: object) -> dict[str, object]:
+    kwargs["authority_provider"] = host_installation().authority_provider
+    return _execute_content_addressed_copy(*args, **kwargs)  # type: ignore[arg-type]
 
 GOLDEN_COPY_VECTORS = [
     (
@@ -248,7 +254,7 @@ def test_copy_validate_and_plan_do_not_mutate_target_or_source(tmp_path: Path) -
     assert not (target / _copy_locator(payload)).exists()
 
 
-def test_copy_execute_uses_frozen_blob_after_source_changes_and_reports_truthful_receipt(tmp_path: Path) -> None:
+def test_copy_source_mutation_callback_is_rejected_before_invocation(tmp_path: Path) -> None:
     request, target, _evidence, source, payload = copy_request(tmp_path, run_id="copy-execute")
     destination = target / _copy_locator(payload)
 
@@ -261,20 +267,10 @@ def test_copy_execute_uses_frozen_blob_after_source_changes_and_reports_truthful
         faults=CoreFaults(broker=BrokerFaults(before_mechanism=change_source_after_intent)),
     )
 
-    assert outcome.exit_code == 0
-    assert destination.read_bytes() == payload
-    assert source.read_bytes() == b"changed after freeze"
-    assert outcome.receipt["terminal_status"] == "succeeded_verified"
-    assert outcome.receipt["execution_disposition"] == "executed"
-    assert outcome.receipt["canonical_result"]["locator"] == _copy_locator(payload)
-    receipt = outcome.receipt["effect_receipts"][0]
-    assert receipt["kind"] == "copy_blob"
-    assert receipt["status"] == "applied_verified"
-    assert receipt["attempted"] is True
-    assert receipt["bytes_written"] == len(payload)
-    assert receipt["before"]["exists"] is False
-    assert receipt["after"]["digest"] == _sha(payload)
-    assert receipt["after"]["length"] == len(payload)
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert source.read_bytes() == payload
+    assert not destination.exists()
 
 
 def test_copy_existing_identical_is_verified_reuse_and_existing_different_conflicts(tmp_path: Path) -> None:
@@ -391,20 +387,15 @@ def test_copy_mechanism_rejects_directory_link_reparse_and_special_targets(tmp_p
 
 def test_copy_short_write_loop_readback_and_no_temp_leftovers(tmp_path: Path) -> None:
     request, target, _evidence, _source, payload = copy_request(tmp_path, run_id="short", payload=b"0123456789")
-    calls: list[int] = []
-
-    def short_writer(descriptor: int, data: memoryview) -> int:
-        calls.append(len(data))
-        return os.write(descriptor, data[:1])
 
     ok = PhaseCore().run(
         request,
         execute=True,
-        faults=CoreFaults(broker=BrokerFaults(content_addressed_copy=ContentAddressedCopyFaults(write_primitive=short_writer))),
+        faults=CoreFaults(broker=BrokerFaults(content_addressed_copy=ContentAddressedCopyFaults(maximum_write_size=1))),
     )
 
     assert ok.receipt["terminal_status"] == "succeeded_verified"
-    assert len(calls) > 1
+    assert (target / _copy_locator(payload)).read_bytes() == payload
     assert not list(target.rglob("*.tmp"))
 
     partial_request, partial_target, _evidence2, _source2, _payload2 = copy_request(
@@ -424,13 +415,10 @@ def test_copy_short_write_loop_readback_and_no_temp_leftovers(tmp_path: Path) ->
 
     zero_request, zero_target, _evidence3, _source3, _payload3 = copy_request(tmp_path, run_id="zero", key="zero", payload=payload)
 
-    def zero_writer(_descriptor: int, _data: memoryview) -> int:
-        return 0
-
     zero = PhaseCore().run(
         zero_request,
         execute=True,
-        faults=CoreFaults(broker=BrokerFaults(content_addressed_copy=ContentAddressedCopyFaults(write_primitive=zero_writer))),
+        faults=CoreFaults(broker=BrokerFaults(content_addressed_copy=ContentAddressedCopyFaults(maximum_write_size=0))),
     )
     assert zero.receipt["terminal_status"] == "failed_partial"
     assert zero.receipt["effect_receipts"][0]["bytes_written"] == 0
@@ -506,7 +494,7 @@ def test_copy_multi_effect_plan_fails_closed_before_mutation(tmp_path: Path) -> 
     assert not (target / _copy_locator(payload)).exists()
 
 
-def test_copy_destination_appears_after_planning_reports_race_truthfully(tmp_path: Path) -> None:
+def test_copy_destination_write_callback_is_rejected_before_invocation(tmp_path: Path) -> None:
     payload = b"race-conflict"
     request, target, _evidence, _source, _payload = copy_request(tmp_path, run_id="appears", payload=payload)
     destination = target / _copy_locator(payload)
@@ -519,9 +507,9 @@ def test_copy_destination_appears_after_planning_reports_race_truthfully(tmp_pat
         execute=True,
         faults=CoreFaults(broker=BrokerFaults(before_mechanism=create_conflict)),
     )
-    assert outcome.receipt["terminal_status"] == "failed_no_effect"
-    assert outcome.receipt["effect_receipts"][0]["before"]["exists"] is True
-    assert destination.read_bytes() == b"conflict"
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert not destination.exists()
 
 
 def test_copy_concurrent_create_has_one_writer_and_one_verified_identical_reuse(tmp_path: Path) -> None:
@@ -895,7 +883,9 @@ def test_stage5_hardened_cli_summary_and_walkthrough_values() -> None:
     ]
     assert summary["command_matrix"]["05_prior_exact_reuse"]["disposition"] == "reused_existing"
     assert summary["command_matrix"]["06_same_operation_key_different_request_digest_conflict"]["blockers"] == ["idempotency.same_key_conflict"]
-    assert summary["command_matrix"]["17_destination_appears_conflict"]["terminal_status"] == "failed_no_effect"
+    callback_rejected = summary["command_matrix"]["17_destination_appears_conflict"]
+    assert callback_rejected["terminal_status"] == "rejected"
+    assert callback_rejected["blockers"] == ["broker.unsafe_fault_callback"]
 
     walkthrough = (ROOT / "docs" / "STAGE-5-CONTENT-ADDRESSED-COPY-WALKTHROUGH.md").read_text(encoding="utf-8")
     copy = summary["copy"]

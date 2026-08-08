@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase-tool.local/schemas/mutation-guarantee-profile.schema.json",
+  "title": "Phase Mutation Guarantee Profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["descriptor_version", "id", "version", "classification", "vocabulary", "provided_guarantees", "storage_scope", "limitations", "implementation", "descriptor_digest_binding", "conformance"],
+  "properties": {
+    "descriptor_version": {"const": "1.0"},
+    "id": {"type": "string", "pattern": "^phase\\.[a-z0-9._-]+\\.authority\\.v[0-9]+$"},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "classification": {"const": "production"},
+    "vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "descriptor_digest"],
+      "properties": {
+        "id": {"const": "phase.mutation-guarantees"},
+        "version": {"const": "1.0.0"},
+        "descriptor_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "provided_guarantees": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"}
+    },
+    "storage_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "mount_boundary", "cooperating_processes_only"],
+      "properties": {
+        "filesystem": {"type": "string", "minLength": 1},
+        "mount_boundary": {"type": "string", "minLength": 1},
+        "cooperating_processes_only": {"type": "boolean"}
+      }
+    },
+    "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "artifact", "artifact_digest"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^phase\\.[a-z0-9._-]+\\.authority$"},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "artifact": {"const": "phase_tool/mutation/posix/authority.py"},
+        "artifact_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "descriptor_digest_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "canonicalization", "registry_field"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "canonicalization": {"const": "raw_artifact_bytes"},
+        "registry_field": {"const": "artifact_digest"}
+      }
+    },
+    "conformance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["guarantee", "test_id"],
+        "properties": {
+          "guarantee": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+          "test_id": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"id": {"const": "phase.posix.authority.v1"}}},
+      "then": {"properties": {"classification": {"const": "production"}, "provided_guarantees": {"const": ["exclusive_create", "readback_verification", "cross_process_serialization", "namespace_bound_mutation", "atomic_replace", "namespace_metadata_flush_attempted"]}, "conformance": {"const": [{"guarantee": "exclusive_create", "test_id": "tests/mutation/posix/test_authority_conformance.py::test_posix_production_profile_common_guarantees"}, {"guarantee": "readback_verification", "test_id": "tests/mutation/posix/test_authority_conformance.py::test_posix_production_profile_common_guarantees"}, {"guarantee": "cross_process_serialization", "test_id": "tests/mutation/posix/test_authority_conformance.py::test_posix_production_profile_common_guarantees"}, {"guarantee": "namespace_bound_mutation", "test_id": "tests/mutation/posix/test_guarantee_conformance.py::test_namespace_bound_mutation_uses_pinned_parent_and_detects_rebinding"}, {"guarantee": "atomic_replace", "test_id": "tests/mutation/posix/test_guarantee_conformance.py::test_atomic_replace_never_exposes_missing_or_partial_destination"}, {"guarantee": "namespace_metadata_flush_attempted", "test_id": "tests/mutation/posix/test_guarantee_conformance.py::test_namespace_metadata_flush_attempted_fsyncs_pinned_parent_descriptor"}]}, "implementation": {"properties": {"id": {"const": "phase.posix.authority"}, "artifact": {"const": "phase_tool/mutation/posix/authority.py"}}}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

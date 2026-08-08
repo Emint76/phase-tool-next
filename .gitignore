@@ -4,4 +4,8 @@ __pycache__/
 *.py[cod]
 .coverage
 htmlcov/
-.stage2-tmp/
+/.stage2-tmp/
+/.stage5-tmp/
+/.stage6-tmp/
+/.stage7-tmp/
+/.stage8-tmp/

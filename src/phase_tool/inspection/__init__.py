@@ -10,8 +10,10 @@ from ..canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile
 from ..errors import PhaseError
 from ..evidence import evidence_file_exists, iter_run_artifacts, read_evidence_bytes, validate_intent, validate_receipt, validate_run_id
 from ..paths import _platform_path, contained_read_path
-from ..planning import validate_static_plan
-from ..registry import BundledRegistry, RegistrySnapshot
+from ..planning import validate_plan_mechanism_authorization, validate_static_plan
+from ..registry import BundledRegistry, RegistrySnapshot, ResolvedContract
+from ..mutation.guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
+from ..mutation.implementation import mechanism_authority_usage, mechanism_supports_effect_kind
 from ..append_codec import stream_head_token
 from ..contracts import load_contract_hook
 
@@ -31,6 +33,8 @@ def _read_canonical(path: Path) -> tuple[Any, str]:
 
 
 def _validate_progress(progress: Mapping[str, Any], plan: Mapping[str, Any], effect_receipts: list[dict[str, Any]], registry: RegistrySnapshot) -> None:
+    from ..mutation.broker import ordered_progress_document
+
     schema = registry.schema_document("https://phase-tool.local/schemas/ordered-effect-progress.schema.json")
     Draft202012Validator(schema, registry=registry.schema_registry(), format_checker=FormatChecker()).validate(progress)
     if progress["plan_digest"] != profile_digest("effect-plan", plan):
@@ -57,6 +61,8 @@ def _validate_progress(progress: Mapping[str, Any], plan: Mapping[str, Any], eff
         observation_digest = profile_digest("effect-observation", {"effect_id": receipt["effect_id"], "after": receipt["after"], "status": receipt["status"]})
         if effect_progress["observation_digest"] != observation_digest:
             raise PhaseError("inspection.progress_observation_mismatch")
+    if progress != ordered_progress_document(plan, effect_receipts):
+        raise PhaseError("inspection.progress_semantic_mismatch")
 
 
 def _verify_intent_blobs(run_root: Path, intent: Mapping[str, Any], plan: Mapping[str, Any] | None = None) -> None:
@@ -93,6 +99,87 @@ def _verify_intent_blobs(run_root: Path, intent: Mapping[str, Any], plan: Mappin
             or effect.get("content_length") != len(data)
         ):
             raise PhaseError("inspection.frozen_input_mismatch", str(binding_id))
+
+
+def _validate_implementation_binding(
+    binding: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    contract: ResolvedContract,
+    registry: RegistrySnapshot,
+) -> None:
+    mechanism = plan.get("mechanism")
+    if binding.get("mechanism") != mechanism or binding.get("effect_plan_digest") != profile_digest("effect-plan", plan):
+        raise PhaseError("inspection.implementation_binding_mismatch")
+    if not isinstance(mechanism, Mapping):
+        raise PhaseError("inspection.implementation_binding_mismatch")
+    registry.resolve_mechanism(mechanism)
+    authority = binding.get("authority")
+    effects = plan.get("effects")
+    if not isinstance(authority, Mapping) or not isinstance(effects, list):
+        raise PhaseError("inspection.implementation_binding_mismatch")
+    authority_usage = mechanism_authority_usage(mechanism)
+    for effect in effects:
+        if not isinstance(effect, Mapping):
+            raise PhaseError("inspection.implementation_binding_mismatch")
+        effect_mechanism = effect.get("mechanism", mechanism)
+        if not isinstance(effect_mechanism, Mapping):
+            raise PhaseError("inspection.implementation_binding_mismatch")
+        registry.resolve_mechanism(effect_mechanism)
+        if (
+            mechanism_authority_usage(effect_mechanism) != authority_usage
+            or not mechanism_supports_effect_kind(effect_mechanism, effect.get("kind"))
+        ):
+            raise PhaseError("inspection.implementation_binding_mismatch")
+    if authority_usage == "mechanism_managed":
+        if authority != {"usage": "mechanism_managed", "profile": None, "provider": None}:
+            raise PhaseError("inspection.implementation_binding_mismatch")
+        requirements = contract.document["operation"].get("required_guarantees")
+        if requirements is not None:
+            mechanisms = [contract.document["operation"]["mechanism"]]
+            mechanisms.extend(contract.document["operation"].get("effect_mechanisms", []))
+            verify_guarantee_coverage(requirements, mechanisms, None, registry)
+        return
+    profile = authority.get("profile")
+    provider = authority.get("provider")
+    if authority.get("usage") != "provider_backed" or not isinstance(profile, Mapping) or not isinstance(provider, Mapping):
+        raise PhaseError("inspection.implementation_binding_mismatch")
+    descriptor = registry.resolve_guarantee_profile(profile)
+    implementation = descriptor["implementation"]
+    expected_provider = {
+        "id": implementation["id"],
+        "version": implementation["version"],
+        "artifact_digest": implementation["artifact_digest"],
+    }
+    if provider != expected_provider:
+        raise PhaseError("inspection.implementation_binding_mismatch")
+    requirements = contract.document["operation"].get("required_guarantees")
+    if requirements is not None:
+        mechanisms = [contract.document["operation"]["mechanism"]]
+        mechanisms.extend(contract.document["operation"].get("effect_mechanisms", []))
+        profile_binding = GuaranteeProfileBinding(
+            id=profile["id"],
+            version=profile["version"],
+            descriptor_digest=profile["descriptor_digest"],
+            implementation_id=implementation["id"],
+            implementation_version=implementation["version"],
+            implementation_artifact_digest=implementation["artifact_digest"],
+        )
+        verify_guarantee_coverage(requirements, mechanisms, profile_binding, registry)
+
+
+def _implementation_binding_required(contract: ResolvedContract, registry: RegistrySnapshot) -> bool:
+    evidence = contract.document.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise PhaseError("inspection.implementation_binding_classification_failed")
+    schema_ref = evidence.get("receipt_schema_ref")
+    schema_digest = evidence.get("receipt_schema_digest")
+    if not isinstance(schema_ref, str) or not isinstance(schema_digest, str):
+        raise PhaseError("inspection.implementation_binding_classification_failed")
+    schema = registry.schema_document(schema_ref, schema_digest)
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        raise PhaseError("inspection.implementation_binding_classification_failed")
+    return "implementation_binding" in properties
 
 
 def _prior_receipt_run_id(runs_root: Path, current_run_id: str, prior_digest: str) -> str:
@@ -135,9 +222,10 @@ def inspect_run(
         plan_digest = profile_digest("effect-plan", plan)
         if plan_digest != intent["effect_plan_digest"]:
             raise PhaseError("inspection.digest_mismatch", "effect-plan.json")
+        if plan.get("contract") != intent.get("contract"):
+            raise PhaseError("inspection.contract_mismatch")
         if intent.get("evidence", {}).get("effect_plan_attachment_digest") != digest_bytes(canonical_bytes(plan)):
             raise PhaseError("inspection.digest_mismatch", "effect-plan.json")
-        _verify_intent_blobs(run_root, intent, plan)
         contract_binding = intent["contract"]
         contract = registry.resolve_contract(
             contract_binding["id"],
@@ -145,6 +233,15 @@ def inspect_run(
             contract_binding["package_digest"],
             core_version=intent["core"]["version"],
         )
+        validate_plan_mechanism_authorization(plan, contract, registry)
+        implementation_binding = intent.get("implementation_binding")
+        if implementation_binding is None and _implementation_binding_required(contract, registry):
+            raise PhaseError("inspection.implementation_binding_missing")
+        if implementation_binding is not None:
+            if not isinstance(implementation_binding, Mapping):
+                raise PhaseError("inspection.implementation_binding_mismatch")
+            _validate_implementation_binding(implementation_binding, plan, contract, registry)
+        _verify_intent_blobs(run_root, intent, plan)
         state_classification = None
         hook = load_contract_hook(contract)
         if hook is not None and hasattr(hook, "inspect_missing_receipt_result"):
@@ -166,6 +263,7 @@ def inspect_run(
             "intent_present": True,
             "inspection_required": True,
             "state_classification": state_classification,
+            "implementation_binding": implementation_binding,
         }
     receipt, _ = _read_canonical(receipt_path)
     receipt_digest = profile_digest("receipt", receipt)
@@ -189,14 +287,37 @@ def inspect_run(
         plan_digest = profile_digest("effect-plan", plan)
         if plan_digest != intent["effect_plan_digest"]:
             raise PhaseError("inspection.digest_mismatch", "effect-plan.json")
+        if plan.get("contract") != intent.get("contract"):
+            raise PhaseError("inspection.contract_mismatch")
+        if receipt.get("contract") != intent.get("contract"):
+            raise PhaseError("inspection.contract_mismatch")
+        contract_for_plan = registry.resolve_contract(
+            intent["contract"]["id"],
+            intent["contract"]["version"],
+            intent["contract"]["package_digest"],
+            core_version=intent["core"]["version"],
+        )
+        validate_plan_mechanism_authorization(plan, contract_for_plan, registry)
+        intent_binding = intent.get("implementation_binding")
+        receipt_binding = receipt.get("implementation_binding")
+        if intent_binding != receipt_binding:
+            raise PhaseError("inspection.implementation_binding_mismatch")
+        if intent_binding is None and _implementation_binding_required(contract_for_plan, registry):
+            raise PhaseError("inspection.implementation_binding_missing")
+        if intent_binding is not None:
+            if not isinstance(intent_binding, Mapping):
+                raise PhaseError("inspection.implementation_binding_mismatch")
+            _validate_implementation_binding(intent_binding, plan, contract_for_plan, registry)
         validators, validators_digest = _read_canonical(run_root / "attachments" / "validator-results.json")
         if validators != receipt["validator_results"]:
             raise PhaseError("inspection.validator_results_mismatch")
         attachment_digests = {plan_attachment_digest, validators_digest}
-        if receipt["effect_receipts"]:
+        claimed = set(receipt["evidence"]["attachment_digests"])
+        effect_receipts = receipt["effect_receipts"]
+        if effect_receipts:
             pre_validators, pre_validators_digest = _read_canonical(run_root / "attachments" / "pre-validator-results.json")
-            effect_receipts, effect_receipts_digest = _read_canonical(run_root / "attachments" / "effect-receipts.json")
-            if effect_receipts != receipt["effect_receipts"]:
+            stored_effect_receipts, effect_receipts_digest = _read_canonical(run_root / "attachments" / "effect-receipts.json")
+            if stored_effect_receipts != effect_receipts:
                 raise PhaseError("inspection.effect_receipts_mismatch")
             planned_ids = [item["effect_id"] for item in plan["effects"]]
             receipt_ids = [item["effect_id"] for item in effect_receipts]
@@ -204,22 +325,18 @@ def inspect_run(
                 raise PhaseError("inspection.effect_receipt_set_mismatch")
             if not isinstance(pre_validators, list):
                 raise PhaseError("inspection.validator_results_mismatch")
-            progress_path = run_root / "attachments" / "ordered-effect-progress.json"
-            if evidence_file_exists(progress_path):
-                progress, progress_digest = _read_canonical(progress_path)
+            attachment_digests.update({pre_validators_digest, effect_receipts_digest})
+        progress_path = run_root / "attachments" / "ordered-effect-progress.json"
+        if evidence_file_exists(progress_path):
+            progress, progress_digest = _read_canonical(progress_path)
+            if progress_digest in claimed:
                 _validate_progress(progress, plan, effect_receipts, registry)
                 attachment_digests.add(progress_digest)
-            attachment_digests.update({pre_validators_digest, effect_receipts_digest})
-        claimed = set(receipt["evidence"]["attachment_digests"])
+            elif receipt["evidence"]["finalization_status"] == "finalized":
+                attachment_digests.add(progress_digest)
         if attachment_digests != claimed:
             raise PhaseError("inspection.attachment_set_mismatch")
         _verify_intent_blobs(run_root, intent, plan)
-        contract_for_plan = registry.resolve_contract(
-            intent["contract"]["id"],
-            intent["contract"]["version"],
-            intent["contract"]["package_digest"],
-            core_version=intent["core"]["version"],
-        )
         hook_for_plan = load_contract_hook(contract_for_plan)
         needs_state_classification = (
             receipt["terminal_status"] not in {"succeeded_verified", "validated_planned"}
@@ -230,6 +347,8 @@ def inspect_run(
             state_classification = hook_for_plan.inspect_missing_receipt_result(plan, root_bindings or {}, registry)
     canonical_result = receipt["canonical_result"]
     if canonical_result is not None:
+        if canonical_result.get("contract") != receipt.get("contract"):
+            raise PhaseError("inspection.contract_mismatch")
         contract_binding = receipt["contract"]
         contract = registry.resolve_contract(
             contract_binding["id"],
@@ -284,6 +403,8 @@ def inspect_run(
             )
             if prior.get("terminal_status") != "succeeded_verified" or prior.get("target_verified") is not True or prior.get("contract") != receipt["contract"]:
                 raise PhaseError("inspection.prior_receipt_mismatch", prior_run_id)
+            if prior.get("implementation_binding") != receipt.get("implementation_binding"):
+                raise PhaseError("inspection.implementation_binding_mismatch")
             contract_result = prior.get("contract_result")
         else:
             hook = load_contract_hook(contract)
@@ -319,6 +440,7 @@ def inspect_run(
         "receipt_present": True,
         "intent_present": intent is not None,
         "inspection_required": False,
+        "implementation_binding": receipt.get("implementation_binding"),
     }
     if state_classification is not None:
         result["state_classification"] = state_classification

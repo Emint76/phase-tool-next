@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase-tool.local/schemas/phase-receipt.schema.json",
+  "title": "Phase Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["phase_receipt_version", "run_id", "contract", "core", "started_at", "finished_at", "terminal_status", "execution_disposition", "mutation_attempted", "result_state", "canonical_result", "validator_results", "effect_receipts", "evidence", "retry_disposition", "prior_verified_receipt_digest", "recovery_required", "blockers", "exit_code"],
+  "properties": {
+    "phase_receipt_version": {"const": "1.0"},
+    "run_id": {"$ref": "#/$defs/runId"},
+    "contract": {"$ref": "#/$defs/exactBinding"},
+    "core": {"$ref": "#/$defs/exactBinding"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "terminal_status": {"enum": ["rejected", "aborted", "validated_planned", "failed_no_effect", "failed_partial", "committed_unverified", "indeterminate", "succeeded_verified"]},
+    "execution_disposition": {"enum": ["executed", "reused_existing", "not_executed"]},
+    "mutation_attempted": {"type": "boolean"},
+    "result_state": {"enum": ["none", "planned_no_effect", "verified_no_effect", "known_partial", "committed_unverified", "indeterminate", "verified_result"]},
+    "canonical_result": {"oneOf": [{"type": "null"}, {"$ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json"}]},
+    "validator_results": {"type": "array", "items": {"$ref": "https://phase-tool.local/schemas/validator-result.schema.json"}},
+    "effect_receipts": {"type": "array", "items": {"$ref": "https://phase-tool.local/schemas/effect-receipt.schema.json"}},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finalization_status", "intent_digest", "receipt_digest_policy_id", "required_attachments_present", "attachment_digests"],
+      "properties": {
+        "finalization_status": {"enum": ["finalized", "failed", "not_reached"]},
+        "intent_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+        "receipt_digest_policy_id": {"$ref": "#/$defs/identifier"},
+        "required_attachments_present": {"type": "boolean"},
+        "attachment_digests": {"type": "array", "items": {"$ref": "#/$defs/digest"}, "uniqueItems": true}
+      }
+    },
+    "retry_disposition": {"enum": ["noop_existing", "safe_idempotent_retry", "inspect_before_retry", "forbidden", "conflict"]},
+    "prior_verified_receipt_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "recovery_required": {"type": "boolean"},
+    "blockers": {"type": "array", "items": {"$ref": "#/$defs/identifier"}, "uniqueItems": true},
+    "exit_code": {"type": "integer", "minimum": 0, "maximum": 255}
+  },
+  "allOf": [
+    {
+      "if": {"required": ["execution_disposition"], "properties": {"execution_disposition": {"const": "executed"}}},
+      "then": {"properties": {"evidence": {"properties": {"intent_digest": {"$ref": "#/$defs/digest"}}}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"not": {"const": "succeeded_verified"}}}},
+      "then": {"properties": {"prior_verified_receipt_digest": {"type": "null"}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"enum": ["rejected", "aborted"]}}},
+      "then": {"properties": {"execution_disposition": {"const": "not_executed"}, "mutation_attempted": {"const": false}, "result_state": {"const": "none"}, "canonical_result": {"type": "null"}, "effect_receipts": {"maxItems": 0}, "blockers": {"minItems": 1}, "exit_code": {"minimum": 1}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"const": "validated_planned"}}},
+      "then": {"properties": {"execution_disposition": {"const": "not_executed"}, "mutation_attempted": {"const": false}, "result_state": {"const": "planned_no_effect"}, "canonical_result": {"type": "null"}, "validator_results": {"minItems": 1}, "effect_receipts": {"maxItems": 0}, "evidence": {"properties": {"finalization_status": {"const": "finalized"}, "intent_digest": {"$ref": "#/$defs/digest"}, "required_attachments_present": {"const": true}}}, "recovery_required": {"const": false}, "blockers": {"maxItems": 0}, "exit_code": {"const": 0}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"const": "failed_no_effect"}}},
+      "then": {"properties": {"execution_disposition": {"const": "executed"}, "mutation_attempted": {"const": true}, "result_state": {"const": "verified_no_effect"}, "canonical_result": {"type": "null"}, "effect_receipts": {"minItems": 1}, "blockers": {"minItems": 1}, "exit_code": {"minimum": 1}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"const": "failed_partial"}}},
+      "then": {"properties": {"execution_disposition": {"const": "executed"}, "mutation_attempted": {"const": true}, "result_state": {"const": "known_partial"}, "effect_receipts": {"minItems": 1}, "blockers": {"minItems": 1}, "recovery_required": {"const": true}, "exit_code": {"minimum": 1}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"const": "committed_unverified"}}},
+      "then": {"properties": {"execution_disposition": {"const": "executed"}, "mutation_attempted": {"const": true}, "result_state": {"const": "committed_unverified"}, "canonical_result": {"$ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json"}, "effect_receipts": {"minItems": 1}, "blockers": {"minItems": 1}, "recovery_required": {"const": true}, "exit_code": {"minimum": 1}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"const": "indeterminate"}}},
+      "then": {"properties": {"execution_disposition": {"const": "executed"}, "mutation_attempted": {"const": true}, "result_state": {"const": "indeterminate"}, "blockers": {"minItems": 1}, "recovery_required": {"const": true}, "exit_code": {"minimum": 1}}}
+    },
+    {
+      "if": {"required": ["terminal_status"], "properties": {"terminal_status": {"const": "succeeded_verified"}}},
+      "then": {
+        "properties": {
+          "result_state": {"const": "verified_result"},
+          "canonical_result": {"$ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json"},
+          "validator_results": {"minItems": 1},
+          "evidence": {"properties": {"finalization_status": {"const": "finalized"}, "required_attachments_present": {"const": true}}},
+          "recovery_required": {"const": false},
+          "blockers": {"maxItems": 0},
+          "exit_code": {"const": 0}
+        },
+        "oneOf": [
+          {"properties": {"execution_disposition": {"const": "executed"}, "mutation_attempted": {"const": true}, "effect_receipts": {"minItems": 1}, "prior_verified_receipt_digest": {"type": "null"}}},
+          {"properties": {"execution_disposition": {"const": "reused_existing"}, "mutation_attempted": {"const": false}, "effect_receipts": {"maxItems": 0}, "retry_disposition": {"const": "noop_existing"}, "prior_verified_receipt_digest": {"$ref": "#/$defs/digest"}}}
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 128},
+    "runId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "exactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "package_digest"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "package_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

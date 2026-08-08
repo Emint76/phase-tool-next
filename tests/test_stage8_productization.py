@@ -6,11 +6,14 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from phase_tool.application import PhaseApplication
+from scripts.stage8_integrity_audit import generation_errors
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-07-30T12:00:00Z"
@@ -226,7 +229,8 @@ def test_cli_mcp_and_application_are_contract_agnostic_thin_adapters() -> None:
         assert "knowledge_admission" not in source
     assert "PhaseCore" not in cli_source
     assert "PhaseCore" not in mcp_source
-    assert application_source.count("PhaseCore(self.registry).run") == 1
+    assert "PhaseCore(self.registry, self.installation).run(" in application_source
+    assert application_source.count("PhaseCore(") == 1
 
     mcp_tree = ast.parse(mcp_source)
     tool_names = {
@@ -379,7 +383,7 @@ def test_mcp_stdio_stdout_contains_protocol_json_only_and_diagnostics_use_stderr
     assert "Processing request" in stderr
 
 
-def test_publication_metadata_documentation_and_cross_platform_ci_are_complete() -> None:
+def test_publication_metadata_documentation_and_linux_ci_are_complete() -> None:
     import tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
@@ -410,7 +414,7 @@ def test_publication_metadata_documentation_and_cross_platform_ci_are_complete()
     assert "source_admission.v1@1.0.0" in combined
     assert "knowledge_admission.v1@1.0.0" in combined
     workflow = required[-1].read_text(encoding="utf-8")
-    assert "windows-latest" in workflow
+    assert "windows-latest" not in workflow
     assert "ubuntu-latest" in workflow
 
 
@@ -489,6 +493,23 @@ def test_documented_commands_and_links_smoke() -> None:
     assert summary["links_checked"] >= 5
 
 
+def test_integrity_audit_rejects_zero_and_multiple_current_generations() -> None:
+    entries = json.loads((ROOT / "src" / "phase_tool" / "data" / "registry.json").read_text(encoding="utf-8"))["entries"]
+    assert generation_errors(entries) == []
+
+    zero_current = deepcopy(entries)
+    for entry in zero_current:
+        if entry.get("kind") == "contract" and entry.get("id") == "fixture_copy.v1":
+            entry["current"] = False
+    assert generation_errors(zero_current)
+
+    multiple_current = deepcopy(entries)
+    for entry in multiple_current:
+        if entry.get("kind") == "schema" and entry.get("schema_ref") == "https://phase-tool.local/schemas/phase-receipt.schema.json":
+            entry["current"] = True
+    assert generation_errors(multiple_current)
+
+
 def test_package_schema_registry_manifest_and_wheel_integrity_audit() -> None:
     wheel = next((ROOT / ".stage8-tmp" / "clean-install-acceptance" / "dist").glob("*.whl"))
     completed = subprocess.run(
@@ -508,6 +529,11 @@ def test_package_schema_registry_manifest_and_wheel_integrity_audit() -> None:
     assert summary["manifest_entries"] >= 60
     assert summary["wheel_entries"] >= summary["package_artifacts"]
     assert summary["errors"] == []
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_entries = set(archive.namelist())
+    assert "phase_tool/mutation/unsupported.py" in wheel_entries
+    assert not any(name.startswith("phase_tool/mutation/windows/") for name in wheel_entries)
+    assert "phase_tool/data/descriptors/guarantee/phase.windows.authority.v1.json" not in wheel_entries
 
 
 def test_contract_describe_unknown_binding_has_same_cli_mcp_error_envelope() -> None:

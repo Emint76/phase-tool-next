@@ -16,7 +16,7 @@
     "root_binding": "phase_result_root"
   },
   "evidence": {
-    "receipt_schema_digest": "sha256:b68327ee676e8a51fabbd231e66ed5b3195171c9a169207a03782700892834bf",
+    "receipt_schema_digest": "sha256:e4e1126d71be6e05049ac57a9acb38ed92540a7b14ac90fb2bf45225e060de0d",
     "receipt_schema_ref": "https://phase-tool.local/schemas/phase-receipt.schema.json",
     "redaction_policy_id": "redaction.no_secrets_v1",
     "required_attachment_kinds": [
@@ -71,6 +71,27 @@
       "id": "mechanism.exclusive_create_v1",
       "package_digest": "sha256:79564033bced595dda6c50b139c85d350c2eabbfbe586a17cfcbe5037884411b",
       "version": "1.0.0"
+    },
+    "required_guarantees": {
+      "mechanisms": [
+        {
+          "all_of": [
+            "exclusive_create",
+            "readback_verification",
+            "cross_process_serialization"
+          ],
+          "mechanism": {
+            "id": "mechanism.exclusive_create_v1",
+            "package_digest": "sha256:79564033bced595dda6c50b139c85d350c2eabbfbe586a17cfcbe5037884411b",
+            "version": "1.0.0"
+          }
+        }
+      ],
+      "vocabulary": {
+        "descriptor_digest": "sha256:f7b158004b0bf7041286269c239c381cfd60db5987c6bf2173c645d5ac146624",
+        "id": "phase.mutation-guarantees",
+        "version": "1.0.0"
+      }
     }
   },
   "outcomes": {

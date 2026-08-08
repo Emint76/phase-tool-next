@@ -21,19 +21,7 @@ def _exact(binding: Mapping[str, Any]) -> dict[str, str]:
     return {"id": str(binding["id"]), "version": str(binding["version"]), "package_digest": str(binding["package_digest"])}
 
 
-def build_idempotency_digests(
-    contract: ResolvedContract,
-    candidate: CapturedCandidate,
-    frozen_inputs: Mapping[str, FrozenInput],
-    root_bindings: Mapping[str, Path],
-) -> tuple[str, str, str | None, str]:
-    value = parse_json_bytes(candidate.canonical_bytes)
-    locator: Any = value.get("target_locator", sorted(value.get("destinations", [])))
-    if contract.document["operation"]["intent"] == "append":
-        locator = append_locator(contract.document, value)
-    hook = load_contract_hook(contract)
-    if hook is not None:
-        locator = hook.idempotency_locator(value, frozen_inputs, default=locator)
+def root_identity_records(contract: ResolvedContract, root_bindings: Mapping[str, Path]) -> list[dict[str, object]]:
     root_identities = []
     for declaration in sorted(contract.document["write_scope"]["roots"], key=lambda item: item["binding_id"]):
         binding_id = declaration["binding_id"]
@@ -48,7 +36,28 @@ def build_idempotency_digests(
             "device": int(info.st_dev),
             "inode": int(info.st_ino),
         })
-    root_identity_digest = profile_digest("resolved-root-identity", root_identities)
+    return root_identities
+
+
+def root_identity_digest(contract: ResolvedContract, root_bindings: Mapping[str, Path]) -> str:
+    return profile_digest("resolved-root-identity", root_identity_records(contract, root_bindings))
+
+
+def build_idempotency_digests(
+    contract: ResolvedContract,
+    candidate: CapturedCandidate,
+    frozen_inputs: Mapping[str, FrozenInput],
+    root_bindings: Mapping[str, Path],
+) -> tuple[str, str, str | None, str, list[dict[str, object]]]:
+    value = parse_json_bytes(candidate.canonical_bytes)
+    locator: Any = value.get("target_locator", sorted(value.get("destinations", [])))
+    if contract.document["operation"]["intent"] == "append":
+        locator = append_locator(contract.document, value)
+    hook = load_contract_hook(contract)
+    if hook is not None:
+        locator = hook.idempotency_locator(value, frozen_inputs, default=locator)
+    root_identities = root_identity_records(contract, root_bindings)
+    root_identity = profile_digest("resolved-root-identity", root_identities)
     scope = {
         "contract": {
             "id": contract.document["identity"]["id"],
@@ -56,7 +65,7 @@ def build_idempotency_digests(
             "package_digest": contract.package_digest,
         },
         "result_locator": locator,
-        "root_identity_digest": root_identity_digest,
+        "root_identity_digest": root_identity,
         "operation_intent": contract.document["operation"]["intent"],
     }
     scope_digest = profile_digest("idempotency-scope", scope)
@@ -68,7 +77,7 @@ def build_idempotency_digests(
             "inputs": [item.intent_record() for _, item in sorted(frozen_inputs.items())],
         },
     )
-    return scope_digest, request_digest, value.get("idempotency_key"), root_identity_digest
+    return scope_digest, request_digest, value.get("idempotency_key"), root_identity, root_identities
 
 
 def _require_roots(contract: ResolvedContract, root_bindings: Mapping[str, Path]) -> None:
@@ -211,6 +220,27 @@ def build_static_plan(
     return plan
 
 
+def validate_plan_mechanism_authorization(
+    plan: Mapping[str, Any],
+    contract: ResolvedContract,
+    registry: RegistrySnapshot | None,
+) -> None:
+    operation = contract.document["operation"]
+    if plan.get("mechanism") != _exact(operation["mechanism"]):
+        raise PhaseError("plan.mechanism_mismatch")
+    allowed_mechanisms = {
+        tuple(_exact(binding).items())
+        for binding in [operation["mechanism"], *operation.get("effect_mechanisms", [])]
+    }
+    for effect in plan.get("effects", []):
+        if "mechanism" not in effect:
+            continue
+        if tuple(_exact(effect["mechanism"]).items()) not in allowed_mechanisms:
+            raise PhaseError("plan.effect_mechanism_not_allowed", str(effect["effect_id"]))
+        if registry is not None:
+            registry.resolve_mechanism(effect["mechanism"])
+
+
 def validate_static_plan(
     plan: dict[str, Any],
     contract: ResolvedContract,
@@ -225,8 +255,7 @@ def validate_static_plan(
             raise PhaseError("plan.schema_invalid", errors[0].message)
     if plan.get("contract") != {"id": contract.document["identity"]["id"], "version": contract.document["identity"]["version"], "package_digest": contract.package_digest}:
         raise PhaseError("plan.contract_mismatch")
-    if plan.get("mechanism") != _exact(contract.document["operation"]["mechanism"]):
-        raise PhaseError("plan.mechanism_mismatch")
+    validate_plan_mechanism_authorization(plan, contract, registry)
     effects = plan.get("effects", [])
     if len(effects) > contract.document["operation"]["maximum_effects"] or not effects:
         raise PhaseError("plan.incomplete")
@@ -236,16 +265,12 @@ def validate_static_plan(
     locators = [(effect["target"]["root_binding"], effect["target"]["relative_locator"]) for effect in effects]
     if len(locators) != len(set(locators)):
         raise PhaseError("plan.locator_collision")
-    allowed = set(contract.document["operation"]["allowed_effects"])
+    operation = contract.document["operation"]
+    allowed = set(operation["allowed_effects"])
     required_roots = {item["binding_id"] for item in contract.document["write_scope"]["roots"]}
     for effect in effects:
         if effect["kind"] not in allowed:
             raise PhaseError("plan.effect_not_allowed", effect["kind"])
-        if "mechanism" in effect:
-            try:
-                registry.resolve_mechanism(effect["mechanism"]) if registry is not None else None
-            except PhaseError:
-                raise
         if effect["target"]["root_binding"] not in required_roots:
             raise PhaseError("plan.root_binding_unknown", effect["target"]["root_binding"])
         safe_relative_locator(effect["target"]["relative_locator"])

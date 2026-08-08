@@ -74,6 +74,7 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
         "mutation/archive_then_publish.py",
         "mutation/object_store_publish.py",
         "mutation/target_authority.py",
+        "mutation/posix/authority.py",
         "evidence/__init__.py",
         "freeze/__init__.py",
     }

@@ -2,7 +2,7 @@
 name: phase-mutation-router
 description: Route every conforming Hermes canonical filesystem mutation by semantic intent to an exact Phase contract; never write the canonical target directly.
 version: 1.0.0
-platforms: [linux, macos, windows]
+platforms: [linux]
 ---
 
 # Phase Mutation Router

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -13,12 +14,23 @@ from phase_tool.canonical import parse_json_bytes
 from phase_tool.contracts.publish_new_version_v2 import PublishNewVersionV2Hook
 from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
+from phase_tool.installation import host_installation
 from phase_tool.inspection import inspect_run
 from phase_tool.mutation import BrokerFaults, ObjectStorePublishFaults
-from phase_tool.mutation.object_store_publish import execute_object_store_publish
+from phase_tool.mutation.object_store_publish import execute_object_store_publish as _execute_object_store_publish
 from phase_tool.registry import BundledRegistry
 
 NOW = "2026-08-03T12:00:00Z"
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="publish_new_version.v2 requires POSIX production guarantees",
+)
+
+
+def execute_object_store_publish(*args: object, **kwargs: object) -> dict[str, object]:
+    kwargs["authority_provider"] = host_installation().authority_provider
+    return _execute_object_store_publish(*args, **kwargs)  # type: ignore[arg-type]
 
 
 def _sha(data: bytes) -> str:
@@ -198,7 +210,7 @@ def test_v2_wrong_expected_current_digest_is_stable_rejection(tmp_path: Path) ->
     assert list(objects_root.rglob("*")) == []
 
 
-def test_v2_current_drift_before_final_replace_preserves_objects_and_reports_partial(tmp_path: Path) -> None:
+def test_v2_rejects_final_revalidation_callback_before_mutation(tmp_path: Path) -> None:
     before = b"old"
     after = b"new"
     request, _current_root, objects_root, _evidence_root, current = _request(
@@ -217,11 +229,11 @@ def test_v2_current_drift_before_final_replace_preserves_objects_and_reports_par
         ),
     )
 
-    assert outcome.receipt["terminal_status"] == "failed_partial"
-    assert outcome.receipt["effect_receipts"][0]["error"]["code"] == "publish.current_verification_failed"
-    assert current.read_bytes() == b"external drift"
-    assert (objects_root / _object_locator(before)).read_bytes() == before
-    assert (objects_root / _object_locator(after)).read_bytes() == after
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert current.read_bytes() == before
+    assert not (objects_root / _object_locator(before)).exists()
+    assert not (objects_root / _object_locator(after)).exists()
 
 
 @pytest.mark.parametrize(
@@ -272,7 +284,7 @@ def test_v2_post_replace_readback_mismatch_is_committed_unverified(tmp_path: Pat
     assert (objects_root / _object_locator(after)).read_bytes() == after
 
 
-def test_v2_post_replace_oserror_with_exact_live_state_is_committed_unverified(tmp_path: Path) -> None:
+def test_v2_rejects_post_replace_callback_before_mutation(tmp_path: Path) -> None:
     before = b"old"
     after = b"new"
     request, _current_root, objects_root, _evidence_root, current = _request(
@@ -292,13 +304,11 @@ def test_v2_post_replace_oserror_with_exact_live_state_is_committed_unverified(t
         ),
     )
 
-    effect = outcome.receipt["effect_receipts"][0]
-    assert current.read_bytes() == after
-    assert (objects_root / _object_locator(before)).read_bytes() == before
-    assert (objects_root / _object_locator(after)).read_bytes() == after
-    assert effect["status"] == "applied_unverified"
-    assert effect["error"]["code"] == "mechanism.post_replace_verification_failed"
-    assert outcome.receipt["terminal_status"] == "committed_unverified"
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert current.read_bytes() == before
+    assert not (objects_root / _object_locator(before)).exists()
+    assert not (objects_root / _object_locator(after)).exists()
 
 
 def test_v2_partial_after_objects_is_retry_safe_and_reuses_objects(tmp_path: Path) -> None:
@@ -441,7 +451,7 @@ def test_v2_reparse_policy_blocks_mechanism_before_object_creation(tmp_path: Pat
     )
 
     assert outcome.receipt["terminal_status"] == "rejected"
-    assert outcome.receipt["blockers"] == ["path.reparse_forbidden"]
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
     assert current.read_bytes() == b"old"
     assert list(objects_root.rglob("*")) == []
 
@@ -594,22 +604,15 @@ def test_v2_inspection_accepts_reused_existing_receipt(tmp_path: Path) -> None:
     assert inspected["target_verified"] is True
 
 
-def test_v2_inspection_accepts_committed_unverified_when_live_state_is_exact(tmp_path: Path) -> None:
+def test_v2_inspection_classifies_published_state_without_receipt(tmp_path: Path) -> None:
     request, current_root, objects_root, evidence_root, _current = _request(
         tmp_path, run_id="v2-inspect-committed-unverified", before=b"old", content="new"
     )
 
-    def fail_after_replace(_path: Path) -> None:
-        raise OSError("injected post-replace durability failure")
-
     outcome = PhaseCore().run(
         request,
         execute=True,
-        faults=CoreFaults(
-            broker=BrokerFaults(
-                object_store_publish=ObjectStorePublishFaults(after_replace=fail_after_replace)
-            )
-        ),
+        faults=CoreFaults(fail_receipt_write=True),
     )
     assert outcome.receipt["terminal_status"] == "committed_unverified"
 
@@ -619,9 +622,9 @@ def test_v2_inspection_accepts_committed_unverified_when_live_state_is_exact(tmp
         root_bindings={"current_root": current_root, "objects_root": objects_root},
     )
 
-    assert inspected["terminal_status"] == "committed_unverified"
-    assert inspected["target_verified"] is True
-    assert inspected["contract_result"]["current"]["digest"] == _sha(b"new")
+    assert inspected["terminal_status"] is None
+    assert inspected["state_classification"] == "published_not_finalized"
+    assert inspected["target_verified"] is None
 
 
 @pytest.mark.parametrize("tampered", ["current", "old_object", "new_object"])

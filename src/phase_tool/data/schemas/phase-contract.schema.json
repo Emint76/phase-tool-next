@@ -107,6 +107,46 @@
             }
           }
         },
+        "required_guarantees": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vocabulary", "mechanisms"],
+          "properties": {
+            "vocabulary": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "version", "descriptor_digest"],
+              "properties": {
+                "id": {"const": "phase.mutation-guarantees"},
+                "version": {"$ref": "#/$defs/semver"},
+                "descriptor_digest": {"$ref": "#/$defs/digest"}
+              }
+            },
+            "mechanisms": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mechanism", "all_of"],
+                "properties": {
+                  "mechanism": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "version", "package_digest"],
+                    "properties": {
+                      "id": {"$ref": "#/$defs/identifier"},
+                      "version": {"$ref": "#/$defs/semver"},
+                      "package_digest": {"$ref": "#/$defs/digest"}
+                    }
+                  },
+                  "all_of": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"}}
+                }
+              }
+            }
+          }
+        },
         "allowed_effects": {
           "type": "array",
           "minItems": 1,

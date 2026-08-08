@@ -13,21 +13,34 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
+import phase_tool.evidence as evidence_module
+import phase_tool.mutation.broker as broker_module
 from phase_tool import __version__
-from phase_tool.canonical import digest_bytes, parse_json_bytes, profile_digest
+from phase_tool.canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
 from phase_tool.evidence import EvidenceStore
+from phase_tool.installation import host_installation
 from phase_tool.inspection import inspect_run
 from phase_tool.mutation import BrokerFaults
-from phase_tool.mutation.content_addressed_copy import ContentAddressedCopyFaults, execute_content_addressed_copy
-from phase_tool.mutation.exclusive_create import ExclusiveCreateFaults, execute_exclusive_create
+from phase_tool.mutation.content_addressed_copy import ContentAddressedCopyFaults, execute_content_addressed_copy as _execute_content_addressed_copy
+from phase_tool.mutation.exclusive_create import ExclusiveCreateFaults, execute_exclusive_create as _execute_exclusive_create
 from phase_tool.registry import BundledRegistry
 from phase_tool.validation import ValidatorRunner
 
 NOW = "2026-07-28T12:00:00Z"
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "phase_tool"
+
+
+def execute_content_addressed_copy(*args: object, **kwargs: object) -> dict[str, object]:
+    kwargs["authority_provider"] = host_installation().authority_provider
+    return _execute_content_addressed_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def execute_exclusive_create(*args: object, **kwargs: object) -> dict[str, object]:
+    kwargs["authority_provider"] = host_installation().authority_provider
+    return _execute_exclusive_create(*args, **kwargs)  # type: ignore[arg-type]
 
 
 def _sha(data: bytes) -> str:
@@ -154,11 +167,9 @@ def test_admission_canonical_json_v1_matches_golden_vectors() -> None:
 @pytest.mark.parametrize("payload", [b"hello\n", bytes([0, 1, 2, 253, 254, 255]), b""])
 def test_source_execute_writes_blob_descriptor_progress_and_inspects(tmp_path: Path, payload: bytes) -> None:
     request, target, evidence, source, frozen_payload = _request(tmp_path, run_id=f"source-{len(payload)}", payload=payload)
+    source_before = source.read_bytes()
 
-    def mutate_source_after_intent(_intent_path: Path) -> None:
-        source.write_bytes(b"changed after freeze")
-
-    outcome = PhaseCore().run(request, execute=True, faults=CoreFaults(broker=BrokerFaults(before_mechanism=mutate_source_after_intent)))
+    outcome = PhaseCore().run(request, execute=True)
 
     assert outcome.exit_code == 0
     assert outcome.receipt["terminal_status"] == "succeeded_verified"
@@ -177,6 +188,7 @@ def test_source_execute_writes_blob_descriptor_progress_and_inspects(tmp_path: P
     assert progress["completed_effect_ids"] == ["effect.0.blob", "effect.1.descriptor"]
     assert progress["verified_effect_ids"] == ["effect.0.blob", "effect.1.descriptor"]
     assert progress["not_started_effect_ids"] == []
+    assert source.read_bytes() == source_before
     inspected = inspect_run(evidence, request.run_id, root_bindings={"admission_result_root": target})
     assert inspected["target_verified"] is True
     exact = inspected["contract_result"]
@@ -187,7 +199,7 @@ def test_source_execute_writes_blob_descriptor_progress_and_inspects(tmp_path: P
 
 
 def test_source_validate_and_plan_do_not_mutate_target(tmp_path: Path) -> None:
-    request, target, _evidence, _source, payload = _request(tmp_path, run_id="source-plan", payload=b"plan only")
+    request, target, evidence, _source, payload = _request(tmp_path, run_id="source-plan", payload=b"plan only")
     before = sorted(path.relative_to(target).as_posix() for path in target.rglob("*"))
 
     planned = PhaseCore().run(request)
@@ -196,6 +208,29 @@ def test_source_validate_and_plan_do_not_mutate_target(tmp_path: Path) -> None:
     assert sorted(path.relative_to(target).as_posix() for path in target.rglob("*")) == before
     assert not (target / _source_locator(payload)).exists()
     assert len(planned.effect_plan["effects"]) == 2
+    progress = broker_module.ordered_progress_document(planned.effect_plan, [])
+    progress_path = evidence / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json"
+    progress_path.write_bytes(canonical_bytes(progress))
+    with pytest.raises(PhaseError) as inspection_error:
+        inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)
+    assert inspection_error.value.code == "inspection.attachment_set_mismatch"
+    run_root = evidence / ".phase" / "runs" / request.run_id
+    receipt_path = run_root / "receipt.json"
+    receipt = parse_json_bytes(receipt_path.read_bytes())
+    progress_digest = digest_bytes(progress_path.read_bytes())
+    receipt["evidence"]["attachment_digests"] = sorted([*receipt["evidence"]["attachment_digests"], progress_digest])
+    receipt_path.write_bytes(canonical_bytes(receipt))
+    assert inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)["terminal_status"] == "validated_planned"
+    progress["verified_effect_ids"] = [planned.effect_plan["effects"][0]["effect_id"]]
+    progress_path.write_bytes(canonical_bytes(progress))
+    receipt["evidence"]["attachment_digests"] = sorted(
+        [item for item in receipt["evidence"]["attachment_digests"] if item != progress_digest]
+        + [digest_bytes(progress_path.read_bytes())]
+    )
+    receipt_path.write_bytes(canonical_bytes(receipt))
+    with pytest.raises(PhaseError) as claimed_progress_error:
+        inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)
+    assert claimed_progress_error.value.code == "inspection.progress_semantic_mismatch"
 
 
 def test_source_reuse_conflicts_and_recovery_matrix(tmp_path: Path) -> None:
@@ -229,7 +264,7 @@ def test_source_reuse_conflicts_and_recovery_matrix(tmp_path: Path) -> None:
     assert inspect_run(evidence, "source-first", root_bindings={"admission_result_root": target})["target_verified"] is True
 
 
-def test_source_descriptor_conflict_after_blob_is_truthful_partial(tmp_path: Path) -> None:
+def test_source_descriptor_callback_is_rejected_before_blob_mutation(tmp_path: Path) -> None:
     request, target, _evidence, _source, payload = _request(tmp_path, run_id="source-partial", payload=b"partial")
     planned = PhaseCore().run(replace(request, run_id="source-partial-plan"))
     descriptor_locator = planned.effect_plan["effects"][1]["target"]["relative_locator"]
@@ -241,14 +276,11 @@ def test_source_descriptor_conflict_after_blob_is_truthful_partial(tmp_path: Pat
 
     outcome = PhaseCore().run(request, execute=True, faults=CoreFaults(broker=BrokerFaults(before_effect={1: create_descriptor_conflict})))
 
-    assert outcome.receipt["terminal_status"] == "failed_partial"
-    assert (target / _source_locator(payload)).read_bytes() == payload
-    assert (target / descriptor_locator).read_bytes() == b"conflict"
-    progress = parse_json_bytes((request.evidence_root / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json").read_bytes())
-    assert progress["failed_effect_id"] == "effect.1.descriptor"
-    assert progress["verified_effect_ids"] == ["effect.0.blob"]
-    assert progress["effects"][0]["state"] == "applied_new_verified"
-    assert progress["effects"][1]["state"] == "failed_no_effect"
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert outcome.receipt["mutation_attempted"] is False
+    assert not (target / _source_locator(payload)).exists()
+    assert not (target / descriptor_locator).exists()
 
 
 def test_source_ordering_blocks_descriptor_after_blob_failure(tmp_path: Path) -> None:
@@ -262,7 +294,7 @@ def test_source_ordering_blocks_descriptor_after_blob_failure(tmp_path: Path) ->
     assert progress["not_started_effect_ids"] == ["effect.1.descriptor"]
 
 
-def test_source_broker_preinvocation_failure_preserves_verified_prefix(tmp_path: Path) -> None:
+def test_source_broker_preinvocation_callback_is_rejected_without_effect(tmp_path: Path) -> None:
     request, target, evidence, _source, _candidate = _request(tmp_path, run_id="run-source-prefix-corruption")
 
     def corrupt_descriptor_blob(intent_path: Path) -> None:
@@ -275,46 +307,37 @@ def test_source_broker_preinvocation_failure_preserves_verified_prefix(tmp_path:
         execute=True,
         faults=CoreFaults(broker=BrokerFaults(before_effect={1: corrupt_descriptor_blob})),
     )
-    assert outcome.receipt["terminal_status"] == "failed_partial"
-    assert outcome.receipt["result_state"] == "known_partial"
-    assert outcome.receipt["mutation_attempted"] is True
-    assert [item["effect_id"] for item in outcome.receipt["effect_receipts"]] == ["effect.0.blob", "effect.1.descriptor"]
-    assert [item["status"] for item in outcome.receipt["effect_receipts"]] == ["applied_verified", "failed_no_effect"]
-    assert outcome.receipt["effect_receipts"][1]["error"]["code"] == "broker.content_blob_mismatch"
-    progress = parse_json_bytes((request.evidence_root / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json").read_bytes())
-    assert progress["verified_effect_ids"] == ["effect.0.blob"]
-    assert progress["failed_effect_id"] == "effect.1.descriptor"
-    assert progress["not_started_effect_ids"] == []
-    blob_locator = outcome.effect_plan["effects"][0]["target"]["relative_locator"]
-    descriptor_locator = outcome.effect_plan["effects"][1]["target"]["relative_locator"]
-    assert target.joinpath(*blob_locator.split("/")).is_file()
-    assert not target.joinpath(*descriptor_locator.split("/")).exists()
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert outcome.receipt["mutation_attempted"] is False
+    assert outcome.receipt["effect_receipts"] == []
+    assert not any(path.is_file() for path in target.rglob("*"))
 
 
-def test_source_progress_is_persisted_before_first_effect_and_after_each_observed_effect(tmp_path: Path) -> None:
+def test_source_progress_is_persisted_before_first_effect_and_after_each_observed_effect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request, target, _evidence, _source, _payload = _request(tmp_path, run_id="source-progress", payload=b"progress")
     progress_path = request.evidence_root / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json"
     snapshots: list[dict[str, object]] = []
 
-    def before_blob(_intent_path: Path) -> None:
-        assert progress_path.is_file()
-        snapshots.append(parse_json_bytes(progress_path.read_bytes()))
+    original = evidence_module.replace_attachment_canonical
 
-    def before_descriptor(_intent_path: Path) -> None:
-        snapshots.append(parse_json_bytes(progress_path.read_bytes()))
+    def capture_progress(attachment_root: Path, file_name: str, value: object) -> tuple[Path, str]:
+        if file_name == "ordered-effect-progress.json":
+            snapshots.append(json.loads(json.dumps(value)))
+        return original(attachment_root, file_name, value)
 
-    outcome = PhaseCore().run(
-        request,
-        execute=True,
-        faults=CoreFaults(broker=BrokerFaults(before_effect={0: before_blob, 1: before_descriptor})),
-    )
+    monkeypatch.setattr(evidence_module, "replace_attachment_canonical", capture_progress)
+    monkeypatch.setattr(broker_module, "replace_attachment_canonical", capture_progress)
+    outcome = PhaseCore().run(request, execute=True)
 
     final_progress = parse_json_bytes(progress_path.read_bytes())
     assert outcome.receipt["terminal_status"] == "succeeded_verified"
+    assert len(snapshots) == 3
     assert snapshots[0]["completed_effect_ids"] == []
     assert snapshots[0]["not_started_effect_ids"] == ["effect.0.blob", "effect.1.descriptor"]
     assert snapshots[1]["completed_effect_ids"] == ["effect.0.blob"]
     assert snapshots[1]["not_started_effect_ids"] == ["effect.1.descriptor"]
+    assert snapshots[2]["completed_effect_ids"] == ["effect.0.blob", "effect.1.descriptor"]
     assert final_progress["completed_effect_ids"] == ["effect.0.blob", "effect.1.descriptor"]
     assert (target / outcome.receipt["canonical_result"]["locator"]).is_file()
 
@@ -345,22 +368,27 @@ def test_ordered_progress_blocking_validator_rejects_tampered_progress(tmp_path:
     result = next(item for item in results if item["validator"]["id"] == "phase.ordered_effect_plan_progress_v1")
     assert result["status"] == "fail"
     assert result["blockers"] == ["validation.ordered_progress_mismatch"]
+    progress_path.write_bytes(canonical_bytes(progress))
+    with pytest.raises(PhaseError) as inspection_error:
+        inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)
+    assert inspection_error.value.code == "inspection.attachment_set_mismatch"
 
 
 def test_progress_write_failure_preserves_durable_effect_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request, _target, evidence, _source, _payload = _request(tmp_path, run_id="source-progress-write-fail", payload=b"progress-failure")
-    original = EvidenceStore.replace_attachment_canonical
+    original = evidence_module.replace_attachment_canonical
     calls = 0
 
-    def fail_second_progress_write(self: EvidenceStore, file_name: str, value: object) -> tuple[Path, str]:
+    def fail_second_progress_write(attachment_root: Path, file_name: str, value: object) -> tuple[Path, str]:
         nonlocal calls
         if file_name == "ordered-effect-progress.json":
             calls += 1
             if calls == 2:
                 raise OSError("injected progress persistence failure")
-        return original(self, file_name, value)
+        return original(attachment_root, file_name, value)
 
-    monkeypatch.setattr(EvidenceStore, "replace_attachment_canonical", fail_second_progress_write)
+    monkeypatch.setattr(evidence_module, "replace_attachment_canonical", fail_second_progress_write)
+    monkeypatch.setattr(broker_module, "replace_attachment_canonical", fail_second_progress_write)
     outcome = PhaseCore().run(request, execute=True)
 
     assert outcome.receipt["terminal_status"] == "failed_partial"
@@ -373,40 +401,57 @@ def test_progress_write_failure_preserves_durable_effect_prefix(tmp_path: Path, 
     assert progress["not_started_effect_ids"] == ["effect.1.descriptor"]
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows sharing and reparse semantics")
-def test_windows_created_leaf_cannot_be_replaced_before_identity_bound_readback(tmp_path: Path) -> None:
-    target = tmp_path / "target"
-    target.mkdir()
-    content = b"created-object"
-    destination = target / "leaf.bin"
-    replacement_blocked = False
-
-    def try_replace(path: Path) -> None:
-        nonlocal replacement_blocked
-        try:
-            path.unlink()
-            path.write_bytes(content)
-        except PermissionError:
-            replacement_blocked = True
-
-    effect = {
-        "effect_id": "effect.0",
-        "kind": "exclusive_create",
-        "content_digest": _sha(content),
-        "content_length": len(content),
-        "target": {"root_binding": "target", "relative_locator": "leaf.bin"},
-    }
-    receipt = execute_exclusive_create(
-        effect,
-        target,
-        content,
-        run_id="leaf-window",
-        timestamp=NOW,
-        faults=ExclusiveCreateFaults(before_readback=try_replace),
+@pytest.mark.parametrize("persistent_failure", [False, True])
+def test_final_progress_write_failure_preserves_durable_complete_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persistent_failure: bool,
+) -> None:
+    request, target, evidence, _source, _payload = _request(
+        tmp_path,
+        run_id="source-final-progress-write-fail",
+        payload=b"final-progress-failure",
     )
-    assert replacement_blocked is True
-    assert receipt["status"] == "applied_verified"
-    assert destination.read_bytes() == content
+    original = evidence_module.replace_attachment_canonical
+    calls = 0
+
+    def fail_final_progress_write(attachment_root: Path, file_name: str, value: object) -> tuple[Path, str]:
+        nonlocal calls
+        if file_name == "ordered-effect-progress.json":
+            calls += 1
+            if calls == 3 or (persistent_failure and calls > 3):
+                raise OSError("injected final progress persistence failure")
+        return original(attachment_root, file_name, value)
+
+    monkeypatch.setattr(evidence_module, "replace_attachment_canonical", fail_final_progress_write)
+    monkeypatch.setattr(broker_module, "replace_attachment_canonical", fail_final_progress_write)
+    outcome = PhaseCore().run(request, execute=True)
+
+    assert outcome.receipt["terminal_status"] == "committed_unverified"
+    assert outcome.receipt["blockers"] == ["evidence.finalization_failed"]
+    assert [item["effect_id"] for item in outcome.receipt["effect_receipts"]] == [
+        "effect.0.blob",
+        "effect.1.descriptor",
+    ]
+    assert (target / outcome.receipt["canonical_result"]["locator"]).is_file()
+    run_root = evidence / ".phase" / "runs" / request.run_id
+    assert parse_json_bytes((run_root / "attachments" / "effect-receipts.json").read_bytes()) == outcome.receipt["effect_receipts"]
+    assert parse_json_bytes((run_root / "receipt.json").read_bytes()) == outcome.receipt
+    inspected = inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)
+    assert inspected["terminal_status"] == "committed_unverified"
+    if persistent_failure:
+        tampered_progress = broker_module.ordered_progress_document(outcome.effect_plan, outcome.receipt["effect_receipts"])
+        tampered_progress["verified_effect_ids"] = []
+        progress_bytes = canonical_bytes(tampered_progress)
+        (run_root / "attachments" / "ordered-effect-progress.json").write_bytes(progress_bytes)
+        tampered_receipt = parse_json_bytes(canonical_bytes(outcome.receipt))
+        tampered_receipt["evidence"]["attachment_digests"] = sorted(
+            [*tampered_receipt["evidence"]["attachment_digests"], digest_bytes(progress_bytes)]
+        )
+        (run_root / "receipt.json").write_bytes(canonical_bytes(tampered_receipt))
+        with pytest.raises(PhaseError) as inspection_error:
+            inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)
+        assert inspection_error.value.code == "inspection.progress_semantic_mismatch"
 
 
 def _source_worker(base: str, name: str, queue: object) -> None:
@@ -416,7 +461,7 @@ def _source_worker(base: str, name: str, queue: object) -> None:
     queue.put((outcome.receipt["terminal_status"], outcome.receipt["execution_disposition"]))  # type: ignore[attr-defined]
 
 
-def _source_identity_race_worker(base: str, name: str, payload: bytes, operation_id: str, queue: object, barrier: object | None = None) -> None:
+def _source_identity_race_worker(base: str, name: str, payload: bytes, operation_id: str, queue: object, barrier: object) -> None:
     tmp = Path(base)
     request, _target, _evidence, _source, _payload = _request(
         tmp,
@@ -427,11 +472,8 @@ def _source_identity_race_worker(base: str, name: str, payload: bytes, operation
     )
     request = replace(request, evidence_root=tmp / f"evidence-{name}")
 
-    def before_effect_lock(ordinal: int, _intent_path: Path) -> None:
-        if ordinal == 1 and barrier is not None:
-            barrier.wait(timeout=20)  # type: ignore[attr-defined]
-
-    outcome = PhaseCore().run(request, execute=True, faults=CoreFaults(broker=BrokerFaults(before_effect_lock=before_effect_lock)))
+    barrier.wait(timeout=20)  # type: ignore[attr-defined]
+    outcome = PhaseCore().run(request, execute=True)
     queue.put((outcome.receipt["terminal_status"], outcome.receipt["execution_disposition"], outcome.receipt["mutation_attempted"]))  # type: ignore[attr-defined]
 
 
@@ -529,7 +571,12 @@ def test_receipt_determinism_is_scoped_to_resolved_target_root_identity(tmp_path
         for key in first.intent["idempotency"]
         if first.intent["idempotency"][key] != second.intent["idempotency"][key]
     }
-    assert intent_differences == {"request_digest", "root_identity_digest", "scope_digest"}
+    assert intent_differences == {"request_digest", "root_identities", "root_identity_digest", "scope_digest"}
+    for intent in (first.intent, second.intent):
+        assert intent["idempotency"]["root_identity_digest"] == profile_digest(
+            "resolved-root-identity",
+            intent["idempotency"]["root_identities"],
+        )
     assert first.receipt_digest != second.receipt_digest
     first_receipt = json.loads(json.dumps(first.receipt))
     second_receipt = json.loads(json.dumps(second.receipt))

@@ -153,7 +153,8 @@ It declares or binds:
 - recovery policy;
 - outcome policy;
 - evidence requirements;
-- exact mechanism and runtime references.
+- exact mechanism and runtime references;
+- versioned, technology-neutral guarantee requirements for each exact mechanism.
 
 A contract package does not need to encode all domain behavior as JSON. It selects and constrains trusted executable domain semantics.
 
@@ -220,11 +221,13 @@ It owns:
 
 ```text
 resolve
+→ verify contract guarantees against the installation authority profile
 → capture
 → normalize
 → freeze
 → validate
 → plan
+→ reverify the actual plan mechanism closure
 → persist intent
 → execute
 → post-verify
@@ -236,6 +239,7 @@ resolve
 Core owns:
 
 - exact binding resolution;
+- pre-capture guarantee admission;
 - candidate capture;
 - input freezing;
 - lifecycle ordering;
@@ -263,6 +267,8 @@ publication_target
 ```
 
 The host installation resolves a logical resource handle to an admitted write capability.
+
+It also selects the exact authority guarantee profile as trusted installation configuration. A provider's self-report is a consistency check, not authority to select or strengthen that profile. Current contract generations are admitted only when every exact mechanism requirement is covered. Mechanism-managed append remains outside the authority-provider path.
 
 The agent may select an allowed logical resource but must not choose an arbitrary absolute path or independently acquire a write capability.
 

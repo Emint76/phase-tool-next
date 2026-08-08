@@ -41,10 +41,19 @@ def read_target_bytes(path: Path) -> bytes:
 
 def registry_binding(repo: Path, contract_id: str) -> str:
     registry = json.loads((repo / "src" / "phase_tool" / "data" / "registry.json").read_text(encoding="utf-8"))
-    for entry in registry["entries"]:
-        if entry.get("kind") == "contract" and entry.get("id") == contract_id and entry.get("version") == "1.0.0":
-            return str(entry["package_digest"])
-    raise AssertionError(f"inactive contract: {contract_id}@1.0.0")
+    matches = [
+        entry
+        for entry in registry["entries"]
+        if (
+            entry.get("kind") == "contract"
+            and entry.get("id") == contract_id
+            and entry.get("version") == "1.0.0"
+            and entry.get("current", True) is True
+        )
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"ambiguous contract binding: {contract_id}: {len(matches)} current entries")
+    return str(matches[0]["package_digest"])
 
 
 def source_candidate(payload: bytes) -> dict[str, object]:
@@ -124,14 +133,14 @@ NOW = "2026-07-29T12:00:00Z"
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["descriptor_conflict", "effect0_failure", "source_tamper"])
+    parser.add_argument("scenario", choices=["descriptor_conflict", "effect0_failure"])
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--contract-digest", required=True)
-    parser.add_argument("--source-descriptor", type=Path)
+
     args = parser.parse_args()
     request = PhaseRequest(contract_id="knowledge_admission.v1", contract_version="1.0.0", contract_digest=args.contract_digest,
         candidate_path=args.candidate, evidence_root=args.evidence, run_id=args.run_id,
@@ -146,13 +155,7 @@ def main():
             with open(_platform_path(destination), "wb") as stream:
                 stream.write(b"stage7 conflicting descriptor")
         faults = CoreFaults(broker=BrokerFaults(before_effect={1: conflict}))
-    else:
-        if args.source_descriptor is None:
-            raise AssertionError("source descriptor required")
-        def tamper(_intent_path):
-            with open(_platform_path(args.source_descriptor), "wb") as stream:
-                stream.write(b"stage7 tampered source descriptor")
-        faults = CoreFaults(broker=BrokerFaults(before_mechanism=tamper))
+
     outcome = PhaseCore().run(request, execute=True, faults=faults)
     receipt = outcome.receipt
     print(json.dumps({"command": "helper." + args.scenario, "success": outcome.exit_code == 0,
@@ -291,20 +294,18 @@ def main() -> int:
         {"exit": 10, "terminal_status": "rejected", "mutation_attempted": False, "blocker": "knowledge.logical_identity_conflict", "unchanged": True})
 
     helper = root / "stage7_helper.py"; helper.write_text(helper_text(), encoding="utf-8")
-    def helper_run(name: str, scenario: str, candidate_value: dict[str, object], payload: bytes, logical: str, expect: dict[str, Any], source_descriptor: Path | None = None) -> None:
+    def helper_run(name: str, scenario: str, candidate_value: dict[str, object], payload: bytes, logical: str, expect: dict[str, Any]) -> None:
         cp, ap = candidates / f"{name}.json", payloads / f"{name}.bin"
         candidate_value["logical_knowledge_id"] = logical
         write_json(cp, candidate_value); write_bytes(ap, payload)
         argv = [python, str(helper), scenario, "--candidate", str(cp), "--artifact", str(ap), "--evidence", str(evidence),
             "--target", str(target), "--run-id", name, "--contract-digest", knowledge_digest]
-        if source_descriptor is not None:
-            argv += ["--source-descriptor", str(source_descriptor)]
         before = target_tree(target); result = run_json(argv, env); record(name, result, before, expect)
 
     helper_run("12_effect0_failure", "effect0_failure", knowledge_candidate(b"effect0", source_binding, operation_id="effect0", logical_id="effect0"), b"effect0", "effect0",
         {"exit": 30, "terminal_status": "failed_partial", "mutation_attempted": True, "blocker": "mechanism.write_failed"})
-    helper_run("13_descriptor_conflict", "descriptor_conflict", knowledge_candidate(b"effect1", source_binding, operation_id="effect1", logical_id="effect1"), b"effect1", "effect1",
-        {"exit": 30, "terminal_status": "failed_partial", "mutation_attempted": True, "blocker": "target.destination_exists"})
+    helper_run("13_unsafe_descriptor_callback_rejected", "descriptor_conflict", knowledge_candidate(b"effect1", source_binding, operation_id="effect1", logical_id="effect1"), b"effect1", "effect1",
+        {"exit": 10, "terminal_status": "rejected", "disposition": "not_executed", "mutation_attempted": False, "blocker": "broker.unsafe_fault_callback", "unchanged": True})
 
     knowledge_receipt = json.loads((evidence / ".phase" / "runs" / "knowledge-execute" / "receipt.json").read_text(encoding="utf-8"))
     canonical = knowledge_receipt["canonical_result"]
@@ -321,7 +322,7 @@ def main() -> int:
         "source_binding_preserved": descriptor["provenance"]["source_bindings"] == [source_binding],
         "reference_receipt_link": descriptor["admission_run"]["run_id"] == "knowledge-execute" and inspection["receipt_digest"] == execution["receipt_digest"],
         "partial_effect0_truthful": matrix["12_effect0_failure"]["terminal_status"] == "failed_partial",
-        "partial_effect1_truthful": matrix["13_descriptor_conflict"]["terminal_status"] == "failed_partial",
+        "unsafe_descriptor_callback_rejected": matrix["13_unsafe_descriptor_callback_rejected"]["terminal_status"] == "rejected",
     }
     for name, value in checks.items():
         if not value:
@@ -346,7 +347,7 @@ def main() -> int:
         },
         "inspection": inspection,
         "target_tree": target_tree(target),
-        "helper_note": "Fault-only helpers invoke the same PhaseCore, EvidenceStore and EffectBroker and inject deterministic boundaries unavailable in the public CLI.",
+        "helper_note": "Fault-only helpers invoke the same PhaseCore, EvidenceStore and EffectBroker; callable faults verify fail-before-callback rejection without injecting production mutations.",
     }
     summary_path = root / "stage7-cli-acceptance-summary.json"
     write_json(summary_path, summary)

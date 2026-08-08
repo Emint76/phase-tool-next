@@ -155,13 +155,6 @@ def _admit_knowledge(tmp_path: Path, target: Path, evidence: Path, source_bindin
     return request, outcome
 
 
-def _move_evidence_to_long_windows_path(tmp_path: Path, evidence: Path) -> Path:
-    destination = tmp_path / ("e" * 120) / ("r" * 120) / "evidence"
-    os.makedirs(_platform_path(destination.parent), exist_ok=True)
-    os.replace(_platform_path(evidence), _platform_path(destination))
-    return destination
-
-
 def test_knowledge_contract_is_exactly_activated_and_integrity_bound() -> None:
     registry = BundledRegistry.load()
     entry = registry.contract_bindings()["knowledge_admission.v1@1.0.0"]
@@ -224,7 +217,7 @@ def test_knowledge_requires_exact_verified_source_binding(tmp_path: Path) -> Non
         assert blocker in outcome.receipt["blockers"]
 
 
-def test_source_binding_change_after_plan_rejects_before_artifact_mutation(tmp_path: Path) -> None:
+def test_source_binding_callback_is_rejected_before_artifact_mutation(tmp_path: Path) -> None:
     target, evidence, binding = _admit_source(tmp_path)
     artifact = b"race-artifact"
     request = _knowledge_request(tmp_path, target, evidence, _knowledge_candidate(artifact, [binding]), artifact, run_id="knowledge-source-race")
@@ -237,7 +230,8 @@ def test_source_binding_change_after_plan_rejects_before_artifact_mutation(tmp_p
     outcome = PhaseCore().run(request, execute=True, faults=CoreFaults(broker=BrokerFaults(before_mechanism=tamper_source)))
     assert outcome.receipt["terminal_status"] == "rejected"
     assert outcome.receipt["mutation_attempted"] is False
-    assert outcome.receipt["blockers"] == ["knowledge.source_descriptor_mismatch"]
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert _read_target(target, binding["source_descriptor_locator"]) != b"tampered"
     assert not any((target / "namespaces" / "example" / "knowledge-results").glob("**/*.json"))
 
 
@@ -316,22 +310,6 @@ def test_exact_knowledge_result_reuses_under_a_new_operation_key(tmp_path: Path)
     assert second.receipt["prior_verified_receipt_digest"] == first.receipt_digest
 
 
-def test_long_windows_evidence_paths_verify_source_supersedes_and_idempotency(tmp_path: Path) -> None:
-    target, evidence, binding = _admit_source(tmp_path)
-    artifact = b"long evidence v1"
-    _request, first = _admit_knowledge(tmp_path, target, evidence, [binding], run_id="knowledge-long-first", artifact=artifact, operation_id="op-long-first", logical_id="knowledge-long-first")
-    prior = inspect_run(evidence, "knowledge-long-first", root_bindings={"admission_result_root": target})["contract_result"]["reference"]
-    long_evidence = _move_evidence_to_long_windows_path(tmp_path, evidence)
-    assert len(str(long_evidence / ".phase" / "runs" / "source-run" / "receipt.json")) >= 260
-    second_candidate = _knowledge_candidate(b"long evidence v2", [binding], operation_id="op-long-second", logical_id="knowledge-long-second", supersedes=prior)
-    second = PhaseCore().run(_knowledge_request(tmp_path, target, long_evidence, second_candidate, b"long evidence v2", run_id="knowledge-long-second"), execute=True)
-    assert second.receipt["terminal_status"] == "succeeded_verified"
-    conflict_candidate = _knowledge_candidate(b"changed request", [binding], operation_id="op-long-first", logical_id="knowledge-long-first")
-    conflict = PhaseCore().run(_knowledge_request(tmp_path, target, long_evidence, conflict_candidate, b"changed request", run_id="knowledge-long-conflict"), execute=True)
-    assert conflict.receipt["terminal_status"] == "rejected"
-    assert conflict.receipt["blockers"] == ["idempotency.same_key_conflict"]
-
-
 def test_knowledge_sorts_source_bindings_and_rejects_duplicates(tmp_path: Path) -> None:
     target, evidence, binding_a = _admit_source(tmp_path, run_id="source-a", payload=b"a", operation_id="op-source-a")
     _target, _evidence, binding_b = _admit_source(tmp_path, run_id="source-b", payload=b"b", operation_id="op-source-b", logical_id="source-manual-002")
@@ -388,7 +366,7 @@ def test_same_operation_different_request_rejects_before_mutation(tmp_path: Path
     assert outcome.receipt["blockers"] == ["idempotency.same_key_conflict"]
 
 
-def test_knowledge_effect1_conflict_after_new_blob_is_truthful_partial(tmp_path: Path) -> None:
+def test_knowledge_effect1_callback_is_rejected_before_new_blob(tmp_path: Path) -> None:
     target, evidence, binding = _admit_source(tmp_path)
     artifact = b"partial"
     request = _knowledge_request(tmp_path, target, evidence, _knowledge_candidate(artifact, [binding]), artifact, run_id="knowledge-partial")
@@ -402,11 +380,10 @@ def test_knowledge_effect1_conflict_after_new_blob_is_truthful_partial(tmp_path:
             stream.write(b"conflict")
 
     outcome = PhaseCore().run(request, execute=True, faults=CoreFaults(broker=BrokerFaults(before_effect={1: create_conflict})))
-    assert outcome.receipt["terminal_status"] == "failed_partial"
-    assert outcome.receipt["effect_receipts"][1]["status"] == "failed_no_effect"
-    progress = parse_json_bytes((evidence / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json").read_bytes())
-    assert progress["verified_effect_ids"] == ["effect.0.blob"]
-    assert progress["failed_effect_id"] == "effect.1.descriptor"
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert outcome.receipt["mutation_attempted"] is False
+    assert not target.joinpath(*descriptor_locator.split("/")).exists()
 
 
 def test_knowledge_supersession_creates_new_result_without_rewrite(tmp_path: Path) -> None:
@@ -472,11 +449,8 @@ def _knowledge_race_worker(base: str, name: str, artifact: bytes, operation_id: 
     binding = parse_json_bytes((tmp / "binding.json").read_bytes())
     request = _knowledge_request(tmp, target, evidence, _knowledge_candidate(artifact, [binding], operation_id=operation_id), artifact, run_id=name)
 
-    def wait_on_descriptor(ordinal: int, _intent_path: Path) -> None:
-        if ordinal == 1:
-            barrier.wait(timeout=20)  # type: ignore[attr-defined]
-
-    outcome = PhaseCore().run(request, execute=True, faults=CoreFaults(broker=BrokerFaults(before_effect_lock=wait_on_descriptor)))
+    barrier.wait(timeout=20)  # type: ignore[attr-defined]
+    outcome = PhaseCore().run(request, execute=True)
     queue.put((outcome.receipt["terminal_status"], outcome.receipt["execution_disposition"], outcome.receipt["mutation_attempted"]))  # type: ignore[attr-defined]
 
 
@@ -602,8 +576,9 @@ def test_stage7_real_cli_acceptance_and_factual_walkthrough(tmp_path: Path) -> N
         assert value in walkthrough
 
 
-def test_stage7_cli_acceptance_reads_long_descriptor_paths() -> None:
-    padding = 9 if os.name == "nt" else 19
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="production mutation runtime is Linux-only")
+def test_stage7_linux_cli_acceptance_reads_deep_descriptor_paths() -> None:
+    padding = 19
     components = tuple(f"segment-{index:02d}-" + "x" * padding for index in range(3))
     assert all(len(component) < 96 for component in components)
     cli_root = ROOT / ".stage7-tmp"
@@ -626,8 +601,6 @@ def test_stage7_cli_acceptance_reads_long_descriptor_paths() -> None:
     assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
     assert envelope["success"] is True
     assert summary["success"] is True
-    if os.name == "nt":
-        assert descriptor_length >= 260
     receipt_path = Path(envelope["summary"]).parent / "evidence" / ".phase" / "runs" / "knowledge-execute" / "receipt.json"
     canonical = parse_json_bytes(receipt_path.read_bytes())["canonical_result"]
     assert summary["knowledge_result"]["descriptor_locator"] == canonical["locator"]

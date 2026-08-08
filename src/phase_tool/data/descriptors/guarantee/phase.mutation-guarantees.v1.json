@@ -1,0 +1,49 @@
+{
+  "descriptor_version": "1.0",
+  "id": "phase.mutation-guarantees",
+  "version": "1.0.0",
+  "guarantees": [
+    {
+      "id": "exclusive_create",
+      "definition": "A leaf creation attempt succeeds only when the target name is absent at the atomic create operation; an existing target is never opened as the newly created object.",
+      "scope": "One regular-file leaf within an existing authority root.",
+      "limitations": ["Does not create a multi-file transaction.", "Does not prevent non-cooperating actors from mutating the created file after the descriptor is closed."],
+      "test_oracle": "Concurrent create attempts for one absent leaf produce exactly one successful descriptor and all other attempts report an existing target without changing the winner bytes."
+    },
+    {
+      "id": "readback_verification",
+      "definition": "The authority can read bytes from the exact opened leaf descriptor and report a digest and length derived from those bytes.",
+      "scope": "A regular-file leaf descriptor opened or created by the authority.",
+      "limitations": ["Verification describes the bytes observed during readback and is not a perpetual integrity guarantee."],
+      "test_oracle": "Write known bytes through an authority descriptor and require descriptor readback digest and length to equal an independent digest and byte count."
+    },
+    {
+      "id": "cross_process_serialization",
+      "definition": "Cooperating processes requesting the same target-root identity and lock scope are mutually excluded while the authority lock context is held.",
+      "scope": "One authority root identity and one exact lock-scope string within the implementation's declared local coordination domain.",
+      "limitations": ["Applies only to cooperating processes using the same authority implementation, scope, and coordination domain.", "The profile must state when the coordination domain is narrower than one host.", "Is not a distributed lock."],
+      "test_oracle": "A second process cannot enter the same root-and-scope lock before the first process releases it, and can enter after release."
+    },
+    {
+      "id": "namespace_bound_mutation",
+      "definition": "Leaf mutation is issued relative to pinned parent-directory descriptors and the authority detects replacement of every pinned namespace component before verification completes.",
+      "scope": "One relative locator beneath one opened authority root on a descriptor-relative filesystem API.",
+      "limitations": ["Does not constrain non-filesystem aliases outside the pinned namespace.", "Requires every mutation path to use the pinned descriptors and to perform the binding assertion."],
+      "test_oracle": "Rename an opened parent and replace its former pathname; descriptor-relative mutation remains on the pinned parent, and namespace verification rejects the pathname replacement."
+    },
+    {
+      "id": "atomic_replace",
+      "definition": "Replacing one regular-file leaf with another on the same mounted filesystem changes the destination name in one replace operation without exposing partially copied destination bytes.",
+      "scope": "Source and destination regular-file leaves on the same mounted filesystem supported by the authority implementation.",
+      "limitations": ["Does not make a multi-name transaction.", "Does not imply durability after power loss."],
+      "test_oracle": "Concurrent observation during repeated replacement sees only complete old or complete new content, never a missing destination or partial content."
+    },
+    {
+      "id": "namespace_metadata_flush_attempted",
+      "definition": "The authority can issue a synchronous namespace-metadata flush request for the pinned parent directory selected for a leaf mutation.",
+      "scope": "The pinned parent directory on a filesystem that accepts directory fsync.",
+      "limitations": ["Does not assert that any mutation mechanism calls this operation or establish ordering relative to file-content flushes.", "The filesystem and storage stack define the ultimate power-loss durability semantics."],
+      "test_oracle": "Calling the authority operation issues fsync on the pinned parent directory descriptor, and a real writable target filesystem accepts the directory fsync call."
+    }
+  ]
+}

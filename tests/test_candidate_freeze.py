@@ -118,7 +118,7 @@ def test_symlink_component_is_rejected(tmp_path: Path) -> None:
         copy_and_hash("payload", root, "link/file", tmp_path / "blobs", frozen_at="2026-07-27T00:00:00Z")
 
 
-def test_windows_reparse_component_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_reparse_component_is_rejected_by_common_path_policy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     (root / "payload").write_bytes(b"x")

@@ -56,6 +56,37 @@ def iter_run_artifacts(runs_root: Path, file_name: str) -> list[Path]:
     return sorted(artifacts, key=lambda path: path.parent.name)
 
 
+def replace_attachment_canonical(attachment_root: Path, file_name: str, value: Any) -> tuple[Path, str]:
+    if "/" in file_name or not file_name.endswith(".json"):
+        raise PhaseError("evidence.invalid_path", file_name)
+    attachment_root.mkdir(parents=False, exist_ok=True)
+    path = attachment_root / file_name
+    data = canonical_bytes(value)
+    tmp = attachment_root / (file_name + ".tmp")
+    try:
+        os.unlink(_platform_path(tmp))
+    except FileNotFoundError:
+        pass
+    with open(_platform_path(tmp), "xb", buffering=0) as stream:
+        view = memoryview(data)
+        written = 0
+        while written < len(view):
+            count = stream.write(view[written:])
+            if count is None or count <= 0:
+                raise PhaseError("evidence.short_write", file_name)
+            written += count
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(_platform_path(tmp), _platform_path(path))
+    if os.name != "nt":
+        descriptor = os.open(attachment_root, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    return path, digest_bytes(data)
+
+
 class EvidenceStore:
     def __init__(self, evidence_root: Path, run_id: str) -> None:
         validate_run_id(run_id)
@@ -74,8 +105,6 @@ class EvidenceStore:
             raise PhaseError("evidence.run_exists", run_id) from exc
         self.blob_root = self.run_root / "blobs"
         self.attachment_root = self.run_root / "attachments"
-        os.mkdir(_platform_path(self.blob_root))
-        os.mkdir(_platform_path(self.attachment_root))
         self.operational_lock_root = phase_root / "locks"
         os.makedirs(_platform_path(self.operational_lock_root), exist_ok=True)
 
@@ -84,6 +113,7 @@ class EvidenceStore:
             parent_name, file_name = relative.split("/", 1)
             if parent_name != "attachments" or "/" in file_name:
                 raise PhaseError("evidence.invalid_path", relative)
+            self.attachment_root.mkdir(parents=False, exist_ok=True)
             path = self.attachment_root / file_name
         else:
             path = self.run_root / relative
@@ -100,34 +130,24 @@ class EvidenceStore:
             os.fsync(stream.fileno())
         return path, digest_bytes(data)
 
-    def replace_attachment_canonical(self, file_name: str, value: Any) -> tuple[Path, str]:
-        if "/" in file_name or not file_name.endswith(".json"):
-            raise PhaseError("evidence.invalid_path", file_name)
-        path = self.attachment_root / file_name
+    def write_or_verify_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
         data = canonical_bytes(value)
-        tmp = self.attachment_root / (file_name + ".tmp")
         try:
-            os.unlink(_platform_path(tmp))
-        except FileNotFoundError:
-            pass
-        with open(_platform_path(tmp), "xb", buffering=0) as stream:
-            view = memoryview(data)
-            written = 0
-            while written < len(view):
-                count = stream.write(view[written:])
-                if count is None or count <= 0:
-                    raise PhaseError("evidence.short_write", file_name)
-                written += count
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(_platform_path(tmp), _platform_path(path))
-        if os.name != "nt":
-            descriptor = os.open(self.attachment_root, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        return path, digest_bytes(data)
+            return self.write_canonical(relative, value)
+        except FileExistsError:
+            if "/" in relative:
+                parent_name, file_name = relative.split("/", 1)
+                if parent_name != "attachments" or "/" in file_name:
+                    raise PhaseError("evidence.invalid_path", relative)
+                path = self.attachment_root / file_name
+            else:
+                path = self.run_root / relative
+            if read_evidence_bytes(path) != data:
+                raise PhaseError("evidence.artifact_conflict", relative)
+            return path, digest_bytes(data)
+
+    def replace_attachment_canonical(self, file_name: str, value: Any) -> tuple[Path, str]:
+        return replace_attachment_canonical(self.attachment_root, file_name, value)
 
     def write_blob_exact(self, digest: str, data: bytes) -> Path:
         if not digest.startswith("sha256:") or len(digest) != 71:
@@ -179,4 +199,23 @@ def validate_intent(intent: dict[str, Any], registry: RegistrySnapshot) -> None:
 
 def validate_receipt(receipt: dict[str, Any], registry: RegistrySnapshot) -> None:
     schema = registry.schema_document("https://phase-tool.local/schemas/phase-receipt.schema.json")
-    Draft202012Validator(schema, registry=registry.schema_registry(), format_checker=FormatChecker()).validate(receipt)
+    validator_registry = registry.schema_registry()
+    Draft202012Validator(schema, registry=validator_registry, format_checker=FormatChecker()).validate(receipt)
+    contract_binding = receipt["contract"]
+    try:
+        contract = registry.resolve_contract(
+            contract_binding["id"],
+            contract_binding["version"],
+            contract_binding["package_digest"],
+            core_version=receipt["core"]["version"],
+        )
+    except PhaseError as exc:
+        if exc.code == "registry.entry_not_found":
+            return
+        raise
+    evidence = contract.document["evidence"]
+    exact_schema = registry.schema_document(
+        evidence["receipt_schema_ref"],
+        evidence["receipt_schema_digest"],
+    )
+    Draft202012Validator(exact_schema, registry=validator_registry, format_checker=FormatChecker()).validate(receipt)

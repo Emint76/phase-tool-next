@@ -1,6 +1,10 @@
 # Guarantee Traceability Matrix
 
-Status: Stage 1 specification ledger. Every row is unimplemented until future code and named executable tests exist.
+Status: Historical Stage 1 specification ledger. The row statuses below record the Stage 1 baseline and are not the current implementation status.
+
+Current executable authority-profile claims, qualification boundaries, and tests are maintained in
+[`PLATFORM-GUARANTEE-MATRIX.md`](PLATFORM-GUARANTEE-MATRIX.md). Contract admission and its trust boundary are documented in
+[`ADR-CONTRACT-AUTHORITY-GUARANTEES.md`](ADR-CONTRACT-AUTHORITY-GUARANTEES.md).
 
 ## Claim rules
 
@@ -12,7 +16,7 @@ A guarantee may be claimed only when all are bound:
 4. canonical receipt evidence from the actual run;
 5. truthful failure propagation.
 
-Schema/prose status is `SPECIFIED`, never `IMPLEMENTED`.
+Within this preserved Stage 1 ledger, schema/prose status is `SPECIFIED`, never `IMPLEMENTED`.
 
 | ID | Future guarantee | Owner/boundary | Evidence | Required tests | Stage 1 status |
 |---|---|---|---|---|---|

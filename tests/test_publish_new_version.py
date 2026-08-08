@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +18,11 @@ from phase_tool.mutation.archive_then_publish import ArchiveThenPublishFaults
 from phase_tool.registry import BundledRegistry
 
 NOW = "2026-07-31T20:00:00Z"
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="publish_new_version.v1 requires POSIX production guarantees",
+)
 
 
 def _sha(data: bytes) -> str:
@@ -124,6 +130,63 @@ def test_publish_plan_is_archive_first_format_neutral_and_does_not_mutate_target
     assert inspected["target_verified"] is None
 
 
+@pytest.mark.parametrize("receipt_present", [True, False])
+def test_inspection_rejects_same_kind_effect_mechanism_not_authorized_by_contract(
+    tmp_path: Path,
+    receipt_present: bool,
+) -> None:
+    request, _target, evidence, _current, _before, _after = _request(
+        tmp_path,
+        run_id=f"unauthorized-effect-mechanism-{receipt_present}",
+    )
+    outcome = PhaseCore().run(request)
+    assert outcome.exit_code == 0
+    run_root = evidence / ".phase" / "runs" / request.run_id
+    plan_path = run_root / "attachments" / "effect-plan.json"
+    intent_path = run_root / "intent.json"
+    receipt_path = run_root / "receipt.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    registry = BundledRegistry.load()
+    v2_binding = registry.contract_bindings()["publish_new_version.v2@1.0.0"]
+    v2_contract = registry.resolve_contract(
+        v2_binding["id"],
+        v2_binding["version"],
+        v2_binding["package_digest"],
+        core_version="1.0.0",
+    )
+    v2_mechanism = v2_contract.document["operation"]["mechanism"]
+    plan["effects"][0]["mechanism"] = {
+        "id": v2_mechanism["id"],
+        "version": v2_mechanism["version"],
+        "package_digest": v2_mechanism["package_digest"],
+    }
+    old_plan_attachment_digest = intent["evidence"]["effect_plan_attachment_digest"]
+    plan_bytes = canonical_bytes(plan)
+    plan_attachment_digest = digest_bytes(plan_bytes)
+    plan_digest = profile_digest("effect-plan", plan)
+    intent["effect_plan_digest"] = plan_digest
+    intent["implementation_binding"]["effect_plan_digest"] = plan_digest
+    intent["evidence"]["effect_plan_attachment_digest"] = plan_attachment_digest
+    plan_path.write_bytes(plan_bytes)
+    intent_path.write_bytes(canonical_bytes(intent))
+    if receipt_present:
+        receipt["implementation_binding"]["effect_plan_digest"] = plan_digest
+        receipt["evidence"]["intent_digest"] = profile_digest("intent", intent)
+        receipt["evidence"]["attachment_digests"] = [
+            plan_attachment_digest if item == old_plan_attachment_digest else item
+            for item in receipt["evidence"]["attachment_digests"]
+        ]
+        receipt_path.write_bytes(canonical_bytes(receipt))
+    else:
+        receipt_path.unlink()
+
+    with pytest.raises(PhaseError) as error:
+        inspect_run(evidence, request.run_id)
+    assert error.value.code == "plan.effect_mechanism_not_allowed"
+
+
 def test_publish_execute_archives_exact_before_then_publishes_current_and_binds_receipt(tmp_path: Path) -> None:
     request, target, evidence, current, before, after = _request(tmp_path, run_id="publish-execute")
     archive = target / _archive_locator(before)
@@ -192,7 +255,7 @@ def test_publish_reuses_exact_archive_and_blocks_mismatching_reuse(tmp_path: Pat
     assert outcome.receipt["effect_receipts"][0]["archive_before"]["digest"] == _sha(before)
 
 
-def test_publish_reverifies_exact_archive_immediately_before_current_publication(tmp_path: Path) -> None:
+def test_publish_rejects_archive_callback_before_mutation(tmp_path: Path) -> None:
     request, target, _evidence, current, before, _after = _request(tmp_path, run_id="archive-tamper-before-publish")
     archive = target / _archive_locator(before)
 
@@ -205,15 +268,15 @@ def test_publish_reverifies_exact_archive_immediately_before_current_publication
         faults=CoreFaults(broker=BrokerFaults(archive_then_publish=ArchiveThenPublishFaults(before_publish=tamper_archive))),
     )
 
-    assert outcome.receipt["terminal_status"] == "failed_partial"
-    assert outcome.receipt["effect_receipts"][0]["error"]["code"] == "publish.archive_verification_failed"
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
     assert current.read_bytes() == before
-    assert archive.read_bytes() == b"archive changed after initial verification"
+    assert not archive.exists()
 
 
 @pytest.mark.parametrize("tamper", ["current", "archive"])
-def test_publish_identity_bound_final_check_blocks_race_before_current_write(tmp_path: Path, tamper: str) -> None:
-    request, target, _evidence, current, before, after = _request(tmp_path, run_id=f"final-race-{tamper}")
+def test_publish_rejects_final_check_callback_before_mutation(tmp_path: Path, tamper: str) -> None:
+    request, target, _evidence, current, before, _after = _request(tmp_path, run_id=f"final-race-{tamper}")
     archive = target / _archive_locator(before)
 
     def race(_current_path: Path) -> None:
@@ -229,13 +292,14 @@ def test_publish_identity_bound_final_check_blocks_race_before_current_write(tmp
         ),
     )
 
-    assert outcome.receipt["terminal_status"] == "failed_partial"
-    assert outcome.receipt["effect_receipts"][0]["error"]["code"] == f"publish.{tamper}_verification_failed"
-    assert current.read_bytes() != after
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert current.read_bytes() == before
+    assert not archive.exists()
 
 
-def test_publish_exact_archive_create_race_is_verified_and_reused(tmp_path: Path) -> None:
-    request, target, _evidence, current, before, after = _request(tmp_path, run_id="archive-create-race")
+def test_publish_rejects_archive_create_callback_before_mutation(tmp_path: Path) -> None:
+    request, target, _evidence, current, before, _after = _request(tmp_path, run_id="archive-create-race")
     archive = target / _archive_locator(before)
 
     def create_exact(path: Path) -> None:
@@ -251,9 +315,10 @@ def test_publish_exact_archive_create_race_is_verified_and_reused(tmp_path: Path
         ),
     )
 
-    assert outcome.receipt["terminal_status"] == "succeeded_verified"
-    assert current.read_bytes() == after
-    assert archive.read_bytes() == before
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert current.read_bytes() == before
+    assert not archive.exists()
 
 
 def test_publish_failure_after_archive_is_safely_continuable_after_exact_inspection(tmp_path: Path) -> None:
@@ -326,7 +391,8 @@ def test_publish_replays_finalized_receipt_only_after_current_and_archive_inspec
 
 def test_publish_missing_receipt_inspection_classifies_no_effect_archived_and_published(tmp_path: Path) -> None:
     no_effect, target, evidence, _current, _before, _after = _request(tmp_path / "no-effect", run_id="missing-no-effect", key="missing-no-effect")
-    PhaseCore().run(no_effect, execute=True, faults=CoreFaults(broker=BrokerFaults(before_mechanism=lambda _path: (_ for _ in ()).throw(PhaseError("injected.before_mechanism")))))
+    planned = PhaseCore().run(no_effect, execute=False)
+    assert planned.receipt["execution_disposition"] == "not_executed"
     (evidence / ".phase" / "runs" / "missing-no-effect" / "receipt.json").unlink()
     inspected = inspect_run(evidence, "missing-no-effect", root_bindings={"fixture_result_root": target})
     assert inspected["state_classification"] == "no_effect_observed"

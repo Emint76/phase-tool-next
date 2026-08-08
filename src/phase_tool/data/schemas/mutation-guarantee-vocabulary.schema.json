@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase-tool.local/schemas/mutation-guarantee-vocabulary.schema.json",
+  "title": "Phase Mutation Guarantee Vocabulary v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["descriptor_version", "id", "version", "guarantees"],
+  "properties": {
+    "descriptor_version": {"const": "1.0"},
+    "id": {"const": "phase.mutation-guarantees"},
+    "version": {"const": "1.0.0"},
+    "guarantees": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "definition", "scope", "limitations", "test_oracle"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
+          "definition": {"type": "string", "minLength": 1},
+          "scope": {"type": "string", "minLength": 1},
+          "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "test_oracle": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

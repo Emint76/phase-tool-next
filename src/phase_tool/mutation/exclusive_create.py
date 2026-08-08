@@ -9,7 +9,7 @@ from typing import Callable
 from ..canonical import digest_bytes
 from ..errors import PhaseError
 from ..paths import _is_reparse_point
-from .target_authority import TargetAuthority
+from .authority import AuthorityProvider
 
 _MAX_CONTENT_BYTES = 1_048_576
 
@@ -86,6 +86,7 @@ def execute_exclusive_create(
     run_id: str,
     timestamp: str,
     faults: ExclusiveCreateFaults | None = None,
+    authority_provider: AuthorityProvider,
 ) -> dict[str, object]:
     """Create one absent regular file with OS O_EXCL; never replace or clean up it."""
 
@@ -95,7 +96,7 @@ def execute_exclusive_create(
     if len(content) != effect["content_length"] or digest_bytes(content) != effect["content_digest"]:
         raise PhaseError("mechanism.content_binding_mismatch")
     detector = active.reparse_detector or _is_reparse_point
-    authority = TargetAuthority(
+    authority = authority_provider.open_authority(
         target_root,
         str(effect["target"]["relative_locator"]),  # type: ignore[index]
         detector,

@@ -210,12 +210,7 @@ Rules:
 
 ### Platform (`CT-PLAT-*`)
 
-Execute the same qualified suite on:
-
-- native Windows local NTFS;
-- native Linux selected local filesystem(s);
-- WSL native Linux filesystem;
-- WSL Windows-backed mount as unsupported/qualified separately.
+Execute the qualified release suite on native Linux selected local filesystems. Treat Windows, WSL-native, WSL Windows-backed mounts, and every other non-qualified runtime as unsupported: mutation must fail closed before capture and authority open. A future Windows authority requires a separate versioned profile and qualification suite.
 
 Record environment details required by `PLATFORM-GUARANTEE-MATRIX.md`.
 

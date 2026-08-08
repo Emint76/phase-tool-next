@@ -69,10 +69,19 @@ def clear_directory_contents(path: Path) -> None:
 
 def binding(repo: Path, contract_id: str) -> str:
     registry = json.loads((repo / "src" / "phase_tool" / "data" / "registry.json").read_text(encoding="utf-8"))
-    for item in registry["entries"]:
-        if item.get("kind") == "contract" and item.get("id") == contract_id and item.get("version") == "1.0.0":
-            return str(item["package_digest"])
-    raise AssertionError(f"contract binding absent: {contract_id}")
+    matches = [
+        item
+        for item in registry["entries"]
+        if (
+            item.get("kind") == "contract"
+            and item.get("id") == contract_id
+            and item.get("version") == "1.0.0"
+            and item.get("current", True) is True
+        )
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"ambiguous contract binding: {contract_id}: {len(matches)} current entries")
+    return str(matches[0]["package_digest"])
 
 
 def source_candidate(
@@ -327,7 +336,7 @@ def main() -> int:
     c, p = source_files("recovery", recovery, "source-recovery", "op-recovery")
     cli("14_existing_blob_missing_descriptor_recovery", "execute", common(CONTRACT, c, "recovery", p), "recovery", {"exit": 0, "terminal_status": "succeeded_verified"}, p)
     c, p = source_files("descriptor-conflict", b"descriptor conflict payload", "source-partial", "op-partial")
-    helper_run("15_conflicting_descriptor_truthful_partial", "descriptor_conflict", c, p, "descriptor-conflict", {"exit": 30, "terminal_status": "failed_partial", "disposition": "executed", "mutation_attempted": True, "blocker": "target.destination_exists"})
+    helper_run("15_unsafe_descriptor_callback_rejected", "descriptor_conflict", c, p, "descriptor-conflict", {"exit": 10, "terminal_status": "rejected", "disposition": "not_executed", "mutation_attempted": False, "blocker": "broker.unsafe_fault_callback", "unchanged": True})
     c, p = source_files("binary", bytes([0, 1, 2, 253, 254, 255]), "source-binary", "op-binary")
     cli("16_binary", "execute", common(CONTRACT, c, "binary", p), "binary", {"exit": 0}, p)
     c, p = source_files("empty", b"", "source-empty", "op-empty")
@@ -345,7 +354,7 @@ def main() -> int:
     c, p = source_files("effect0", b"effect zero failure", "source-effect0", "op-effect0")
     helper_run("22_effect0_failure_effect1_not_started", "effect0_failure", c, p, "effect0", {"exit": 30, "terminal_status": "failed_partial", "mutation_attempted": True, "blocker": "mechanism.write_failed"})
     c, p = source_files("effect1", b"effect one failure", "source-effect1", "op-effect1")
-    helper_run("23_effect0_success_effect1_failure", "effect1_failure", c, p, "effect1", {"exit": 30, "terminal_status": "failed_partial", "mutation_attempted": True, "blocker": "broker.content_blob_mismatch"})
+    helper_run("23_unsafe_effect_callback_rejected", "effect1_failure", c, p, "effect1", {"exit": 10, "terminal_status": "rejected", "disposition": "not_executed", "mutation_attempted": False, "blocker": "broker.unsafe_fault_callback", "unchanged": True})
 
     create_payload = payloads / "create.bin"; write_input(create_payload, b"create")
     create = candidates / "create.json"; write_json(create, {"operation_id": "create-6", "target_locator": "objects/create-6.bin", "input_binding": "payload", "idempotency_key": "create-6"})
@@ -392,9 +401,9 @@ def main() -> int:
         "reuse_no_overwrite": matrix["07_same_operation_same_request_reuse"]["target_tree_before"] == matrix["07_same_operation_same_request_reuse"]["target_tree_after"],
         "recovery_blob_reused": matrix["14_existing_blob_missing_descriptor_recovery"]["effect_receipts"][0]["bytes_written"] == 0,
         "recovery_descriptor_created": matrix["14_existing_blob_missing_descriptor_recovery"]["effect_receipts"][1]["bytes_written"] > 0,
-        "partial_prefix_truthful": matrix["15_conflicting_descriptor_truthful_partial"]["progress"]["verified_effect_ids"] == ["effect.0.blob"],
+        "descriptor_callback_rejected_before_effect": matrix["15_unsafe_descriptor_callback_rejected"]["progress"] is None,
         "effect0_blocks_effect1": matrix["22_effect0_failure_effect1_not_started"]["progress"]["not_started_effect_ids"] == ["effect.1.descriptor"],
-        "effect1_failure_prefix": matrix["23_effect0_success_effect1_failure"]["progress"]["verified_effect_ids"] == ["effect.0.blob"],
+        "effect_callback_rejected_before_effect": matrix["23_unsafe_effect_callback_rejected"]["progress"] is None,
         "descriptor_binds_blob": descriptor["content_digest"] == sha(blob_bytes) and descriptor["content_length"] == len(blob_bytes),
         "same_bytes_blob_reuse": matrix["11_same_bytes_different_filename"]["effect_receipts"][0]["bytes_written"] == 0,
         "different_filename_result_id": matrix["10_same_bytes_filename_baseline"]["receipt"]["canonical_result"]["locator"] != matrix["11_same_bytes_different_filename"]["receipt"]["canonical_result"]["locator"],
@@ -413,7 +422,7 @@ def main() -> int:
         "command_matrix": matrix, "checks": checks, "inspection": inspection,
         "text_result": {"content_digest": descriptor["content_digest"], "content_length": descriptor["content_length"], "blob_locator": descriptor["blob_locator"], "descriptor_locator": descriptor["descriptor_locator"], "source_result_id": descriptor["source_result_id"]},
         "target_tree": tree(target), "evidence_tree": tree(evidence), "failures": failures,
-        "helper_note": "Controlled helpers still invoke real PhaseCore/EvidenceStore/EffectBroker; they only inject deterministic post-intent faults unavailable through the public CLI.",
+        "helper_note": "Controlled helpers invoke real PhaseCore/EvidenceStore/EffectBroker; callable fault scenarios verify fail-before-callback rejection and never inject production mutations.",
     }
     summary_path = root / "stage6-cli-acceptance-summary.json"
     write_json(summary_path, summary)

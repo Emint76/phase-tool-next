@@ -1,0 +1,218 @@
+{
+  "candidate": {
+    "canonicalization": "admission_canonical_json_v1",
+    "input_mode": "structured_json",
+    "privacy_policy_id": "privacy.no_secrets_v1",
+    "schema_digest": "sha256:bdff06b8d9c5a3d38f2720b7d88d35b4cb17a75280973b445596799c4a2ad9ca",
+    "schema_ref": "https://phase-tool.local/spec-candidates/admission-v1/schemas/source-admission-candidate.schema.json"
+  },
+  "canonical_result": {
+    "authority_rule": "authority.source_descriptor_v1",
+    "locator_template": "r/{namespace}/{logical_source_id}/{source_result_id}.json",
+    "owner_id": "source_admission.v1",
+    "result_reference_schema_ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json",
+    "result_schema_digest": "sha256:2a76e59b355f741216a84cda175b0f672684d1f9989da6c912b2305ddfeac299",
+    "result_schema_ref": "https://phase-tool.local/spec-candidates/admission-v1/schemas/source-result.schema.json",
+    "root_binding": "admission_result_root"
+  },
+  "contract_hook": {
+    "capability": "contract_hook",
+    "id": "source_admission.runtime_v1",
+    "package_digest": "sha256:49de2f16e351ba84b59fddfd1188c40f410fd6769333d799a8f2f8edf81278dd",
+    "version": "1.0.0"
+  },
+  "evidence": {
+    "receipt_schema_digest": "sha256:e4e1126d71be6e05049ac57a9acb38ed92540a7b14ac90fb2bf45225e060de0d",
+    "receipt_schema_ref": "https://phase-tool.local/schemas/phase-receipt.schema.json",
+    "redaction_policy_id": "redaction.no_secrets_v1",
+    "required_attachment_kinds": [
+      "effect_receipts",
+      "ordered_effect_progress",
+      "validator_results"
+    ],
+    "retention_policy_id": "retention.source_admission_v1"
+  },
+  "idempotency": {
+    "incomplete_previous_execution": "inspect_before_retry",
+    "key_required": true,
+    "request_digest_policy_id": "digest.admission_canonical_request_v1",
+    "same_key_different_digest": "conflict",
+    "same_key_same_digest": "return_existing_verified",
+    "scope_fields": [
+      "contract",
+      "result_locator",
+      "operation_intent"
+    ],
+    "success_lookup": "canonical_result_then_receipt"
+  },
+  "identity": {
+    "core_compatibility": {
+      "maximum_exclusive": "2.0.0",
+      "minimum": "1.0.0"
+    },
+    "id": "source_admission.v1",
+    "version": "1.0.0"
+  },
+  "input_bindings": [
+    {
+      "freeze_strategy": "copy_and_hash",
+      "id": "asset",
+      "mutable_upstream_after_freeze": "forbidden",
+      "provenance_required": true,
+      "required": true,
+      "schema_digest": null,
+      "schema_ref": null
+    }
+  ],
+  "operation": {
+    "allowed_effects": [
+      "copy_blob",
+      "exclusive_create"
+    ],
+    "atomicity_claim": "per_effect",
+    "effect_mechanisms": [
+      {
+        "availability": "bundled_v1",
+        "capability": "mutation_mechanism",
+        "id": "content_addressed_copy",
+        "package_digest": "sha256:ea3dd62ad45312315c30da15a8aa53566e554d4e7733ee5f41c67d1c4cf37fa2",
+        "version": "1.0.0"
+      },
+      {
+        "availability": "bundled_v1",
+        "capability": "mutation_mechanism",
+        "id": "mechanism.exclusive_create_v1",
+        "package_digest": "sha256:79564033bced595dda6c50b139c85d350c2eabbfbe586a17cfcbe5037884411b",
+        "version": "1.0.0"
+      }
+    ],
+    "effect_order": "static_predeclared",
+    "intent": "copy",
+    "maximum_effects": 2,
+    "mechanism": {
+      "availability": "bundled_v1",
+      "capability": "mutation_mechanism",
+      "id": "content_addressed_copy",
+      "package_digest": "sha256:ea3dd62ad45312315c30da15a8aa53566e554d4e7733ee5f41c67d1c4cf37fa2",
+      "version": "1.0.0"
+    }
+  },
+  "outcomes": {
+    "committed_unverified": "committed_unverified",
+    "known_no_effect": "failed_no_effect",
+    "known_partial": "failed_partial",
+    "pre_mutation_rejection": "rejected",
+    "success": "succeeded_verified",
+    "unknown_result": "indeterminate"
+  },
+  "phase_contract_version": "1.0",
+  "recovery": {
+    "automatic": false,
+    "policy": "none",
+    "requires_exact_before_state": true
+  },
+  "validators": [
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "validator.exact_binding_v1",
+        "package_digest": "sha256:19f8b652b094e3079226d506bc6111ae8124e35807e54183e23d95bb13188bb3",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "contract"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "source_admission.candidate_v1",
+        "package_digest": "sha256:b3992ec94d4c5dd02dbd4886c4c0da9d723e4c1408cb7e2e45efc722bf318366",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "candidate"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "source_admission.placement_v1",
+        "package_digest": "sha256:f207e84499cfdf9541a098d6e1921390805126c0fbb81cac20e83e9e9a6aa80a",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "pre_operation"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "source_admission.result_v1",
+        "package_digest": "sha256:d408102face3bda91faed7bc77c6ee4d28e6e4536c13e04610b1ab4667f34f04",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "post_operation"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "phase.ordered_effect_plan_progress_v1",
+        "package_digest": "sha256:5026a972413b37f5988aca6e7734ba8afc0fae1ea47190190eb77d301842704a",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "post_operation"
+    }
+  ],
+  "verification": {
+    "observation_scope": "result_only",
+    "required_predicates": [
+      "blob_verified",
+      "descriptor_verified",
+      "descriptor_binds_blob"
+    ],
+    "validators": [
+      {
+        "capability": "validator",
+        "id": "source_admission.result_v1",
+        "package_digest": "sha256:d408102face3bda91faed7bc77c6ee4d28e6e4536c13e04610b1ab4667f34f04",
+        "version": "1.0.0"
+      },
+      {
+        "capability": "validator",
+        "id": "phase.ordered_effect_plan_progress_v1",
+        "package_digest": "sha256:5026a972413b37f5988aca6e7734ba8afc0fae1ea47190190eb77d301842704a",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "write_scope": {
+    "default_path_policy": {
+      "capability": "path_policy",
+      "id": "path.strict_local_v1",
+      "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+      "version": "1.0.0"
+    },
+    "forbidden_root_bindings": [
+      "phase_evidence_root"
+    ],
+    "roots": [
+      {
+        "access": "write",
+        "binding_id": "admission_result_root",
+        "path_policy": {
+          "capability": "path_policy",
+          "id": "path.strict_local_v1",
+          "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+          "version": "1.0.0"
+        },
+        "reparse_policy": "reject",
+        "symlink_policy": "reject"
+      }
+    ]
+  }
+}

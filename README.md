@@ -2,6 +2,10 @@
 
 Phase Tool is a local, registry-driven execution product. Its CLI and MCP adapters are thin transports over one `PhaseApplication`, which resolves an exact contract binding and calls the existing `PhaseCore.run` lifecycle.
 
+## Supported platform
+
+The current production and release runtime is Linux/POSIX only, on filesystems admitted by the bundled authority profile. Windows, macOS, WSL, and other non-qualified hosts are not supported for mutation: Phase fails closed with `platform.mutation_unsupported` before candidate capture, intent creation, authority open, or target mutation. The platform composition boundary remains isolated so another authority implementation can be qualified and versioned separately later.
+
 ## Architecture
 
 Phase is infrastructure for managed transitions of information state within a controlled contour.

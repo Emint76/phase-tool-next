@@ -16,12 +16,18 @@ from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
 from phase_tool.evidence import EvidenceStore
+from phase_tool.installation import host_installation
 from phase_tool.mutation import BrokerFaults, ExclusiveCreateFaults
-from phase_tool.mutation.exclusive_create import execute_exclusive_create
+from phase_tool.mutation.exclusive_create import execute_exclusive_create as _execute_exclusive_create
 from phase_tool.registry import BundledRegistry
 
 NOW = "2026-07-27T03:00:00Z"
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def execute_exclusive_create(*args: object, **kwargs: object) -> dict[str, object]:
+    kwargs["authority_provider"] = host_installation().authority_provider
+    return _execute_exclusive_create(*args, **kwargs)  # type: ignore[arg-type]
 
 
 def _sha256(data: bytes) -> str:
@@ -417,32 +423,20 @@ def test_copy_execute_is_active_in_stage5(tmp_path: Path) -> None:
     assert outcome.receipt["canonical_result"]["locator"].startswith("objects/")
 
 
-def test_durable_intent_exists_before_mechanism_invocation(tmp_path: Path) -> None:
+def test_execution_persists_durable_intent_plan_and_receipt(tmp_path: Path) -> None:
     request, target, evidence, _payload = create_request(tmp_path, run_id="intent-before")
     destination = target / "objects" / "item.bin"
-    observations: list[bool] = []
-
-    def before_mechanism(intent_path: Path) -> None:
-        run_root = evidence / ".phase" / "runs" / "intent-before"
-        observations.append(
-            intent_path.is_file()
-            and intent_path.read_bytes().endswith(b"}")
-            and (run_root / "attachments" / "effect-plan.json").is_file()
-            and not (run_root / "receipt.json").exists()
-            and not destination.exists()
-        )
-
-    outcome = PhaseCore().run(
-        request,
-        execute=True,
-        faults=CoreFaults(broker=BrokerFaults(before_mechanism=before_mechanism)),
-    )
+    outcome = PhaseCore().run(request, execute=True)
+    run_root = evidence / ".phase" / "runs" / "intent-before"
 
     assert outcome.exit_code == 0
-    assert observations == [True]
+    assert (run_root / "intent.json").read_bytes().endswith(b"}")
+    assert (run_root / "attachments" / "effect-plan.json").is_file()
+    assert (run_root / "receipt.json").is_file()
+    assert destination.is_file()
 
 
-def test_concurrent_external_create_after_intent_is_verified_no_effect_and_not_replaced(tmp_path: Path) -> None:
+def test_external_write_callback_is_rejected_before_invocation(tmp_path: Path) -> None:
     request, target, _evidence, _payload = create_request(tmp_path, run_id="race-no-effect")
     destination = target / "objects" / "item.bin"
 
@@ -455,33 +449,25 @@ def test_concurrent_external_create_after_intent_is_verified_no_effect_and_not_r
         faults=CoreFaults(broker=BrokerFaults(before_mechanism=external_winner)),
     )
 
-    assert outcome.receipt["terminal_status"] == "failed_no_effect"
-    assert outcome.receipt["result_state"] == "verified_no_effect"
-    assert outcome.receipt["effect_receipts"][0]["bytes_written"] == 0
-    assert outcome.receipt["canonical_result"] is None
-    assert destination.read_bytes() == b"external-winner"
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert outcome.receipt["mutation_attempted"] is False
+    assert not destination.exists()
 
 
 def test_real_short_writes_are_retried_until_exact_verified_result(tmp_path: Path) -> None:
     request, target, _evidence, payload = create_request(tmp_path, run_id="short-writes")
-    calls: list[int] = []
-
-    def short_writer(descriptor: int, data: memoryview) -> int:
-        count = max(1, len(data) // 2)
-        calls.append(count)
-        return os.write(descriptor, data[:count])
 
     outcome = PhaseCore().run(
         request,
         execute=True,
         faults=CoreFaults(
             broker=BrokerFaults(
-                exclusive_create=ExclusiveCreateFaults(write_primitive=short_writer)
+                exclusive_create=ExclusiveCreateFaults(maximum_write_size=1)
             )
         ),
     )
 
-    assert len(calls) > 1
     assert outcome.receipt["terminal_status"] == "succeeded_verified"
     assert outcome.receipt["effect_receipts"][0]["bytes_written"] == len(payload)
     assert (target / "objects" / "item.bin").read_bytes() == payload
@@ -577,18 +563,17 @@ def test_receipt_finalization_failure_leaves_intent_without_durable_receipt(tmp_
 
 
 @pytest.mark.parametrize(
-    ("failure_path", "error_kind", "required_attachments_present"),
+    ("failure_path", "error_kind"),
     [
-        ("attachments/validator-results.json", "phase", False),
-        ("receipt.json", "os", True),
+        ("attachments/validator-results.json", "phase"),
+        ("receipt.json", "os"),
     ],
 )
-def test_real_post_mutation_evidence_failure_never_claims_not_executed(
+def test_transient_post_mutation_evidence_failure_finalizes_truthful_recovery_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_path: str,
     error_kind: str,
-    required_attachments_present: bool,
 ) -> None:
     request, target, evidence, payload = create_request(
         tmp_path,
@@ -618,18 +603,18 @@ def test_real_post_mutation_evidence_failure_never_claims_not_executed(
     assert outcome.receipt["result_state"] == "committed_unverified"
     assert outcome.receipt["effect_receipts"][0]["status"] == "applied_verified"
     assert outcome.receipt["evidence"]["finalization_status"] == "failed"
-    assert outcome.receipt["evidence"]["required_attachments_present"] is required_attachments_present
+    assert outcome.receipt["evidence"]["required_attachments_present"] is True
     assert outcome.receipt["blockers"] == ["evidence.finalization_failed"]
-    assert outcome.receipt_digest is None
+    assert outcome.receipt_digest is not None
     assert (run_root / "intent.json").is_file()
-    assert not (run_root / "receipt.json").exists()
+    assert json.loads((run_root / "receipt.json").read_bytes()) == outcome.receipt
 
     from phase_tool.inspection import inspect_run
 
-    inspected = inspect_run(evidence, request.run_id)
-    assert inspected["receipt_present"] is False
+    inspected = inspect_run(evidence, request.run_id, root_bindings=request.root_bindings)
+    assert inspected["receipt_present"] is True
     assert inspected["intent_present"] is True
-    assert inspected["terminal_status"] is None
+    assert inspected["terminal_status"] == "committed_unverified"
 
 
 def test_plan_cannot_expand_after_durable_intent(tmp_path: Path) -> None:
@@ -667,7 +652,7 @@ def test_reparse_policy_seam_rejects_before_open(tmp_path: Path) -> None:
 
     assert outcome.receipt["terminal_status"] == "rejected"
     assert outcome.receipt["mutation_attempted"] is False
-    assert outcome.receipt["blockers"] == ["path.reparse_forbidden"]
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
     assert snapshot_tree(target) == before
 
 

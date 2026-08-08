@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase-tool.local/schemas/mutation-implementation-binding.schema.json",
+  "title": "Phase Mutation Implementation Binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authority", "mechanism", "effect_plan_digest"],
+  "properties": {
+    "authority": {"$ref": "#/$defs/authorityBinding"},
+    "mechanism": {"$ref": "#/$defs/exactBinding"},
+    "effect_plan_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 128},
+    "semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "exactBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "package_digest"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "package_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "profileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "descriptor_digest"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "descriptor_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "providerBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "artifact_digest"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "artifact_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "authorityBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usage", "profile", "provider"],
+      "properties": {
+        "usage": {"enum": ["provider_backed", "mechanism_managed"]},
+        "profile": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/profileBinding"}]},
+        "provider": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/providerBinding"}]}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "usage": {"const": "provider_backed"},
+            "profile": {"$ref": "#/$defs/profileBinding"},
+            "provider": {"$ref": "#/$defs/providerBinding"}
+          }
+        },
+        {
+          "properties": {
+            "usage": {"const": "mechanism_managed"},
+            "profile": {"type": "null"},
+            "provider": {"type": "null"}
+          }
+        }
+      ]
+    }
+  }
+}

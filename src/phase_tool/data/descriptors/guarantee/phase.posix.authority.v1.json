@@ -1,0 +1,66 @@
+{
+  "descriptor_version": "1.0",
+  "id": "phase.posix.authority.v1",
+  "version": "1.0.0",
+  "classification": "production",
+  "vocabulary": {
+    "id": "phase.mutation-guarantees",
+    "version": "1.0.0",
+    "descriptor_digest": "sha256:f7b158004b0bf7041286269c239c381cfd60db5987c6bf2173c645d5ac146624"
+  },
+  "provided_guarantees": [
+    "exclusive_create",
+    "readback_verification",
+    "cross_process_serialization",
+    "namespace_bound_mutation",
+    "atomic_replace",
+    "namespace_metadata_flush_attempted"
+  ],
+  "storage_scope": {
+    "filesystem": "Local POSIX filesystem implementing descriptor-relative open/link/rename/unlink and directory fsync.",
+    "mount_boundary": "Each authority operation is limited to one mounted filesystem; atomic replace requires source and destination on that filesystem.",
+    "cooperating_processes_only": true
+  },
+  "limitations": [
+    "No distributed-filesystem or network-lock guarantee is claimed.",
+    "No process-crash recovery guarantee is claimed.",
+    "Power-loss durability remains bounded by the filesystem and storage stack after successful file and parent-directory fsync calls."
+  ],
+  "implementation": {
+    "id": "phase.posix.authority",
+    "version": "1.0.0",
+    "artifact": "phase_tool/mutation/posix/authority.py",
+    "artifact_digest": "sha256:55e150103df579615232d7c213d03d777fe836dab1130d6b30647275be838ab6"
+  },
+  "descriptor_digest_binding": {
+    "algorithm": "sha256",
+    "canonicalization": "raw_artifact_bytes",
+    "registry_field": "artifact_digest"
+  },
+  "conformance": [
+    {
+      "guarantee": "exclusive_create",
+      "test_id": "tests/mutation/posix/test_authority_conformance.py::test_posix_production_profile_common_guarantees"
+    },
+    {
+      "guarantee": "readback_verification",
+      "test_id": "tests/mutation/posix/test_authority_conformance.py::test_posix_production_profile_common_guarantees"
+    },
+    {
+      "guarantee": "cross_process_serialization",
+      "test_id": "tests/mutation/posix/test_authority_conformance.py::test_posix_production_profile_common_guarantees"
+    },
+    {
+      "guarantee": "namespace_bound_mutation",
+      "test_id": "tests/mutation/posix/test_guarantee_conformance.py::test_namespace_bound_mutation_uses_pinned_parent_and_detects_rebinding"
+    },
+    {
+      "guarantee": "atomic_replace",
+      "test_id": "tests/mutation/posix/test_guarantee_conformance.py::test_atomic_replace_never_exposes_missing_or_partial_destination"
+    },
+    {
+      "guarantee": "namespace_metadata_flush_attempted",
+      "test_id": "tests/mutation/posix/test_guarantee_conformance.py::test_namespace_metadata_flush_attempted_fsyncs_pinned_parent_descriptor"
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "candidate": {
+    "canonicalization": "canonical_json_v1",
+    "input_mode": "structured_json",
+    "privacy_policy_id": "privacy.no_secrets_v1",
+    "schema_digest": "sha256:fe87d8ae45d9eb804b8b6316de06a70211db94bca33e9541f7e699230dbb2ef0",
+    "schema_ref": "fixture://schemas/publish-new-version-candidate.v1"
+  },
+  "canonical_result": {
+    "authority_rule": "authority.current_locator_v1",
+    "locator_template": "{target_locator}",
+    "owner_id": "publish_new_version.v1",
+    "result_reference_schema_ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json",
+    "result_schema_digest": "sha256:a7a1d46244742466ae98d49e5594bcbeb58d841f5d237268e4b7c9bb34650767",
+    "result_schema_ref": "fixture://schemas/publish-new-version-result.v1",
+    "root_binding": "fixture_result_root"
+  },
+  "contract_hook": {
+    "capability": "contract_hook",
+    "id": "publish_new_version.runtime_v1",
+    "package_digest": "sha256:973356fbb137fac7b04e47886183d6fb971717f88547e7d89a11a52e9c800d6b",
+    "version": "1.0.0"
+  },
+  "evidence": {
+    "receipt_schema_digest": "sha256:b68327ee676e8a51fabbd231e66ed5b3195171c9a169207a03782700892834bf",
+    "receipt_schema_ref": "https://phase-tool.local/schemas/phase-receipt.schema.json",
+    "redaction_policy_id": "redaction.no_secrets_v1",
+    "required_attachment_kinds": [
+      "effect_receipts",
+      "validator_results"
+    ],
+    "retention_policy_id": "retention.publish_new_version_v1"
+  },
+  "idempotency": {
+    "incomplete_previous_execution": "inspect_before_retry",
+    "key_required": true,
+    "request_digest_policy_id": "digest.canonical_request_v1",
+    "same_key_different_digest": "conflict",
+    "same_key_same_digest": "return_existing_verified",
+    "scope_fields": [
+      "contract",
+      "result_locator",
+      "operation_intent"
+    ],
+    "success_lookup": "canonical_result_then_receipt"
+  },
+  "identity": {
+    "core_compatibility": {
+      "maximum_exclusive": "2.0.0",
+      "minimum": "1.0.0"
+    },
+    "id": "publish_new_version.v1",
+    "version": "1.0.0"
+  },
+  "input_bindings": [
+    {
+      "freeze_strategy": "copy_and_hash",
+      "id": "payload",
+      "mutable_upstream_after_freeze": "forbidden",
+      "provenance_required": false,
+      "required": true,
+      "schema_digest": null,
+      "schema_ref": null
+    }
+  ],
+  "operation": {
+    "allowed_effects": [
+      "publish_new_version"
+    ],
+    "atomicity_claim": "none",
+    "effect_order": "static_predeclared",
+    "intent": "publish_new_version",
+    "maximum_effects": 1,
+    "mechanism": {
+      "availability": "bundled_v1",
+      "capability": "mutation_mechanism",
+      "id": "mechanism.archive_then_publish_v1",
+      "package_digest": "sha256:7b7e5ab183e6ef08e86b9fd0a408def310f325a4eca73dbcddfb18627fdb6cd6",
+      "version": "1.0.0"
+    }
+  },
+  "outcomes": {
+    "committed_unverified": "committed_unverified",
+    "known_no_effect": "failed_no_effect",
+    "known_partial": "failed_partial",
+    "pre_mutation_rejection": "rejected",
+    "success": "succeeded_verified",
+    "unknown_result": "indeterminate"
+  },
+  "phase_contract_version": "1.0",
+  "recovery": {
+    "automatic": false,
+    "policy": "none",
+    "requires_exact_before_state": true
+  },
+  "validators": [
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "validator.exact_binding_v1",
+        "package_digest": "sha256:19f8b652b094e3079226d506bc6111ae8124e35807e54183e23d95bb13188bb3",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "contract"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "publish_new_version.candidate_v1",
+        "package_digest": "sha256:7c0d231aa7ab1b62f81de3acca34b4ba5464efdc16cfafcb6dd1926a2ee52c35",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "candidate"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "publish_new_version.preconditions_v1",
+        "package_digest": "sha256:d3dfd2c9b6b18ccbbf3e8c8a41f04436cf1d1aaee4cee34e8ea7eba9366e6992",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "pre_operation"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "publish_new_version.result_v1",
+        "package_digest": "sha256:8850501c5d5412cd813b9e7603860fe8266bf5dcf00efdef88b14b765c76c320",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "post_operation"
+    }
+  ],
+  "verification": {
+    "observation_scope": "result_only",
+    "required_predicates": [
+      "current_verified",
+      "archive_verified",
+      "receipt_binds_archive"
+    ],
+    "validators": [
+      {
+        "capability": "validator",
+        "id": "publish_new_version.result_v1",
+        "package_digest": "sha256:8850501c5d5412cd813b9e7603860fe8266bf5dcf00efdef88b14b765c76c320",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "write_scope": {
+    "default_path_policy": {
+      "capability": "path_policy",
+      "id": "path.strict_local_v1",
+      "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+      "version": "1.0.0"
+    },
+    "forbidden_root_bindings": [
+      "phase_evidence_root"
+    ],
+    "roots": [
+      {
+        "access": "write",
+        "binding_id": "fixture_result_root",
+        "path_policy": {
+          "capability": "path_policy",
+          "id": "path.strict_local_v1",
+          "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+          "version": "1.0.0"
+        },
+        "reparse_policy": "reject",
+        "symlink_policy": "reject"
+      }
+    ]
+  }
+}

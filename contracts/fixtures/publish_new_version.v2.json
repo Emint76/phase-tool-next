@@ -22,10 +22,13 @@
     "version": "1.0.0"
   },
   "evidence": {
-    "receipt_schema_digest": "sha256:b68327ee676e8a51fabbd231e66ed5b3195171c9a169207a03782700892834bf",
+    "receipt_schema_digest": "sha256:e4e1126d71be6e05049ac57a9acb38ed92540a7b14ac90fb2bf45225e060de0d",
     "receipt_schema_ref": "https://phase-tool.local/schemas/phase-receipt.schema.json",
     "redaction_policy_id": "redaction.no_secrets_v1",
-    "required_attachment_kinds": ["effect_receipts", "validator_results"],
+    "required_attachment_kinds": [
+      "effect_receipts",
+      "validator_results"
+    ],
     "retention_policy_id": "retention.publish_new_version_v2"
   },
   "idempotency": {
@@ -34,17 +37,26 @@
     "request_digest_policy_id": "digest.canonical_request_v1",
     "same_key_different_digest": "conflict",
     "same_key_same_digest": "return_existing_verified",
-    "scope_fields": ["contract", "result_locator", "operation_intent"],
+    "scope_fields": [
+      "contract",
+      "result_locator",
+      "operation_intent"
+    ],
     "success_lookup": "canonical_result_then_receipt"
   },
   "identity": {
-    "core_compatibility": {"maximum_exclusive": "2.0.0", "minimum": "1.0.0"},
+    "core_compatibility": {
+      "maximum_exclusive": "2.0.0",
+      "minimum": "1.0.0"
+    },
     "id": "publish_new_version.v2",
     "version": "1.0.0"
   },
   "input_bindings": [],
   "operation": {
-    "allowed_effects": ["publish_new_version"],
+    "allowed_effects": [
+      "publish_new_version"
+    ],
     "atomicity_claim": "none",
     "effect_order": "static_predeclared",
     "intent": "publish_new_version",
@@ -55,6 +67,30 @@
       "id": "mechanism.object_store_publish_v2",
       "package_digest": "sha256:da9b36ae4cbe25b9b17f0d107ff8263db6b95e2407010481a1ccc8e5a5d06fd0",
       "version": "1.0.0"
+    },
+    "required_guarantees": {
+      "mechanisms": [
+        {
+          "all_of": [
+            "exclusive_create",
+            "readback_verification",
+            "cross_process_serialization",
+            "namespace_bound_mutation",
+            "atomic_replace",
+            "namespace_metadata_flush_attempted"
+          ],
+          "mechanism": {
+            "id": "mechanism.object_store_publish_v2",
+            "package_digest": "sha256:da9b36ae4cbe25b9b17f0d107ff8263db6b95e2407010481a1ccc8e5a5d06fd0",
+            "version": "1.0.0"
+          }
+        }
+      ],
+      "vocabulary": {
+        "descriptor_digest": "sha256:f7b158004b0bf7041286269c239c381cfd60db5987c6bf2173c645d5ac146624",
+        "id": "phase.mutation-guarantees",
+        "version": "1.0.0"
+      }
     }
   },
   "outcomes": {
@@ -66,38 +102,109 @@
     "unknown_result": "indeterminate"
   },
   "phase_contract_version": "1.0",
-  "recovery": {"automatic": false, "policy": "none", "requires_exact_before_state": true},
+  "recovery": {
+    "automatic": false,
+    "policy": "none",
+    "requires_exact_before_state": true
+  },
   "validators": [
     {
-      "binding": {"capability": "validator", "id": "validator.exact_binding_v1", "package_digest": "sha256:19f8b652b094e3079226d506bc6111ae8124e35807e54183e23d95bb13188bb3", "version": "1.0.0"},
-      "blocking": true, "config": {}, "phase": "contract"
+      "binding": {
+        "capability": "validator",
+        "id": "validator.exact_binding_v1",
+        "package_digest": "sha256:19f8b652b094e3079226d506bc6111ae8124e35807e54183e23d95bb13188bb3",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "contract"
     },
     {
-      "binding": {"capability": "validator", "id": "publish_new_version.candidate_v2", "package_digest": "sha256:1fc514c9c822badeec999175decf2760140f4b999b49af4c540e3954f23c2a5c", "version": "1.0.0"},
-      "blocking": true, "config": {}, "phase": "candidate"
+      "binding": {
+        "capability": "validator",
+        "id": "publish_new_version.candidate_v2",
+        "package_digest": "sha256:1fc514c9c822badeec999175decf2760140f4b999b49af4c540e3954f23c2a5c",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "candidate"
     },
     {
-      "binding": {"capability": "validator", "id": "publish_new_version.preconditions_v2", "package_digest": "sha256:d1fe3e48345ffedcafeeb75cb99e0a5196085d768d4152899c8de9e7c820084a", "version": "1.0.0"},
-      "blocking": true, "config": {}, "phase": "pre_operation"
+      "binding": {
+        "capability": "validator",
+        "id": "publish_new_version.preconditions_v2",
+        "package_digest": "sha256:d1fe3e48345ffedcafeeb75cb99e0a5196085d768d4152899c8de9e7c820084a",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "pre_operation"
     },
     {
-      "binding": {"capability": "validator", "id": "publish_new_version.result_v2", "package_digest": "sha256:ebe135f56c101a38a8605e66e3b10e9fb4d3df966f6aebbb4d9fa53e40e666a4", "version": "1.0.0"},
-      "blocking": true, "config": {}, "phase": "post_operation"
+      "binding": {
+        "capability": "validator",
+        "id": "publish_new_version.result_v2",
+        "package_digest": "sha256:ebe135f56c101a38a8605e66e3b10e9fb4d3df966f6aebbb4d9fa53e40e666a4",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "post_operation"
     }
   ],
   "verification": {
     "observation_scope": "result_only",
-    "required_predicates": ["current_verified", "old_object_verified", "new_object_verified", "receipt_binds_objects"],
+    "required_predicates": [
+      "current_verified",
+      "old_object_verified",
+      "new_object_verified",
+      "receipt_binds_objects"
+    ],
     "validators": [
-      {"capability": "validator", "id": "publish_new_version.result_v2", "package_digest": "sha256:ebe135f56c101a38a8605e66e3b10e9fb4d3df966f6aebbb4d9fa53e40e666a4", "version": "1.0.0"}
+      {
+        "capability": "validator",
+        "id": "publish_new_version.result_v2",
+        "package_digest": "sha256:ebe135f56c101a38a8605e66e3b10e9fb4d3df966f6aebbb4d9fa53e40e666a4",
+        "version": "1.0.0"
+      }
     ]
   },
   "write_scope": {
-    "default_path_policy": {"capability": "path_policy", "id": "path.strict_local_v1", "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4", "version": "1.0.0"},
-    "forbidden_root_bindings": ["phase_evidence_root"],
+    "default_path_policy": {
+      "capability": "path_policy",
+      "id": "path.strict_local_v1",
+      "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+      "version": "1.0.0"
+    },
+    "forbidden_root_bindings": [
+      "phase_evidence_root"
+    ],
     "roots": [
-      {"access": "write", "binding_id": "current_root", "path_policy": {"capability": "path_policy", "id": "path.strict_local_v1", "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4", "version": "1.0.0"}, "reparse_policy": "reject", "symlink_policy": "reject"},
-      {"access": "write", "binding_id": "objects_root", "path_policy": {"capability": "path_policy", "id": "path.strict_local_v1", "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4", "version": "1.0.0"}, "reparse_policy": "reject", "symlink_policy": "reject"}
+      {
+        "access": "write",
+        "binding_id": "current_root",
+        "path_policy": {
+          "capability": "path_policy",
+          "id": "path.strict_local_v1",
+          "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+          "version": "1.0.0"
+        },
+        "reparse_policy": "reject",
+        "symlink_policy": "reject"
+      },
+      {
+        "access": "write",
+        "binding_id": "objects_root",
+        "path_policy": {
+          "capability": "path_policy",
+          "id": "path.strict_local_v1",
+          "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+          "version": "1.0.0"
+        },
+        "reparse_policy": "reject",
+        "symlink_policy": "reject"
+      }
     ]
   }
 }

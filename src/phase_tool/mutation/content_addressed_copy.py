@@ -8,7 +8,8 @@ from typing import Callable
 from ..canonical import digest_bytes
 from ..errors import PhaseError
 from ..paths import _is_reparse_point
-from .target_authority import TargetAuthority, TargetRootLock
+from .authority import AuthorityProvider
+from .target_authority import TargetAuthority  # compatibility seam for existing fault-injection tests
 
 _MAX_CONTENT_BYTES = 16 * 1024 * 1024
 
@@ -72,9 +73,10 @@ def execute_content_addressed_copy(
     run_id: str,
     timestamp: str,
     faults: ContentAddressedCopyFaults | None = None,
+    authority_provider: AuthorityProvider,
 ) -> dict[str, object]:
     lock_scope = f"content-addressed-copy:{effect.get('content_digest', 'unbound')}"
-    with TargetRootLock(target_root, lock_scope):
+    with authority_provider.lock_target_root(target_root, lock_scope):
         return _execute_content_addressed_copy_locked(
             effect,
             target_root,
@@ -82,6 +84,7 @@ def execute_content_addressed_copy(
             run_id=run_id,
             timestamp=timestamp,
             faults=faults,
+            authority_provider=authority_provider,
         )
 
 
@@ -93,6 +96,7 @@ def _execute_content_addressed_copy_locked(
     run_id: str,
     timestamp: str,
     faults: ContentAddressedCopyFaults | None = None,
+    authority_provider: AuthorityProvider,
 ) -> dict[str, object]:
     active = faults or ContentAddressedCopyFaults()
     if len(content) > _MAX_CONTENT_BYTES:
@@ -110,7 +114,7 @@ def _execute_content_addressed_copy_locked(
     if effect["target"]["relative_locator"] != expected_locator:  # type: ignore[index]
         raise PhaseError("mechanism.locator_digest_mismatch")
     detector = active.reparse_detector or _is_reparse_point
-    authority = TargetAuthority(
+    authority = authority_provider.open_authority(
         target_root,
         str(effect["target"]["relative_locator"]),  # type: ignore[index]
         detector,

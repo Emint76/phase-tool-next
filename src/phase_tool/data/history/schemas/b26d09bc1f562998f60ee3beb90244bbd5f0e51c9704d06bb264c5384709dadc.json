@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase-tool.local/schemas/phase-contract.schema.json",
+  "title": "Phase Operation Contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "phase_contract_version",
+    "identity",
+    "candidate",
+    "input_bindings",
+    "validators",
+    "write_scope",
+    "operation",
+    "canonical_result",
+    "verification",
+    "evidence",
+    "outcomes",
+    "idempotency",
+    "recovery"
+  ],
+  "properties": {
+    "phase_contract_version": {"const": "1.0"},
+    "identity": {"$ref": "#/$defs/contractIdentity"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_ref", "schema_digest", "input_mode", "canonicalization", "privacy_policy_id"],
+      "properties": {
+        "schema_ref": {"type": "string", "format": "uri-reference", "minLength": 1},
+        "schema_digest": {"$ref": "#/$defs/digest"},
+        "input_mode": {"enum": ["structured_json", "utf8_bytes", "binary_bundle"]},
+        "canonicalization": {"enum": ["canonical_json_v1", "admission_canonical_json_v1", "raw_bytes", "strict_utf8_v1"]},
+        "privacy_policy_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "input_bindings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/inputBinding"}
+    },
+    "validators": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/validatorDeclaration"}
+    },
+    "write_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roots", "forbidden_root_bindings", "default_path_policy"],
+      "properties": {
+        "roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["binding_id", "access", "path_policy", "symlink_policy", "reparse_policy"],
+            "properties": {
+              "binding_id": {"$ref": "#/$defs/identifier"},
+              "access": {"const": "write"},
+              "path_policy": {"$ref": "#/$defs/pathPolicyBinding"},
+              "symlink_policy": {"enum": ["reject", "bounded_no_follow"]},
+              "reparse_policy": {"enum": ["reject", "bounded_no_follow"]}
+            }
+          }
+        },
+        "forbidden_root_bindings": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true
+        },
+        "default_path_policy": {"$ref": "#/$defs/pathPolicyBinding"}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "mechanism", "allowed_effects", "effect_order", "atomicity_claim", "maximum_effects"],
+      "properties": {
+        "intent": {"enum": ["create", "append", "copy", "correction", "publish_new_version"]},
+        "mechanism": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "package_digest", "capability", "availability"],
+          "properties": {
+            "id": {"$ref": "#/$defs/identifier"},
+            "version": {"$ref": "#/$defs/semver"},
+            "package_digest": {"$ref": "#/$defs/digest"},
+            "capability": {"const": "mutation_mechanism"},
+            "availability": {"enum": ["bundled_v1", "deferred"]}
+          }
+        },
+        "effect_mechanisms": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "version", "package_digest", "capability", "availability"],
+            "properties": {
+              "id": {"$ref": "#/$defs/identifier"},
+              "version": {"$ref": "#/$defs/semver"},
+              "package_digest": {"$ref": "#/$defs/digest"},
+              "capability": {"const": "mutation_mechanism"},
+              "availability": {"enum": ["bundled_v1", "deferred"]}
+            }
+          }
+        },
+        "allowed_effects": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["exclusive_create", "append_record", "copy_blob", "publish_new_version"]}
+        },
+        "effect_order": {"const": "static_predeclared"},
+        "atomicity_claim": {"enum": ["none", "single_effect", "per_effect"]},
+        "maximum_effects": {"type": "integer", "minimum": 1, "maximum": 1024}
+      }
+    },
+    "canonical_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner_id", "root_binding", "locator_template", "result_schema_ref", "result_schema_digest", "authority_rule", "result_reference_schema_ref"],
+      "properties": {
+        "owner_id": {"$ref": "#/$defs/identifier"},
+        "root_binding": {"$ref": "#/$defs/identifier"},
+        "locator_template": {"$ref": "#/$defs/relativeLocator"},
+        "result_schema_ref": {"type": "string", "format": "uri-reference", "minLength": 1},
+        "result_schema_digest": {"$ref": "#/$defs/digest"},
+        "authority_rule": {"$ref": "#/$defs/identifier"},
+        "result_reference_schema_ref": {"const": "https://phase-tool.local/schemas/phase-result-reference.schema.json"}
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validators", "required_predicates", "observation_scope"],
+      "properties": {
+        "validators": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/validatorBinding"}},
+        "required_predicates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/identifier"}, "uniqueItems": true},
+        "observation_scope": {"enum": ["result_only", "current_external", "managed_snapshot", "historical_observation"]}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_schema_ref", "receipt_schema_digest", "required_attachment_kinds", "retention_policy_id", "redaction_policy_id"],
+      "properties": {
+        "receipt_schema_ref": {"const": "https://phase-tool.local/schemas/phase-receipt.schema.json"},
+        "receipt_schema_digest": {"$ref": "#/$defs/digest"},
+        "required_attachment_kinds": {"type": "array", "items": {"$ref": "#/$defs/identifier"}, "uniqueItems": true},
+        "retention_policy_id": {"$ref": "#/$defs/identifier"},
+        "redaction_policy_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "outcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "pre_mutation_rejection", "known_no_effect", "known_partial", "committed_unverified", "unknown_result"],
+      "properties": {
+        "success": {"const": "succeeded_verified"},
+        "pre_mutation_rejection": {"const": "rejected"},
+        "known_no_effect": {"const": "failed_no_effect"},
+        "known_partial": {"const": "failed_partial"},
+        "committed_unverified": {"const": "committed_unverified"},
+        "unknown_result": {"const": "indeterminate"}
+      }
+    },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_required", "scope_fields", "request_digest_policy_id", "success_lookup", "same_key_same_digest", "same_key_different_digest", "incomplete_previous_execution"],
+      "properties": {
+        "key_required": {"type": "boolean"},
+        "scope_fields": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/identifier"}, "uniqueItems": true},
+        "request_digest_policy_id": {"$ref": "#/$defs/identifier"},
+        "success_lookup": {"enum": ["canonical_result", "phase_receipt", "canonical_result_then_receipt"]},
+        "same_key_same_digest": {"const": "return_existing_verified"},
+        "same_key_different_digest": {"const": "conflict"},
+        "incomplete_previous_execution": {"const": "inspect_before_retry"}
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "automatic", "requires_exact_before_state"],
+      "properties": {
+        "policy": {"enum": ["none", "append_correction"]},
+        "automatic": {"const": false},
+        "requires_exact_before_state": {"type": "boolean"}
+      }
+    },
+    "contract_hook": {"$ref": "#/$defs/contractHookBinding"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 128},
+    "semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "relativeLocator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_{}](?:[A-Za-z0-9_{}.-]*[A-Za-z0-9_{}])?(?:/[A-Za-z0-9_{}](?:[A-Za-z0-9_{}.-]*[A-Za-z0-9_{}])?)*$",
+      "not": {"pattern": "(?:^|/)(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\\.[A-Za-z0-9_{}.-]+)?(?:/|$)"}
+    },
+    "exactContractRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "package_digest"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "package_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "contractIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "core_compatibility"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "core_compatibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimum", "maximum_exclusive"],
+          "properties": {
+            "minimum": {"$ref": "#/$defs/semver"},
+            "maximum_exclusive": {"$ref": "#/$defs/semver"}
+          }
+        }
+      }
+    },
+    "registeredBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "package_digest", "capability"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/semver"},
+        "package_digest": {"$ref": "#/$defs/digest"},
+        "capability": {"enum": ["validator", "mutation_mechanism", "path_policy", "contract_hook"]}
+      }
+    },
+    "validatorBinding": {
+      "allOf": [
+        {"$ref": "#/$defs/registeredBinding"},
+        {"properties": {"capability": {"const": "validator"}}}
+      ]
+    },
+    "pathPolicyBinding": {
+      "allOf": [
+        {"$ref": "#/$defs/registeredBinding"},
+        {"properties": {"capability": {"const": "path_policy"}}}
+      ]
+    },
+    "contractHookBinding": {
+      "allOf": [
+        {"$ref": "#/$defs/registeredBinding"},
+        {"properties": {"capability": {"const": "contract_hook"}}}
+      ]
+    },
+    "declarativeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {"$ref": "#/$defs/identifier"},
+        "parameters": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+          "additionalProperties": {
+            "oneOf": [
+              {"type": ["number", "integer", "boolean", "null"]},
+              {"$ref": "#/$defs/identifier"},
+              {"type": "array", "items": {"oneOf": [{"type": ["number", "integer", "boolean", "null"]}, {"$ref": "#/$defs/identifier"}]}, "maxItems": 256}
+            ]
+          }
+        }
+      }
+    },
+    "inputBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "required", "schema_ref", "schema_digest", "freeze_strategy", "provenance_required", "mutable_upstream_after_freeze"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "required": {"type": "boolean"},
+        "schema_ref": {"oneOf": [{"type": "null"}, {"type": "string", "format": "uri-reference", "minLength": 1}]},
+        "schema_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+        "freeze_strategy": {"enum": ["copy_and_hash", "manifest_and_hash", "lock_snapshot_revalidate", "value_snapshot"]},
+        "provenance_required": {"type": "boolean"},
+        "mutable_upstream_after_freeze": {"enum": ["forbidden", "allowed_with_revalidation", "not_applicable"]}
+      }
+    },
+    "validatorDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "binding", "blocking", "config"],
+      "properties": {
+        "phase": {"enum": ["contract", "candidate", "input", "policy", "pre_operation", "post_operation", "evidence"]},
+        "binding": {"$ref": "#/$defs/validatorBinding"},
+        "blocking": {"type": "boolean"},
+        "config": {"$ref": "#/$defs/declarativeConfig"}
+      }
+    }
+  }
+}

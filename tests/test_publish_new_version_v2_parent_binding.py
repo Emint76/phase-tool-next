@@ -210,6 +210,7 @@ def test_v2_final_replace_uses_authority_and_reports_namespace_change_without_re
     replacement_current = original_parent / current.name
     replacement_temporary = original_parent / temporary.name
     original_replace_from = TargetAuthority.replace_from
+    original_fsync_parent = TargetAuthority.fsync_parent
     original_unlink = TargetAuthority.unlink
     replace_calls: list[tuple[str, str]] = []
     cleanup_calls: list[tuple[str, bool]] = []
@@ -230,26 +231,23 @@ def test_v2_final_replace_uses_authority_and_reports_namespace_change_without_re
         renamed_temporary.write_bytes(b"foreign file created after replace")
         replace_calls.append((source.locator, destination.locator))
 
+    def fail_after_replace(authority: TargetAuthority) -> None:
+        original_fsync_parent(authority)
+        if post_replace_error and authority.target == current:
+            raise OSError("post-replace failure combined with namespace drift")
+
     def tracked_unlink(authority: TargetAuthority, *, missing_ok: bool = False) -> None:
         cleanup_calls.append((authority.locator, missing_ok))
         original_unlink(authority, missing_ok=missing_ok)
 
     monkeypatch.setattr(TargetAuthority, "replace_from", replace_after_parent_rebinding)
+    monkeypatch.setattr(TargetAuthority, "fsync_parent", fail_after_replace)
     monkeypatch.setattr(TargetAuthority, "unlink", tracked_unlink)
-
-    def fail_after_replace(_target: Path) -> None:
-        raise OSError("post-replace failure combined with namespace drift")
 
     outcome = PhaseCore().run(
         request,
         execute=True,
-        faults=CoreFaults(
-            broker=BrokerFaults(
-                object_store_publish=ObjectStorePublishFaults(
-                    after_replace=fail_after_replace if post_replace_error else None,
-                )
-            )
-        ),
+        faults=CoreFaults(broker=BrokerFaults(object_store_publish=ObjectStorePublishFaults())),
     )
 
     effect = outcome.receipt["effect_receipts"][0]

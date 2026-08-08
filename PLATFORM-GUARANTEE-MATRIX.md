@@ -1,131 +1,96 @@
 # Platform Guarantee Matrix
 
-Status: Stage 1 planning matrix. Every guarantee is provisional until the named implementation boundary and executable platform test exist.
+Status: Loop 5 executable admission matrix. This document separates guarantees admitted by the current exact profiles from unimplemented qualification work. Filesystem scope bounds every claim.
 
 ## 1. Platforms in scope
 
-- Windows 10/11 on tested local NTFS configurations;
-- native Linux on tested local filesystems;
-- WSL on its native Linux filesystem, tested separately;
-- WSL paths backed by Windows (`/mnt/...`) are a separate compatibility class.
+The current executable release profile covers:
 
-Out of scope for strong v1 guarantees:
+- native Linux, plus Linux containers whose process root is identified as `overlay`, using the bundled POSIX authority implementation on qualified `ext4` or `overlay` target-root scope.
 
-- SMB/NFS/CIFS/SSHFS/FUSE/cloud-synced/cluster filesystems;
-- removable/unreliable media without explicit qualification;
+Out of scope for strong guarantees unless separately qualified:
+
+- SMB, NFS, CIFS, SSHFS, FUSE, cloud-synced and cluster filesystems;
+- removable or unreliable media;
+- WSL-native and WSL `/mnt` filesystems until separately qualified; marker files alone do not establish a container boundary, while an `overlay` process root does;
 - remote object stores;
-- containers/VM shared mounts unless separately tested;
-- filesystems with unknown sync/locking/case/link semantics.
+- power-loss durability beyond an explicitly named crash protocol.
+- Windows and every other non-Linux runtime; mutation fails closed before capture and authority open.
 
-## 2. Matrix
+## 2. Admission profiles
 
-| Capability | Windows boundary | Linux/WSL-native boundary | Claim before tests | Mandatory future tests |
+Contracts express technology-neutral minimum requirements through the exact, versioned guarantee vocabulary. Core compares each exact mechanism requirement with the trusted installation-selected profile before candidate capture. The provider reports its profile only for consistency checking; it cannot select installation policy.
+
+| Exact profile | Classification | Qualified root scope | Admitted guarantees | Explicitly not admitted |
 |---|---|---|---|---|
-| Root/path identity | Handle-based final path, volume/file identity, reparse inspection | `openat`/descriptor-relative resolution, device/inode/mount policy | No strong claim | root/parent replacement; volume/device change |
-| Advisory/exclusive locking | `LockFileEx`/tested handle sharing model | `flock` or `fcntl` selected consistently | Cooperating-writer serialization only | two processes; crash/abandon; non-cooperating writer |
-| Atomic exclusive create | `CreateFile(..., CREATE_NEW, ...)` | `openat(..., O_CREAT|O_EXCL, ...)` | Destination race decided by OS create only | simultaneous create; reparse/symlink final; crash |
-| Append serialization | lock + expected-head revalidation + binary `WriteFile` loop | lock + expected-head + binary write loop, optionally `O_APPEND` | No crash-atomic record claim | concurrent writers; stale head; short write; kill points |
-| File data flush | `FlushFileBuffers` on file handle | `fsync`/selected `fdatasync` policy | Data-flush attempt only on qualified FS | power/crash harness or strongest practical process/VM tests |
-| Directory entry durability | No portable general guarantee identified; mechanism-specific qualification required | directory `fsync` after create/rename on supporting local FS | Unsupported unless separately proven | create/publish crash tests per filesystem |
-| No-replace publication | `CREATE_NEW`; temp publication needs tested hard-link/rename alternative without replacement | `linkat` or `renameat2(RENAME_NOREPLACE)` where available; fallback explicit | No generic atomic publication claim | destination race; same/cross filesystem; crash |
-| Rename/replacement | `MoveFileEx`/`ReplaceFile` semantics vary and may replace; update deferred | `rename` replaces; `renameat2` availability varies | Replacement forbidden in v1 | ensure normal replace path rejected |
-| Symlink handling | handle/reparse-tag checks; default reject | no-follow descriptor APIs; default reject | Lexical check alone insufficient | insertion/removal race every component |
-| Junction/reparse handling | default reject descendants/final reparse points | not applicable in same form; mount/symlink separate | No bounded-follow claim | junction/mount substitution |
-| Case behavior | NTFS commonly case-insensitive but per-directory options exist | usually case-sensitive; filesystem-dependent | Installation-observed policy only | case collision and per-directory behavior |
-| Reserved names | Win32 device names, ADS, trailing dot/space, namespace prefixes rejected | Windows names may be legal but strict portable subset may reject | Strict portable policy | each reserved alias/extension |
-| Unicode normalization | Win32/filesystem behavior varies | filesystem generally byte-oriented; applications vary | No canonical equivalence claim | composed/decomposed/case variants |
-| Path length | API/manifest-dependent, long-path configuration varies | filesystem/API limits vary | Enforce configured tested maximum | boundary lengths/components |
-| Sparse/compressed/encrypted files | NTFS metadata semantics not preserved by byte copy unless specified | filesystem metadata semantics vary | Content bytes only | byte digest plus metadata non-claim |
-| Hard links | file identity/ownership ambiguity; default reject for canonical target where unsafe | inode aliases; default reject where unsafe | No uniqueness claim | hard-link target substitution |
-| Special files | devices/pipes rejected | device/FIFO/socket rejected | regular files only | each special type |
-| WSL `/mnt` | Windows-backed semantics exposed through WSL layer | not equivalent to native Linux | Unsupported for strong v1 durability/locking until qualified | same suite on `/mnt` versus native ext4 |
-| Network/remote FS | Semantics provider-dependent | semantics provider-dependent | Explicitly unsupported | rejection/classification test only |
+| `phase.posix.authority.v1@1.0.0` | production | Linux roots identified as `ext4` or `overlay` | `exclusive_create`, `readback_verification`, `cross_process_serialization`, `namespace_bound_mutation`, `atomic_replace`, `namespace_metadata_flush_attempted` | power-loss durability, distributed locking, non-cooperating-writer exclusion, automatic process-crash recovery |
 
-## 3. Locking guarantees
+A contract requiring a guarantee outside the selected profile, a missing/symlink-resolved root, or a root outside the profile's qualified filesystem scope is rejected before capture, including mechanism-managed operations. Intent binds each resolved root identity. Broker execution rejects custom reparse-detector and write-primitive callbacks, revalidates roots after the remaining callbacks, and requires each opened root handle to match the intent-bound device/volume and inode/file identity before leaf creation or open. Mechanism-managed append uses this pinned-root identity check without claiming provider-backed guarantees.
 
-A successful future lock test may establish only:
+## 3. Current implementation boundaries
 
-- processes using the same Phase lock provider/scope serialize;
-- expected state is recomputed while lock is held;
-- abandoned/crashed lock behavior is understood for the platform.
+| Capability | POSIX production boundary | Current claim |
+|---|---|---|
+| Parent traversal | Walks with `openat`-style `dir_fd`, `O_DIRECTORY` and `O_NOFOLLOW`; retains parent descriptors and checks recorded device/inode bindings | Admits `namespace_bound_mutation` on qualified Linux roots |
+| Cooperating-writer lock | `flock(LOCK_EX)` on the opened root directory descriptor | Cross-process serialization for cooperating writers on the same host |
+| Exclusive create | `os.open(..., O_CREAT|O_EXCL|O_NOFOLLOW, dir_fd=parent_fd)` | Existing destination is never replaced by the create operation |
+| Read-back | Reads through an `O_NOFOLLOW` descriptor relative to pinned parent | Verified bytes may still be cache-resident; this is not durability |
+| Replacement | `os.replace(..., src_dir_fd=..., dst_dir_fd=...)` under pinned parents | Atomic replacement visibility on the qualified boundary |
+| Namespace metadata flush | `fsync` on the pinned parent directory descriptor | Attempted namespace metadata flush only; no generic power-loss claim |
+| Symlink policy | Rejects symlinks via no-follow descriptor operations and identity checks | No bounded-follow mode |
+| Append | `mechanism.expected_head_append_v1` owns its locking and head protocol | No authority-profile guarantee is claimed by append |
 
-It does not establish:
+## 4. Exact guarantee meanings
 
-- administrator exclusion;
+- **`exclusive_create`:** the leaf create operation succeeds only when the name is absent and never replaces an existing target.
+- **`readback_verification`:** resulting bytes are read and matched to the expected digest/length.
+- **`cross_process_serialization`:** cooperating Phase processes using the same provider and scope serialize; this excludes distributed and non-cooperating writers.
+- **`namespace_bound_mutation`:** target operations use pinned parent descriptors and detect parent identity rebinding within the implementation boundary.
+- **`atomic_replace`:** observers see the old or new complete leaf at the replacement operation, not an intentionally exposed missing/partial intermediate.
+- **`namespace_metadata_flush_attempted`:** the implementation invokes the supported parent-directory metadata flush and propagates failure.
+
+These definitions come from the digest-bound `phase.mutation-guarantees@1.0.0` descriptor. Contract prose cannot strengthen them.
+
+## 5. Locking and append limits
+
+Current authority locks establish only cooperating-writer serialization at their named scope. They do not establish:
+
+- administrator or non-cooperating-process exclusion;
 - distributed locking;
-- exclusion of non-cooperating opens/writes;
 - durability;
-- target path identity without handle/path controls.
+- Windows machine-global serialization across sessions;
+- target namespace identity unless the selected profile separately admits it.
 
-## 4. Atomic create guarantees
-
-The implementation boundary must combine:
-
-- validated root/parent handle;
-- no-follow/reparse policy;
-- OS exclusive create primitive;
-- content write/read-back;
-- selected flush policy;
-- final identity/digest verification.
-
-Exclusive name creation does not make subsequent content write crash-atomic. A created partial file is `failed_partial` unless removed before canonical visibility by a tested publication design.
-
-## 5. Append guarantees
-
-A future qualified append mechanism may claim:
-
-- cooperating-writer serialization;
-- stale-head rejection before write;
-- short-write handling;
-- resulting record/head read-back;
-- detection of invalid/torn tail.
-
-It may not claim:
-
-- indivisible crash-atomic record append;
-- WORM/immutability;
-- non-cooperating-writer exclusion;
-- directory durability from file flush;
-- identical behavior on remote/shared filesystems.
+The append mechanism separately performs expected-head revalidation and read-back. It does not claim indivisible crash-atomic records, WORM semantics, or exclusion of direct external writes.
 
 ## 6. Flush and durability terminology
 
-- **write completed:** OS API accepted bytes; not durable.
-- **read-back verified:** subsequent read returned expected bytes; may still be cache-resident.
-- **file data synced:** `fsync`/`FlushFileBuffers` returned success on a qualified boundary.
-- **directory entry synced:** containing directory publication persistence was exercised through a tested platform method.
-- **power-loss durable:** requires a dedicated hardware/VM/filesystem crash protocol; not claimed by ordinary unit tests.
+- **write completed:** the OS API accepted bytes; not durable;
+- **read-back verified:** a subsequent read returned expected bytes; it may still be cache-resident;
+- **file data synced:** the selected file sync primitive returned success on a qualified boundary;
+- **namespace metadata flush attempted:** the POSIX parent-directory `fsync` call returned success;
+- **power-loss durable:** requires a dedicated hardware/VM/filesystem crash protocol and is not claimed by either v1 profile.
 
-Receipt records the attempted policy and result, not a stronger generic word “durable.”
+Receipts record attempted mechanisms and observations, not a stronger generic word “durable.”
 
-## 7. Test environments to record
+## 7. Executable evidence
 
-Every future platform result records:
+Profile claims are backed by the platform-specific suites:
 
-- OS/kernel/build;
-- Python/runtime version;
-- filesystem type/version/mount/options;
-- native/WSL/container/VM context;
-- local versus shared/remote classification;
-- drive/volume identity;
-- long-path/case configuration;
-- mechanism and test package digests;
-- fault-injection method;
-- exact passed/skipped/unsupported cases.
+- `tests/mutation/common/test_guarantee_profiles.py` — descriptor, digest and implementation binding integrity;
+- `tests/mutation/common/test_guarantee_requirements.py` — contract admission, negative matrix and pre-capture rejection;
+- `tests/mutation/common/test_authority_provider_boundary.py` — trusted provider boundary;
+- `tests/mutation/posix/test_authority_conformance.py` and `test_guarantee_conformance.py` — POSIX authority and stronger guarantees;
 
-## 8. Stage 2 blocking qualification plan
+The release CI gate runs the Linux/POSIX production suite on Python 3.11 and 3.12 without `continue-on-error`. Windows jobs and compatibility tests are not release evidence.
 
-Before mutation implementation begins, Stage 2 needs test designs for:
+## 8. Remaining qualification work
 
-1. Windows exclusive create/path/reparse race;
-2. Linux descriptor-relative no-follow path walk;
-3. lock/crash behavior on both;
-4. short/torn append fault injection;
-5. temp/publish no-replace mechanism or an explicit weaker partial-visibility model;
-6. file versus directory sync semantics;
-7. WSL-native and `/mnt` separation;
-8. unsupported filesystem detection/refusal;
-9. result committed while evidence finalization fails;
-10. cleanup that never deletes pre-existing same-hash objects.
+The following remain future work and do not strengthen current profile claims:
 
-Until those boundaries exist, Stage 1 schemas describe intended evidence/status, not implemented guarantees.
+1. power-loss/crash harnesses by filesystem and mount options;
+2. a separately versioned Windows authority implementation and qualification suite;
+3. WSL-native versus `/mnt` qualification;
+4. explicit unsupported-filesystem detection beyond the current documented scope;
+5. remote/distributed filesystem semantics;
+6. non-cooperating writer and administrator threat models.

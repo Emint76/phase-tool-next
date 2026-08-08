@@ -19,6 +19,7 @@
     "canonical_result": {"oneOf": [{"type": "null"}, {"$ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json"}]},
     "validator_results": {"type": "array", "items": {"$ref": "https://phase-tool.local/schemas/validator-result.schema.json"}},
     "effect_receipts": {"type": "array", "items": {"$ref": "https://phase-tool.local/schemas/effect-receipt.schema.json"}},
+    "implementation_binding": {"oneOf": [{"type": "null"}, {"$ref": "https://phase-tool.local/schemas/mutation-implementation-binding.schema.json"}]},
     "evidence": {
       "type": "object",
       "additionalProperties": false,

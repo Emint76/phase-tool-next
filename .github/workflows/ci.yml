@@ -5,13 +5,12 @@ on:
   pull_request:
 
 jobs:
-  test:
+  posix-production:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,14 +27,7 @@ jobs:
         shell: bash
         run: |
           python -m venv .ci-venv
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            .ci-venv/Scripts/python -m pip install dist/*.whl
-            .ci-venv/Scripts/phase --version
-            .ci-venv/Scripts/phase doctor
-            .ci-venv/Scripts/phase contracts list
-          else
-            .ci-venv/bin/python -m pip install dist/*.whl
-            .ci-venv/bin/phase --version
-            .ci-venv/bin/phase doctor
-            .ci-venv/bin/phase contracts list
-          fi
+          .ci-venv/bin/python -m pip install dist/*.whl
+          .ci-venv/bin/phase --version
+          .ci-venv/bin/phase doctor
+          .ci-venv/bin/phase contracts list

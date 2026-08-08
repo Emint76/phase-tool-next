@@ -72,10 +72,17 @@
         "key": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 512}]},
         "scope_digest": {"$ref": "#/$defs/digest"},
         "request_digest": {"$ref": "#/$defs/digest"},
-        "root_identity_digest": {"$ref": "#/$defs/digest"}
+        "root_identity_digest": {"$ref": "#/$defs/digest"},
+        "root_identities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/rootIdentity"}
+        }
       }
     },
     "effect_plan_digest": {"$ref": "#/$defs/digest"},
+    "implementation_binding": {"$ref": "https://phase-tool.local/schemas/mutation-implementation-binding.schema.json"},
     "execution_requested": {"type": "boolean"},
     "evidence": {
       "type": "object",
@@ -93,6 +100,17 @@
     "runId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
     "semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "rootIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding_id", "resolved_path", "device", "inode"],
+      "properties": {
+        "binding_id": {"$ref": "#/$defs/identifier"},
+        "resolved_path": {"type": "string", "minLength": 1},
+        "device": {"type": "integer", "minimum": 0},
+        "inode": {"type": "integer", "minimum": 0}
+      }
+    },
     "exactBinding": {
       "type": "object",
       "additionalProperties": false,

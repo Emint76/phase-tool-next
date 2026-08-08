@@ -38,10 +38,19 @@ def _locator(data: bytes) -> str:
 
 def _binding(contract_id: str) -> str:
     registry = json.loads((Path(__file__).resolve().parents[1] / "src" / "phase_tool" / "data" / "registry.json").read_text(encoding="utf-8"))
-    for entry in registry["entries"]:
-        if entry.get("kind") == "contract" and entry.get("id") == contract_id and entry.get("version") == "1.0.0":
-            return str(entry["package_digest"])
-    raise AssertionError(f"missing contract binding: {contract_id}")
+    matches = [
+        entry
+        for entry in registry["entries"]
+        if (
+            entry.get("kind") == "contract"
+            and entry.get("id") == contract_id
+            and entry.get("version") == "1.0.0"
+            and entry.get("current", True) is True
+        )
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"ambiguous contract binding: {contract_id}: {len(matches)} current entries")
+    return str(matches[0]["package_digest"])
 
 
 def _run_process(command: list[str], env: dict[str, str]) -> dict[str, Any]:
@@ -189,7 +198,12 @@ def emit(value: object, code: int) -> None:
 def binding(contract_id: str) -> str:
     registry = json.loads((Path(__file__).resolve().parents[3] / "src" / "phase_tool" / "data" / "registry.json").read_text(encoding="utf-8"))
     for entry in registry["entries"]:
-        if entry.get("kind") == "contract" and entry.get("id") == contract_id and entry.get("version") == "1.0.0":
+        if (
+            entry.get("kind") == "contract"
+            and entry.get("id") == contract_id
+            and entry.get("version") == "1.0.0"
+            and entry.get("current", True) is True
+        ):
             return str(entry["package_digest"])
     raise AssertionError(contract_id)
 
@@ -474,7 +488,7 @@ def main() -> int:
     corrupted_payload = payload_dir / "corrupted.bin"
     corrupted_payload.write_bytes(b"corrupt me")
     _copy_candidate(corrupted, "corrupted-key")
-    record_helper("11_corrupted_frozen_blob_rejection", "corrupt_blob", corrupted, "corrupted-blob", corrupted_payload, {"exit": 10, "terminal_status": "rejected", "disposition": "not_executed", "mutation_attempted": False, "blocker": "broker.content_blob_mismatch"})
+    record_helper("11_corrupted_frozen_blob_rejection", "corrupt_blob", corrupted, "corrupted-blob", corrupted_payload, {"exit": 10, "terminal_status": "rejected", "disposition": "not_executed", "mutation_attempted": False, "blocker": "broker.unsafe_fault_callback"})
 
     create = candidate_dir / "create.json"
     create_payload = payload_dir / "create.bin"
@@ -505,7 +519,7 @@ def main() -> int:
     late_payload = payload_dir / "late-conflict.bin"
     late_payload.write_bytes(b"late conflict")
     _copy_candidate(late, "late-conflict-key")
-    record_helper("17_destination_appears_conflict", "destination_appears", late, "destination-appears", late_payload, {"exit": 20, "terminal_status": "failed_no_effect", "disposition": "executed", "mutation_attempted": True, "blocker": "target.same_key_conflict"})
+    record_helper("17_destination_appears_conflict", "destination_appears", late, "destination-appears", late_payload, {"exit": 10, "terminal_status": "rejected", "disposition": "not_executed", "mutation_attempted": False, "blocker": "broker.unsafe_fault_callback"})
 
     failures: dict[str, Any] = {}
     for name, scenario in matrix.items():

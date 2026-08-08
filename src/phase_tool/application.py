@@ -12,6 +12,7 @@ from .canonical import canonical_bytes, profile_digest
 from .core import PhaseCore, PhaseRequest
 from .errors import PhaseError
 from .inspection import inspect_run
+from .installation import Installation, host_installation
 from .registry import BundledRegistry, RegistrySnapshot
 
 
@@ -26,8 +27,13 @@ class ApplicationResponse:
 class PhaseApplication:
     """Universal application boundary over the bundled registry and Phase Core."""
 
-    def __init__(self, registry: RegistrySnapshot | None = None) -> None:
+    def __init__(
+        self,
+        registry: RegistrySnapshot | None = None,
+        installation: Installation | None = None,
+    ) -> None:
         self.registry = registry or BundledRegistry.load()
+        self.installation = installation or host_installation()
 
     def _binding(self, exact_binding: str) -> dict[str, str]:
         try:
@@ -137,7 +143,10 @@ class PhaseApplication:
                 timestamp=timestamp,
                 maximum_candidate_bytes=maximum_candidate_bytes,
             )
-            outcome = PhaseCore(self.registry).run(request, execute=operation == "execute")
+            outcome = PhaseCore(self.registry, self.installation).run(
+                request,
+                execute=operation == "execute",
+            )
             blockers = outcome.receipt["blockers"]
             payload = self._command_payload(
                 operation,

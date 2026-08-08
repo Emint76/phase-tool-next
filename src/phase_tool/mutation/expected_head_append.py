@@ -11,6 +11,7 @@ from ..canonical import digest_bytes
 from ..evidence import operational_lock_path
 from ..errors import PhaseError
 from ..paths import _is_reparse_point, contained_target_path
+from .platform import HostTargetAuthority
 
 _MAX_RECORD_BYTES = 1_048_576
 
@@ -133,6 +134,7 @@ def execute_append_record(
     codec_id: str = "canonical-jsonl",
     expected_head_override: str | None = None,
     faults: AppendRecordFaults | None = None,
+    expected_root_identity: tuple[int, int] | None = None,
 ) -> dict[str, object]:
     active = faults or AppendRecordFaults()
     validate_record_bytes(record)
@@ -145,7 +147,11 @@ def execute_append_record(
         expected_head = effect["preconditions"]["expected_head"]  # type: ignore[index]
     root_resolved = Path(target_root).resolve(strict=True)
     root_info = root_resolved.stat()
-    target = contained_target_path(root_resolved, str(effect["target"]["relative_locator"]))  # type: ignore[index]
+    observed_root_identity = (int(root_info.st_dev), int(root_info.st_ino))
+    if expected_root_identity is not None and observed_root_identity != expected_root_identity:
+        raise PhaseError("broker.root_identity_mismatch")
+    locator = str(effect["target"]["relative_locator"])  # type: ignore[index]
+    target = contained_target_path(root_resolved, locator)
     target_identity = digest_bytes(
         "\n".join(
             [
@@ -203,6 +209,11 @@ def execute_append_record(
             **append_metadata,
         )
     try:
+        authority = HostTargetAuthority(
+            root_resolved,
+            locator,
+            expected_root_identity=expected_root_identity,
+        )
         try:
             before = _observe(target)
         except PhaseError as exc:
@@ -219,7 +230,7 @@ def execute_append_record(
                 verification_refs=["target.before"],
                 **append_metadata,
             )
-        before_bytes = target.read_bytes() if before["exists"] is True else b""
+        before_bytes = authority.read_bytes() if before["exists"] is True else b""
         create_absent = expected_head is None or expected_head == absent_head_token()
         if before["exists"] is not True:
             if not create_absent:
@@ -261,16 +272,11 @@ def execute_append_record(
                 verification_refs=["target.before"],
                 **append_metadata,
             )
-        flags = os.O_WRONLY
-        if create_absent:
-            flags |= os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
         descriptor: int | None = None
         written = 0
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            descriptor = os.open(target, flags)
+            authority.assert_namespace_binding()
+            descriptor = authority.open_exclusive() if create_absent else authority.open_existing(writable=True)
             append_offset = 0 if before["length"] is None else int(before["length"])
             os.lseek(descriptor, append_offset, os.SEEK_SET)
             view = memoryview(record)
@@ -292,7 +298,8 @@ def execute_append_record(
                     raise OSError("short write made no progress")
                 written += actual
             os.fsync(descriptor)
-        except OSError as exc:
+            authority.assert_namespace_binding()
+        except (OSError, PhaseError) as exc:
             if descriptor is not None:
                 os.close(descriptor)
                 descriptor = None
@@ -309,7 +316,7 @@ def execute_append_record(
                 before=before,
                 after=after,
                 bytes_written=written,
-                error_code="mechanism.write_failed",
+                error_code=exc.code if isinstance(exc, PhaseError) else "mechanism.write_failed",
                 error_message=str(exc),
                 verification_refs=["target.after"] if after["known"] else [],
                 append_offset=append_offset if "append_offset" in locals() else None,
@@ -321,7 +328,7 @@ def execute_append_record(
         try:
             if active.readback_error:
                 raise OSError("injected read-back failure")
-            data = target.read_bytes() if active.readback_override is None else active.readback_override
+            data = authority.read_bytes() if active.readback_override is None else active.readback_override
             append_offset = 0 if before["length"] is None else int(before["length"])
             readback = data[append_offset : append_offset + len(record)]
             after = {"known": True, "exists": True, "digest": digest_bytes(data), "length": len(data), "head_token": stream_head_token(data)}
@@ -360,4 +367,6 @@ def execute_append_record(
         receipt["resulting_head"] = after["head_token"]
         return receipt
     finally:
+        if "authority" in locals():
+            authority.close()
         lock_context.__exit__(None, None, None)

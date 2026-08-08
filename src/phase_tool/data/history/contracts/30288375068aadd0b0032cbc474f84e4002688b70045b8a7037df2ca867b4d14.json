@@ -1,0 +1,194 @@
+{
+  "candidate": {
+    "canonicalization": "canonical_json_v1",
+    "input_mode": "structured_json",
+    "privacy_policy_id": "privacy.no_secrets_v1",
+    "schema_digest": "sha256:d924a9b974d6d1e3c120aafd9debe84bc4265d3a2a0f1feb6438ab479c2328bb",
+    "schema_ref": "fixture://schemas/fixture-copy-candidate.v1"
+  },
+  "canonical_result": {
+    "authority_rule": "authority.content_digest_v1",
+    "locator_template": "objects/{object_id}",
+    "owner_id": "fixture.copy.owner",
+    "result_reference_schema_ref": "https://phase-tool.local/schemas/phase-result-reference.schema.json",
+    "result_schema_digest": "sha256:9e74ee0f49f4f5f081fe3abfa94ecc7153668041fda879b4277d1786ff75e1b4",
+    "result_schema_ref": "fixture://schemas/fixture-copy-result.v1",
+    "root_binding": "fixture_result_root"
+  },
+  "evidence": {
+    "receipt_schema_digest": "sha256:e4e1126d71be6e05049ac57a9acb38ed92540a7b14ac90fb2bf45225e060de0d",
+    "receipt_schema_ref": "https://phase-tool.local/schemas/phase-receipt.schema.json",
+    "redaction_policy_id": "redaction.no_secrets_v1",
+    "required_attachment_kinds": [
+      "effect_receipts",
+      "validator_results"
+    ],
+    "retention_policy_id": "retention.fixture_v1"
+  },
+  "idempotency": {
+    "incomplete_previous_execution": "inspect_before_retry",
+    "key_required": true,
+    "request_digest_policy_id": "digest.canonical_request_v1",
+    "same_key_different_digest": "conflict",
+    "same_key_same_digest": "return_existing_verified",
+    "scope_fields": [
+      "contract",
+      "result_locator",
+      "operation_intent"
+    ],
+    "success_lookup": "canonical_result_then_receipt"
+  },
+  "identity": {
+    "core_compatibility": {
+      "maximum_exclusive": "2.0.0",
+      "minimum": "1.0.0"
+    },
+    "id": "fixture_copy.v1",
+    "version": "1.0.0"
+  },
+  "input_bindings": [
+    {
+      "freeze_strategy": "copy_and_hash",
+      "id": "payload",
+      "mutable_upstream_after_freeze": "forbidden",
+      "provenance_required": false,
+      "required": true,
+      "schema_digest": null,
+      "schema_ref": null
+    }
+  ],
+  "operation": {
+    "allowed_effects": [
+      "copy_blob"
+    ],
+    "atomicity_claim": "per_effect",
+    "effect_order": "static_predeclared",
+    "intent": "copy",
+    "maximum_effects": 1,
+    "mechanism": {
+      "availability": "bundled_v1",
+      "capability": "mutation_mechanism",
+      "id": "content_addressed_copy",
+      "package_digest": "sha256:ea3dd62ad45312315c30da15a8aa53566e554d4e7733ee5f41c67d1c4cf37fa2",
+      "version": "1.0.0"
+    }
+  },
+  "outcomes": {
+    "committed_unverified": "committed_unverified",
+    "known_no_effect": "failed_no_effect",
+    "known_partial": "failed_partial",
+    "pre_mutation_rejection": "rejected",
+    "success": "succeeded_verified",
+    "unknown_result": "indeterminate"
+  },
+  "phase_contract_version": "1.0",
+  "recovery": {
+    "automatic": false,
+    "policy": "none",
+    "requires_exact_before_state": false
+  },
+  "validators": [
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "validator.exact_binding_v1",
+        "package_digest": "sha256:19f8b652b094e3079226d506bc6111ae8124e35807e54183e23d95bb13188bb3",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "contract"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "fixture.copy.candidate_v1",
+        "package_digest": "sha256:e7f2ea57bf6104d2ea99ad1e17c562616d3b75427f4a0152a6c2437df0b86e50",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "candidate"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "validator.frozen_blob_v1",
+        "package_digest": "sha256:3dfe6c8051f2ce6c24f1f9dc6589a95a6b3f49d6d2417f8f9562678bf2d16039",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "input"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "validator.destination_preconditions_v1",
+        "package_digest": "sha256:be3eadbd783fc15b51e74a10202f970b02adbdc2758b6ef5e6379ee6e2de5fb8",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "pre_operation"
+    },
+    {
+      "binding": {
+        "capability": "validator",
+        "id": "validator.result_digest_v1",
+        "package_digest": "sha256:fe1ec09ae9e0162090b2908feba7e51b293ac62e2a6a2f963aef4a9690592372",
+        "version": "1.0.0"
+      },
+      "blocking": true,
+      "config": {},
+      "phase": "post_operation"
+    }
+  ],
+  "verification": {
+    "observation_scope": "result_only",
+    "required_predicates": [
+      "all_destinations_accounted",
+      "digest_matches",
+      "no_replacement"
+    ],
+    "validators": [
+      {
+        "capability": "validator",
+        "id": "validator.destination_preconditions_v1",
+        "package_digest": "sha256:be3eadbd783fc15b51e74a10202f970b02adbdc2758b6ef5e6379ee6e2de5fb8",
+        "version": "1.0.0"
+      },
+      {
+        "capability": "validator",
+        "id": "validator.result_digest_v1",
+        "package_digest": "sha256:fe1ec09ae9e0162090b2908feba7e51b293ac62e2a6a2f963aef4a9690592372",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "write_scope": {
+    "default_path_policy": {
+      "capability": "path_policy",
+      "id": "path.strict_local_v1",
+      "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+      "version": "1.0.0"
+    },
+    "forbidden_root_bindings": [
+      "phase_evidence_root"
+    ],
+    "roots": [
+      {
+        "access": "write",
+        "binding_id": "fixture_result_root",
+        "path_policy": {
+          "capability": "path_policy",
+          "id": "path.strict_local_v1",
+          "package_digest": "sha256:238b3431352a94dab33ffa0190fd78cd2825679377cb0e14dfa4bd4c6da8b0f4",
+          "version": "1.0.0"
+        },
+        "reparse_policy": "reject",
+        "symlink_policy": "reject"
+      }
+    ]
+  }
+}

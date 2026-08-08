@@ -31,15 +31,17 @@ The blob is authoritative for exact bytes. The immutable canonical descriptor is
 
 Both mechanisms use the same mutation-boundary `TargetAuthority`. It validates and pins the target parent chain and prevents a parent replacement from redirecting create/readback.
 
-## Real CLI acceptance
+## Historical pre-Linux-only CLI acceptance
 
-Command:
+> **Historical record only.** The command and output below were captured before the production/release boundary became Linux/POSIX-only. They are retained to explain the preserved evidence values, not as a supported invocation or as current release verification. The current runtime rejects Windows mutation with `platform.mutation_unsupported` before candidate capture; current acceptance is executed only on qualified Linux hosts.
+
+Historical command (unsupported by the current runtime):
 
 ```text
 env -u PYTHONPATH .venv/Scripts/python.exe scripts/stage6_cli_acceptance.py
 ```
 
-Observed compact output:
+Historically observed compact output:
 
 ```json
 {"scenario_count":29,"success":true,"summary":"C:\\Users\\Gennady\\HermesWorkspace\\Research\\agent-task-journal\\.stage6-tmp\\final-cli\\stage6-cli-acceptance-summary.json"}
@@ -53,13 +55,13 @@ sha256: e9c8badc7f9991b907f0b79f3e07246c182a974dd3fb886ca9e6a36d2afc8ec5
 scenario_count: 29
 success: true
 failures: {}
-target_file_count: 22
-evidence_file_count: 204
+target_file_count: 19
+evidence_file_count: 177
 ```
 
 The summary, intent, and receipt digests below are captured root-identity-bound evidence from the preserved acceptance roots used for that run. They are not a cross-root reproducibility invariant: deleting and recreating the resolved target root changes its filesystem identity, which intentionally changes `idempotency.root_identity_digest`, the intent digest, and therefore the receipt's `evidence.intent_digest`. With the resolved root identity preserved, repeated CLI runs produce byte-identical canonical receipts. The effect plan and canonical source result remain stable across equivalent roots.
 
-All 17 cross-scenario checks are `true`: ordered plan/progress, durable intent presence, source immutability, reuse without overwrite, shared-blob reuse, recovery, truthful partial prefix, effect ordering, descriptor/blob binding, distinct identity result IDs, runtime inspection result/reference/binding, cleaned subprocess `PYTHONPATH`, and absence of registered knowledge admission.
+All 17 cross-scenario checks are `true`: ordered plan/progress, durable intent presence, source immutability, reuse without overwrite, shared-blob reuse, recovery, fail-before-callback rejection, effect ordering, descriptor/blob binding, distinct identity result IDs, runtime inspection result/reference/binding, cleaned subprocess `PYTHONPATH`, and absence of registered knowledge admission.
 
 ### Scenario inventory
 
@@ -67,13 +69,13 @@ All 17 cross-scenario checks are `true`: ordered plan/progress, durable intent p
 |---|---|
 | Public source lifecycle | validate, plan, unchanged-target validate/plan, text execute, CLI inspect, read-only contract-result inspection |
 | Reuse and identity | same operation/same request, same operation/different request, same logical identity/different content, same bytes/different filename, same bytes/different logical ID |
-| Recovery and immutable conflict | existing blob/missing descriptor recovery, conflicting descriptor truthful partial |
+| Recovery and callback boundary | existing blob/missing descriptor recovery, unsafe descriptor-conflict callback rejected before mutation |
 | Payload and candidate validation | binary, empty, unsafe logical ID, digest mismatch, malformed provenance |
-| Ordered failure injection | post-intent plan tamper, effect 0 write failure/effect 1 not started, effect 0 verified/effect 1 frozen-content failure |
+| Ordered failure injection | post-intent plan tamper, scalar effect 0 write failure/effect 1 not started, unsafe effect 1 callback rejected before mutation |
 | Stage 2–5 regressions | fixture create, fixture append, fixture copy, task journal |
 | Stage boundary | exact `knowledge_admission.v1` registry lookup rejected |
 
-Controlled helpers invoke the real `PhaseCore`, `EvidenceStore`, `EffectBroker`, and `inspect_run`; they inject only deterministic post-intent failures that the public CLI intentionally does not expose.
+Controlled helpers invoke the real `PhaseCore`, `EvidenceStore`, `EffectBroker`, and `inspect_run`. Scalar fault controls exercise bounded failures; callable fault scenarios prove fail-before-callback rejection and do not inject production mutations.
 
 ## Successful source evidence
 
@@ -111,13 +113,13 @@ Observed key outcomes:
 |---|---:|---|---|---|
 | same operation, different request | 10 | `rejected` | false | `idempotency.same_key_conflict` |
 | same logical identity, different content | 10 | `rejected` | false | `source.logical_identity_conflict` |
-| conflicting descriptor after verified blob | 30 | `failed_partial` | true | `target.destination_exists` |
+| unsafe descriptor-conflict callback | 10 | `rejected` | false | `broker.unsafe_fault_callback` |
 | post-intent ordered-plan tamper | 10 | `rejected` | false | `broker.plan_changed_after_intent` |
 | effect 0 write failure | 30 | `failed_partial` | true | `mechanism.write_failed` |
-| effect 1 frozen-content failure | 30 | `failed_partial` | true | `broker.content_blob_mismatch` |
+| unsafe effect 1 callback | 10 | `rejected` | false | `broker.unsafe_fault_callback` |
 | knowledge admission lookup | 10 | `rejected` | false | `registry.entry_not_found` |
 
-For a later-effect failure, ordered progress preserves `effect.0.blob` as the verified prefix. For an effect-0 failure, `effect.1.descriptor` remains `not_started`. Neither case emits atomic success. Existing exact blob bytes are reused with `bytes_written=0`; a missing descriptor is then created and verified.
+The scalar effect-0 failure leaves `effect.1.descriptor` `not_started` and does not emit atomic success. Callable later-effect scenarios are rejected before any effect begins. Existing exact blob bytes are reused with `bytes_written=0`; a missing descriptor is then created and verified.
 
 ## Executable regression evidence
 

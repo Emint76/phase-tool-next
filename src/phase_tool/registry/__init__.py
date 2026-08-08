@@ -54,14 +54,32 @@ class RegistrySnapshot:
         return json.loads(canonical_bytes(self._document).decode("utf-8"))
 
     def contract_bindings(self) -> dict[str, dict[str, str]]:
-        return {
-            f"{entry['id']}@{entry['version']}": {
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for entry in self._document["entries"]:
+            if entry.get("kind") == "contract":
+                groups.setdefault(f"{entry['id']}@{entry['version']}", []).append(entry)
+        bindings: dict[str, dict[str, str]] = {}
+        for exact_binding, entries in groups.items():
+            current = [entry for entry in entries if entry.get("current", True) is True]
+            if len(current) != 1:
+                raise PhaseError("registry.entry_ambiguous", exact_binding)
+            entry = current[0]
+            bindings[exact_binding] = {
                 "id": entry["id"],
                 "version": entry["version"],
                 "package_digest": entry["package_digest"],
             }
+        return bindings
+
+    def guarantee_profile_bindings(self) -> dict[str, dict[str, str]]:
+        return {
+            f"{entry['id']}@{entry['version']}": {
+                "id": entry["id"],
+                "version": entry["version"],
+                "descriptor_digest": entry["artifact_digest"],
+            }
             for entry in self._document["entries"]
-            if entry.get("kind") == "contract"
+            if entry.get("kind") == "guarantee_profile"
         }
 
     def resource_bytes(self, name: str) -> bytes:
@@ -69,6 +87,10 @@ class RegistrySnapshot:
             return self._resources[name]
         except KeyError as exc:
             raise PhaseError("registry.resource_missing", name) from exc
+
+    @staticmethod
+    def _entry_resource(entry: Mapping[str, Any]) -> str:
+        return str(entry.get("archive_resource", entry["artifact"]))
 
     def _trusted_roots(self) -> set[str]:
         return {
@@ -84,23 +106,28 @@ class RegistrySnapshot:
             raise PhaseError("registry.untrusted", entry.get("id", "unknown"))
         artifact = entry.get("artifact")
         expected = entry.get("artifact_digest")
-        if not isinstance(artifact, str) or digest_bytes(self.resource_bytes(artifact)) != expected:
+        if not isinstance(artifact, str):
             raise PhaseError("registry.digest_mismatch", entry.get("id", "unknown"))
-        if entry.get("kind") in {"mechanism", "contract_hook"}:
-            descriptor = parse_json_bytes(self.resource_bytes(artifact))
+        physical_artifact = self._entry_resource(entry)
+        if digest_bytes(self.resource_bytes(physical_artifact)) != expected:
+            raise PhaseError("registry.digest_mismatch", entry.get("id", "unknown"))
+        if entry.get("kind") in {"mechanism", "contract_hook", "guarantee_vocabulary", "guarantee_profile"}:
+            descriptor = parse_json_bytes(self.resource_bytes(physical_artifact))
             if (
                 descriptor.get("id") != entry.get("id")
                 or descriptor.get("version") != entry.get("version")
-                or descriptor.get("capability") != entry.get("capability")
             ):
+                raise PhaseError("registry.identity_mismatch", entry.get("id", "unknown"))
+            if entry.get("kind") in {"mechanism", "contract_hook"} and descriptor.get("capability") != entry.get("capability"):
                 raise PhaseError("registry.identity_mismatch", entry.get("id", "unknown"))
         package_artifacts = entry.get("package_artifacts")
         if package_artifacts is not None:
             verified: list[dict[str, str]] = []
             for item in package_artifacts:
-                actual = digest_bytes(self.resource_bytes(item["resource"]))
+                physical_resource = item.get("archive_resource", item["resource"])
+                actual = digest_bytes(self.resource_bytes(physical_resource))
                 if actual != item["digest"]:
-                    raise PhaseError("registry.digest_mismatch", item["resource"])
+                    raise PhaseError("registry.digest_mismatch", physical_resource)
                 verified.append({"resource": item["resource"], "digest": actual})
             package = {"profile": "phase_contract_package_v1", "artifacts": verified}
             if canonical_digest(package) != entry.get("package_digest"):
@@ -152,36 +179,107 @@ class RegistrySnapshot:
             if entry.get("kind") == "schema"
             and entry.get("schema_ref") == schema_ref
             and (digest is None or entry.get("artifact_digest") == digest)
+            and (digest is not None or entry.get("current", True) is True)
         ]
         if not matches:
             raise PhaseError("registry.entry_not_found", schema_ref)
         if len(matches) != 1:
             raise PhaseError("registry.entry_ambiguous", schema_ref)
         self._verify_entry(matches[0])
-        if digest is not None and digest_bytes(self.resource_bytes(matches[0]["artifact"])) != digest:
+        if digest is not None and digest_bytes(self.resource_bytes(self._entry_resource(matches[0]))) != digest:
             raise PhaseError("registry.digest_mismatch", schema_ref)
         return matches[0]
 
     def schema_document(self, schema_ref: str, digest: str | None = None) -> dict[str, Any]:
         entry = self._schema_entry(schema_ref, digest)
-        return parse_json_bytes(self.resource_bytes(entry["artifact"]))
+        return parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
 
     def schema_registry(self) -> Registry:
         registry = Registry()
         for entry in self._document["entries"]:
-            if entry.get("kind") != "schema":
+            if entry.get("kind") != "schema" or entry.get("current", True) is not True:
                 continue
             self._verify_entry(entry)
-            schema = parse_json_bytes(self.resource_bytes(entry["artifact"]))
+            schema = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
             registry = registry.with_resource(entry["schema_ref"], Resource.from_contents(schema))
         return registry
 
     def resolve_mechanism(self, binding: Mapping[str, Any]) -> Mapping[str, Any]:
         return MappingProxyType(deepcopy(self._resolve_binding(kind="mechanism", binding=binding, capability="mutation_mechanism")))
 
+    def resolve_guarantee_vocabulary(self, binding: Mapping[str, Any]) -> dict[str, Any]:
+        entries = [
+            entry
+            for entry in self._document["entries"]
+            if entry.get("kind") == "guarantee_vocabulary"
+            and entry.get("id") == binding.get("id")
+            and entry.get("version") == binding.get("version")
+            and entry.get("artifact_digest") == binding.get("descriptor_digest")
+        ]
+        if not entries:
+            raise PhaseError("registry.entry_not_found", str(binding.get("id", "unknown")))
+        if len(entries) != 1:
+            raise PhaseError("registry.entry_ambiguous", str(binding.get("id", "unknown")))
+        entry = entries[0]
+        self._verify_entry(entry)
+        vocabulary = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
+        vocabulary_schema = self.schema_document("https://phase-tool.local/schemas/mutation-guarantee-vocabulary.schema.json")
+        Draft202012Validator.check_schema(vocabulary_schema)
+        errors = sorted(Draft202012Validator(vocabulary_schema).iter_errors(vocabulary), key=lambda item: list(item.path))
+        if errors:
+            raise PhaseError("guarantee_vocabulary.schema_invalid", errors[0].message)
+        ids = [item["id"] for item in vocabulary["guarantees"]]
+        if len(ids) != len(set(ids)):
+            raise PhaseError("guarantee_vocabulary.duplicate_id", str(vocabulary["id"]))
+        return deepcopy(vocabulary)
+
+    def resolve_guarantee_profile(self, binding: Mapping[str, Any]) -> dict[str, Any]:
+        matches = [
+            entry
+            for entry in self._document["entries"]
+            if entry.get("kind") == "guarantee_profile"
+            and entry.get("id") == binding.get("id")
+            and entry.get("version") == binding.get("version")
+            and entry.get("artifact_digest") == binding.get("descriptor_digest")
+        ]
+        if not matches:
+            raise PhaseError("registry.entry_not_found", str(binding.get("id", "unknown")))
+        if len(matches) != 1:
+            raise PhaseError("registry.entry_ambiguous", str(binding.get("id", "unknown")))
+        entry = matches[0]
+        if entry.get("capability") != "mutation_authority":
+            raise PhaseError("registry.capability_mismatch", str(binding.get("id", "unknown")))
+        self._verify_entry(entry)
+        descriptor = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
+
+        profile_schema = self.schema_document("https://phase-tool.local/schemas/mutation-guarantee-profile.schema.json")
+        Draft202012Validator.check_schema(profile_schema)
+        errors = sorted(Draft202012Validator(profile_schema).iter_errors(descriptor), key=lambda item: list(item.path))
+        if errors:
+            raise PhaseError("guarantee_profile.schema_invalid", errors[0].message)
+
+        vocabulary = self.resolve_guarantee_vocabulary(descriptor["vocabulary"])
+        vocabulary_ids = {item["id"] for item in vocabulary["guarantees"]}
+        provided = descriptor["provided_guarantees"]
+        if not set(provided) <= vocabulary_ids:
+            raise PhaseError("guarantee_profile.unknown_guarantee", descriptor["id"])
+        conformance = [item["guarantee"] for item in descriptor["conformance"]]
+        if sorted(conformance) != sorted(provided) or len(conformance) != len(set(conformance)):
+            raise PhaseError("guarantee_profile.conformance_incomplete", descriptor["id"])
+
+        implementation = descriptor["implementation"]
+        prefix = "phase_tool/"
+        artifact = implementation["artifact"]
+        if not artifact.startswith(prefix):
+            raise PhaseError("guarantee_profile.implementation_artifact_invalid", artifact)
+        implementation_bytes = package_resources.files("phase_tool").joinpath(artifact[len(prefix) :]).read_bytes()
+        if digest_bytes(implementation_bytes) != implementation["artifact_digest"]:
+            raise PhaseError("guarantee_profile.implementation_digest_mismatch", descriptor["id"])
+        return deepcopy(descriptor)
+
     def resolve_contract_hook(self, binding: Mapping[str, Any]) -> dict[str, Any]:
         entry = self._resolve_binding(kind="contract_hook", binding=binding, capability="contract_hook")
-        descriptor = parse_json_bytes(self.resource_bytes(entry["artifact"]))
+        descriptor = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
         if descriptor.get("execution_allowed") is not True:
             raise PhaseError("contract.hook_unavailable", str(binding["id"]))
         return descriptor
@@ -194,7 +292,7 @@ class RegistrySnapshot:
             raise PhaseError("registry.entry_ambiguous", f"{identifier}@{version}")
         entry = matches[0]
         self._verify_entry(entry)
-        contract = parse_json_bytes(self.resource_bytes(entry["artifact"]))
+        contract = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
         if contract.get("identity", {}).get("id") != identifier or contract.get("identity", {}).get("version") != version:
             raise PhaseError("registry.identity_mismatch", identifier)
 

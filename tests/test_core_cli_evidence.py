@@ -103,7 +103,16 @@ def test_append_and_copy_share_one_core_lifecycle_and_do_not_mutate_targets(tmp_
     assert copy_outcome.exit_code == 0
     assert tree_digest(copy_target) == copy_before
 
-    assert append_outcome.lifecycle == copy_outcome.lifecycle == ("resolve", "capture", "freeze", "validate", "plan", "intent", "receipt")
+    assert append_outcome.lifecycle == copy_outcome.lifecycle == (
+        "resolve",
+        "guarantees",
+        "capture",
+        "freeze",
+        "validate",
+        "plan",
+        "intent",
+        "receipt",
+    )
     assert append_outcome.receipt["terminal_status"] == copy_outcome.receipt["terminal_status"] == "validated_planned"
     assert append_outcome.receipt["mutation_attempted"] is copy_outcome.receipt["mutation_attempted"] is False
     assert append_outcome.receipt["canonical_result"] is copy_outcome.receipt["canonical_result"] is None

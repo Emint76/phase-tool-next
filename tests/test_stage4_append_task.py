@@ -19,6 +19,7 @@ from phase_tool.inspection import inspect_run
 from phase_tool.mutation import AppendRecordFaults, BrokerFaults
 from phase_tool.append_codec import absent_head_token, stream_head_token
 from phase_tool.mutation.expected_head_append import append_head_token, execute_append_record
+from phase_tool.mutation.platform import HostTargetAuthority
 from phase_tool.registry import BundledRegistry
 from phase_tool.contracts.task_journal_v1 import finalize_record
 
@@ -120,33 +121,25 @@ def test_append_fixture_create_then_append_exact_bytes_and_no_rewrite(tmp_path: 
     assert second.receipt["canonical_result"]["state"]["head_token"] != head1
 
 
-def test_append_plan_blob_is_durable_before_broker_and_tampering_fails_pre_mutation(tmp_path: Path) -> None:
+def test_append_plan_blob_is_durable_and_fault_tampering_is_rejected(tmp_path: Path) -> None:
     target = tmp_path / "target"
     (target / "streams").mkdir(parents=True)
     evidence = tmp_path / "evidence"
     candidate = tmp_path / "append.json"
     planned_record = write_append_candidate(candidate, expected_head=None, key="blob", value=1)
 
-    def assert_before_mechanism(intent_path: Path) -> None:
-        run_root = intent_path.parent
-        intent = parse_json_bytes(intent_path.read_bytes())
-        plan = parse_json_bytes((run_root / "attachments" / "effect-plan.json").read_bytes())
-        effect = plan["effects"][0]
-        blob_digest = effect["content_blob_digest"]
-        blob = run_root / "blobs" / blob_digest.split(":", 1)[1]
-        assert effect["content_digest"] == blob_digest
-        assert intent["evidence"]["content_blob_digests"] == [blob_digest]
-        assert blob.is_file()
-        assert blob.read_bytes() == planned_record
-        assert digest_bytes(blob.read_bytes()) == blob_digest
-        assert not (target / "streams" / "alpha.jsonl").exists()
-
-    outcome = PhaseCore().run(
-        _request("fixture_append.v1", candidate, evidence, target, "blob-ok"),
-        execute=True,
-        faults=CoreFaults(broker=BrokerFaults(before_mechanism=assert_before_mechanism)),
-    )
+    outcome = PhaseCore().run(_request("fixture_append.v1", candidate, evidence, target, "blob-ok"), execute=True)
     assert outcome.exit_code == 0
+    run_root = evidence / ".phase" / "runs" / "blob-ok"
+    intent = parse_json_bytes((run_root / "intent.json").read_bytes())
+    plan = parse_json_bytes((run_root / "attachments" / "effect-plan.json").read_bytes())
+    effect = plan["effects"][0]
+    blob_digest = effect["content_blob_digest"]
+    blob = run_root / "blobs" / blob_digest.split(":", 1)[1]
+    assert effect["content_digest"] == blob_digest
+    assert intent["evidence"]["content_blob_digests"] == [blob_digest]
+    assert blob.read_bytes() == planned_record
+    assert digest_bytes(blob.read_bytes()) == blob_digest
 
     for case, tamper in (
         ("plan", lambda run_root: (run_root / "attachments" / "effect-plan.json").write_bytes((run_root / "attachments" / "effect-plan.json").read_bytes() + b" ")),
@@ -167,6 +160,7 @@ def test_append_plan_blob_is_durable_before_broker_and_tampering_fails_pre_mutat
         )
         assert rejected.receipt["terminal_status"] == "rejected"
         assert rejected.receipt["mutation_attempted"] is False
+        assert rejected.receipt["blockers"] == ["broker.unsafe_fault_callback"]
         assert not (target_case / "streams" / "alpha.jsonl").exists()
 
 
@@ -202,7 +196,7 @@ def test_phase_intent_records_execution_requested_and_broker_refuses_false_execu
     )
     assert rejected.receipt["terminal_status"] == "rejected"
     assert rejected.receipt["mutation_attempted"] is False
-    assert rejected.receipt["blockers"] == ["broker.execution_not_requested"]
+    assert rejected.receipt["blockers"] == ["broker.unsafe_fault_callback"]
 
 
 def test_broker_does_not_call_exclusive_create_for_initial_append(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,7 +219,7 @@ def test_broker_does_not_call_exclusive_create_for_initial_append(tmp_path: Path
     assert outcome.receipt["terminal_status"] == "succeeded_verified"
 
 
-def test_append_stale_head_rejected_under_lock_without_mutation(tmp_path: Path) -> None:
+def test_append_race_callback_is_rejected_without_mutation(tmp_path: Path) -> None:
     target = tmp_path / "target"
     (target / "streams").mkdir(parents=True)
     stream = target / "streams" / "alpha.jsonl"
@@ -244,9 +238,9 @@ def test_append_stale_head_rejected_under_lock_without_mutation(tmp_path: Path) 
         faults=CoreFaults(broker=BrokerFaults(before_mechanism=race)),
     )
 
-    assert outcome.receipt["terminal_status"] == "failed_no_effect"
-    assert outcome.receipt["effect_receipts"][0]["bytes_written"] == 0
-    assert stream.read_bytes() == original + b'{"value":99}\n'
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
+    assert stream.read_bytes() == original
 
 
 def test_append_short_write_loop_and_partial_torn_tail_are_truthful(tmp_path: Path) -> None:
@@ -319,6 +313,83 @@ def test_append_uses_evidence_lock_root_and_does_not_write_target_lock_file(tmp_
     assert receipt["status"] == "applied_verified"
     assert not (target / "stream.jsonl.lock").exists()
     assert list(lock_root.rglob("*.lock"))
+
+
+def test_append_rejects_rebound_root_handle_before_target_creation(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    target_info = target.stat()
+    expected_root_identity = (int(target_info.st_dev), int(target_info.st_ino))
+    target.rename(tmp_path / "displaced")
+    target.mkdir()
+    record = b'{"value":1}\n'
+    effect = {
+        "effect_id": "effect.append.001",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "nested/stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": None},
+        "lock_scope": "stream.alpha",
+    }
+
+    with pytest.raises(PhaseError) as exc_info:
+        execute_append_record(
+            effect,
+            target,
+            record,
+            run_id="rebound-root",
+            timestamp=NOW,
+            operational_lock_root=_lock_root(tmp_path),
+            expected_root_identity=expected_root_identity,
+        )
+
+    assert exc_info.value.code == "broker.root_identity_mismatch"
+    assert not (target / "nested").exists()
+
+
+def test_append_namespace_drift_after_fsync_returns_truthful_partial_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    record = b'{"value":1}\n'
+    effect = {
+        "effect_id": "effect.append.001",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": None},
+        "lock_scope": "stream.alpha",
+    }
+    original = HostTargetAuthority.assert_namespace_binding
+    calls = 0
+
+    def drift_after_write(authority: HostTargetAuthority) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise PhaseError("path.parent_identity_changed")
+        original(authority)
+
+    monkeypatch.setattr(HostTargetAuthority, "assert_namespace_binding", drift_after_write)
+    receipt = execute_append_record(
+        effect,
+        target,
+        record,
+        run_id="post-fsync-drift",
+        timestamp=NOW,
+        operational_lock_root=_lock_root(tmp_path),
+    )
+
+    assert calls == 2
+    assert receipt["status"] == "failed_partial"
+    assert receipt["attempted"] is True
+    assert receipt["bytes_written"] == len(record)
+    assert receipt["error"]["code"] == "path.parent_identity_changed"
+    assert (target / "stream.jsonl").read_bytes() == record
 
 
 def test_append_readback_uses_captured_before_bytes_not_observed_override(tmp_path: Path) -> None:

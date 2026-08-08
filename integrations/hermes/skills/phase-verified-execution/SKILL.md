@@ -4,7 +4,7 @@ description: "Use when a complete Phase Tool candidate, its inputs, root binding
 version: 1.0.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux]
 metadata:
   hermes:
     tags: [phase-tool, verified-execution, receipts, inspect, transport-neutral]
@@ -146,7 +146,7 @@ The runner resolves the executable in this order:
 2. `PHASE_BIN` environment variable;
 3. `phase` from `PATH`.
 
-An explicit path is allowed for a locally installed virtual-environment executable. On Windows, when the runner is launched with native `python.exe`, use a native path such as `C:/Users/...`; do not pass an MSYS-only `/c/Users/...` script path to Python. The runner removes ambient `PYTHONPATH` from the child environment so unrelated Python packages cannot shadow the installed Phase distribution.
+An explicit path is allowed for a locally installed virtual-environment executable. The runner removes ambient `PYTHONPATH` from the child environment so unrelated Python packages cannot shadow the installed Phase distribution.
 
 The runner invokes no `validate` or `plan` command. It invokes inspect after execute and with the identical evidence root, run ID, and root bindings.
 

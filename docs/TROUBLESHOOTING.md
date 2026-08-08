@@ -30,6 +30,6 @@ Do not retry mutation blindly. Preserve the evidence root and target, investigat
 
 Run `phase doctor`, then launch `phase-mcp` directly. Stdout is protocol-only; inspect stderr for SDK diagnostics. Stage 8 supports stdio, not HTTP.
 
-## Windows paths
+## `platform.mutation_unsupported`
 
-Use normal absolute paths accepted by the shell. Phase Tool's trusted path/evidence layers apply the platform long-path boundary while preserving symlink/reparse rejection. Do not add sleep or retry loops for deterministic path failures.
+The current production/release mutation runtime is Linux/POSIX only. Windows, macOS, WSL, and other non-qualified hosts are rejected before candidate capture and target mutation. Do not retry or bypass this guard; run the exact wheel on a qualified Linux host. A future platform authority must be implemented and qualified as a separate versioned profile.

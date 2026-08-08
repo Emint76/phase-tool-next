@@ -322,6 +322,6 @@ Dependency direction: adapters/CLI → application → domain ports; storage/sch
 13. privacy/secret policy **до первой append**: refusal-before-write, explicit confirmation для sensitive data, file permissions/ACL и export redaction; redacted instruction не может одновременно считаться Original, secure deletion не обещается.
 14. portable ASCII `task_id` profile: length, case policy, Unicode rejection/normalization, Windows reserved names (`CON`, `NUL` и др.), trailing dot/space и case-collision vectors.
 15. deterministic projection order и tie-breakers, включая corrupt/unparseable tasks; baseline для решения — `(recorded_at, task_id)` для task list и `(task_id, sequence)` для events.
-16. supported filesystem/durability matrix: native Windows, Linux, WSL; FAT/network shares — best-effort или unsupported до доказательства; Windows sharing/reparse и POSIX directory-sync semantics.
+16. supported filesystem/durability matrix: production/release mutation is Linux/POSIX-only on qualified filesystems; Windows, WSL and network shares are unsupported until separately versioned and qualified; POSIX directory-sync semantics remain explicit.
 17. privacy/security ADR дополнительно фиксирует data classification, retention/deletion policy, trusted-root assumptions, symlink/junction/reparse handling, local writer/admin boundary и release gates.
 18. artifact verification scopes: historical point-in-time observation, current external object и managed snapshot.

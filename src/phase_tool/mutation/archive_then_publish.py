@@ -7,8 +7,8 @@ from typing import Callable
 
 from ..canonical import digest_bytes
 from ..errors import PhaseError
-from ..paths import _is_reparse_point, _platform_path
-from .target_authority import TargetAuthority
+from ..paths import _is_reparse_point
+from .authority import AuthorityProvider, TargetAuthority
 
 _MAX_CONTENT_BYTES = 16 * 1024 * 1024
 
@@ -102,15 +102,7 @@ def _write_all(descriptor: int, content: bytes, writer: Callable[[int, memoryvie
 
 
 def _read_current(authority: TargetAuthority) -> bytes:
-    if authority.parent_fd is None:
-        with open(_platform_path(authority.target), "rb") as stream:
-            return stream.read()
-    descriptor = os.open(authority.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=authority.parent_fd)
-    try:
-        with os.fdopen(os.dup(descriptor), "rb") as stream:
-            return stream.read()
-    finally:
-        os.close(descriptor)
+    return authority.read_bytes()
 
 
 def _publish_current(
@@ -167,6 +159,7 @@ def execute_archive_then_publish(
     run_id: str,
     timestamp: str,
     faults: ArchiveThenPublishFaults | None = None,
+    authority_provider: AuthorityProvider,
 ) -> dict[str, object]:
     active = faults or ArchiveThenPublishFaults()
     if len(content) > _MAX_CONTENT_BYTES:
@@ -176,8 +169,8 @@ def execute_archive_then_publish(
     if effect["target"] == effect["archive_target"]:
         raise PhaseError("publish.target_archive_collision")
     detector = active.reparse_detector or _is_reparse_point
-    current_authority = TargetAuthority(target_root, str(effect["target"]["relative_locator"]), detector)  # type: ignore[index]
-    archive_authority = TargetAuthority(target_root, str(effect["archive_target"]["relative_locator"]), detector)  # type: ignore[index]
+    current_authority = authority_provider.open_authority(target_root, str(effect["target"]["relative_locator"]), detector)  # type: ignore[index]
+    archive_authority = authority_provider.open_authority(target_root, str(effect["archive_target"]["relative_locator"]), detector)  # type: ignore[index]
     archive_before: dict[str, object] = _unknown()
     archive_after: dict[str, object] = _unknown()
     bytes_written = 0

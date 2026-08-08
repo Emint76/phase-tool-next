@@ -53,18 +53,20 @@ def test_registry_digests_match_git_index_and_package_resources() -> None:
     resources = BundledRegistry.resources()
     for entry in registry.to_document()["entries"]:
         artifact = entry["artifact"]
-        committed = _git_index_bytes(f"src/phase_tool/data/{artifact}")
-        assert resources[artifact] == committed, artifact
-        assert entry["artifact_digest"] == digest_bytes(committed), artifact
+        physical_artifact = entry.get("archive_resource", artifact)
+        committed = _git_index_bytes(f"src/phase_tool/data/{physical_artifact}")
+        assert resources[physical_artifact] == committed, physical_artifact
+        assert entry["artifact_digest"] == digest_bytes(committed), physical_artifact
 
         package_artifacts = entry.get("package_artifacts")
         if package_artifacts is None:
             continue
         verified = []
         for item in package_artifacts:
-            committed = _git_index_bytes(f"src/phase_tool/data/{item['resource']}")
-            assert resources[item["resource"]] == committed, item["resource"]
-            assert item["digest"] == digest_bytes(committed), item["resource"]
+            physical_resource = item.get("archive_resource", item["resource"])
+            committed = _git_index_bytes(f"src/phase_tool/data/{physical_resource}")
+            assert resources[physical_resource] == committed, physical_resource
+            assert item["digest"] == digest_bytes(committed), physical_resource
             verified.append({"resource": item["resource"], "digest": digest_bytes(committed)})
         assert entry["package_digest"] == canonical_digest(
             {"profile": "phase_contract_package_v1", "artifacts": verified}
@@ -74,9 +76,12 @@ def test_registry_digests_match_git_index_and_package_resources() -> None:
 def test_hash_bound_text_artifacts_are_forced_to_lf() -> None:
     registry = BundledRegistry.load().to_document()
     paths = {"src/phase_tool/data/registry.json", "fixtures/manifest.sha256"}
-    paths.update(f"src/phase_tool/data/{entry['artifact']}" for entry in registry["entries"])
     paths.update(
-        f"src/phase_tool/data/{item['resource']}"
+        f"src/phase_tool/data/{entry.get('archive_resource', entry['artifact'])}"
+        for entry in registry["entries"]
+    )
+    paths.update(
+        f"src/phase_tool/data/{item.get('archive_resource', item['resource'])}"
         for entry in registry["entries"]
         for item in entry.get("package_artifacts", [])
     )
@@ -105,6 +110,50 @@ def test_wrong_contract_digest_and_version_fail_closed() -> None:
     with pytest.raises(PhaseError) as wrong_version:
         registry.resolve_contract("fixture_append.v1", "9.9.9", "sha256:" + "0" * 64, core_version="1.0.0")
     assert wrong_version.value.code == "registry.entry_not_found"
+
+
+def test_duplicate_contract_versions_have_one_explicit_current_binding() -> None:
+    registry = BundledRegistry.load()
+    document = registry.to_document()
+    bindings = registry.contract_bindings()
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for entry in document["entries"]:
+        if entry.get("kind") != "contract":
+            continue
+        grouped.setdefault(f"{entry['id']}@{entry['version']}", []).append(entry)
+    for exact_binding, entries in grouped.items():
+        if len(entries) == 1:
+            continue
+        current = [entry for entry in entries if entry.get("current") is True]
+        assert len(current) == 1, exact_binding
+        assert bindings[exact_binding]["package_digest"] == current[0]["package_digest"]
+
+
+def test_contract_bindings_reject_multiple_current_entries() -> None:
+    document = BundledRegistry.load().to_document()
+    historical = next(
+        entry
+        for entry in document["entries"]
+        if entry.get("kind") == "contract"
+        and entry.get("id") == "fixture_copy.v1"
+        and entry.get("current") is False
+    )
+    historical["current"] = True
+    snapshot = RegistrySnapshot.from_document(document, BundledRegistry.resources())
+    with pytest.raises(PhaseError) as error:
+        snapshot.contract_bindings()
+    assert error.value.code == "registry.entry_ambiguous"
+
+
+def test_contract_bindings_reject_zero_current_entries() -> None:
+    document = BundledRegistry.load().to_document()
+    for entry in document["entries"]:
+        if entry.get("kind") == "contract" and entry.get("id") == "fixture_copy.v1":
+            entry["current"] = False
+    snapshot = RegistrySnapshot.from_document(document, BundledRegistry.resources())
+    with pytest.raises(PhaseError) as error:
+        snapshot.contract_bindings()
+    assert error.value.code == "registry.entry_ambiguous"
 
 
 def test_ambiguous_mutable_and_untrusted_entries_fail_closed() -> None:
@@ -184,7 +233,13 @@ def test_untrusted_mechanism_and_artifact_drift_fail_closed() -> None:
     assert untrusted.value.code == "registry.untrusted"
 
     clean = BundledRegistry.load().to_document()
-    contract = next(x for x in clean["entries"] if x["kind"] == "contract" and x["id"] == "fixture_copy.v1")
+    contract = next(
+        x
+        for x in clean["entries"]
+        if x["kind"] == "contract"
+        and x["id"] == "fixture_copy.v1"
+        and x["package_digest"] == binding["package_digest"]
+    )
     resources = dict(BundledRegistry.resources())
     resources[contract["artifact"]] = resources[contract["artifact"]] + b" "
     with pytest.raises(PhaseError) as drift:

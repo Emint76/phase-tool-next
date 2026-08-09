@@ -15,6 +15,9 @@ from phase_tool.canonical import canonical_bytes, digest_bytes
 from phase_tool.core import PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
 from phase_tool.inspection import inspect_run
+from phase_tool.installation import Installation
+from phase_tool.mutation.guarantees import registered_profile_binding
+from phase_tool.mutation.platform import HostAuthorityProvider
 from phase_tool.registry import BundledRegistry
 
 NOW = "2026-07-27T00:00:00Z"
@@ -74,6 +77,18 @@ def request(
         input_paths=inputs or {},
         root_bindings={"fixture_result_root": target},
         timestamp=NOW,
+    )
+
+
+class _BoundaryTestInstallation(Installation):
+    def qualify_authority_roots(self, root_bindings: dict[str, Path]) -> None:
+        pass
+
+
+def boundary_test_installation() -> Installation:
+    return _BoundaryTestInstallation(
+        authority_provider=HostAuthorityProvider(),
+        authority_profile_binding=registered_profile_binding("phase.posix.authority.v1@1.0.0"),
     )
 
 
@@ -151,6 +166,92 @@ def test_early_invalid_candidate_writes_truthful_rejection_receipt(tmp_path: Pat
     assert outcome.receipt["evidence"]["intent_digest"] is None
     assert not (run_root / "intent.json").exists()
     assert (run_root / "receipt.json").is_file()
+
+
+def test_missing_candidate_is_a_stable_pre_mutation_rejection(tmp_path: Path) -> None:
+    candidate = tmp_path / "missing-candidate.json"
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "sentinel").write_bytes(b"unchanged")
+    evidence = tmp_path / "evidence"
+
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "execute",
+        contract_binding="fixture_create.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="missing-candidate-rejection",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    schema = BundledRegistry.load().schema_document(
+        "https://phase-tool.local/schemas/stage3-command-result.schema.json"
+    )
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response.payload)
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "candidate.input_unavailable"
+    assert response.payload["error"] != "cli.failure"
+    assert response.payload["blockers"] == ["candidate.input_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "missing-candidate-rejection"
+    assert (target / "sentinel").read_bytes() == b"unchanged"
+    assert str(candidate) not in serialized
+    assert "FileNotFoundError" not in serialized
+    assert "No such file or directory" not in serialized
+    assert "Errno" not in serialized
+    run_root = evidence / ".phase" / "runs" / "missing-candidate-rejection"
+    assert sorted(path.name for path in run_root.iterdir()) == ["receipt.json"]
+    receipt = json.loads((run_root / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["blockers"] == ["candidate.input_unavailable"]
+    assert receipt["execution_disposition"] == "not_executed"
+    assert receipt["mutation_attempted"] is False
+    assert receipt["evidence"]["intent_digest"] is None
+
+
+def test_regular_file_evidence_root_is_a_stable_pre_mutation_rejection(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text("{}", encoding="utf-8")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "sentinel").write_bytes(b"unchanged")
+    evidence = tmp_path / "evidence-file"
+    evidence.write_bytes(b"evidence-sentinel")
+
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "execute",
+        contract_binding="fixture_create.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="evidence-file-rejection",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    schema = BundledRegistry.load().schema_document(
+        "https://phase-tool.local/schemas/stage3-command-result.schema.json"
+    )
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response.payload)
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "evidence.initialization_failed"
+    assert response.payload["error"] != "cli.failure"
+    assert response.payload["blockers"] == ["evidence.initialization_failed"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] is None
+    assert (target / "sentinel").read_bytes() == b"unchanged"
+    assert evidence.read_bytes() == b"evidence-sentinel"
+    assert str(evidence) not in serialized
+    assert "FileExistsError" not in serialized
+    assert "Not a directory" not in serialized
+    assert "Errno" not in serialized
 
 
 def test_inspect_is_read_only_and_detects_tampering(tmp_path: Path) -> None:

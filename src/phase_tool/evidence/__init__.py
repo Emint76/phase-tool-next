@@ -89,24 +89,29 @@ def replace_attachment_canonical(attachment_root: Path, file_name: str, value: A
 
 class EvidenceStore:
     def __init__(self, evidence_root: Path, run_id: str) -> None:
-        validate_run_id(run_id)
-        absolute = evidence_root.absolute()
-        _reject_existing_links(absolute)
-        os.makedirs(_platform_path(absolute), exist_ok=True)
-        _reject_existing_links(absolute)
-        self.evidence_root = Path(_platform_path(absolute)).resolve(strict=True)
-        phase_root = self.evidence_root / ".phase"
-        runs_root = phase_root / "runs"
-        os.makedirs(_platform_path(runs_root), exist_ok=True)
-        self.run_root = runs_root / run_id
         try:
-            os.mkdir(_platform_path(self.run_root))
-        except FileExistsError as exc:
-            raise PhaseError("evidence.run_exists", run_id) from exc
-        self.blob_root = self.run_root / "blobs"
-        self.attachment_root = self.run_root / "attachments"
-        self.operational_lock_root = phase_root / "locks"
-        os.makedirs(_platform_path(self.operational_lock_root), exist_ok=True)
+            validate_run_id(run_id)
+            absolute = evidence_root.absolute()
+            _reject_existing_links(absolute)
+            os.makedirs(_platform_path(absolute), exist_ok=True)
+            _reject_existing_links(absolute)
+            self.evidence_root = Path(_platform_path(absolute)).resolve(strict=True)
+            phase_root = self.evidence_root / ".phase"
+            runs_root = phase_root / "runs"
+            os.makedirs(_platform_path(runs_root), exist_ok=True)
+            self.run_root = runs_root / run_id
+            try:
+                os.mkdir(_platform_path(self.run_root))
+            except FileExistsError as exc:
+                raise PhaseError("evidence.run_exists", run_id) from exc
+            self.blob_root = self.run_root / "blobs"
+            self.attachment_root = self.run_root / "attachments"
+            self.operational_lock_root = phase_root / "locks"
+            os.makedirs(_platform_path(self.operational_lock_root), exist_ok=True)
+        except PhaseError:
+            raise
+        except OSError as exc:
+            raise PhaseError("evidence.initialization_failed") from exc
 
     def write_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
         if "/" in relative:

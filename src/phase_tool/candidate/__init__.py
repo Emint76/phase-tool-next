@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..canonical import canonical_bytes, immutable_value, parse_json_bytes, profile_digest_bytes
+from ..errors import PhaseError
 
 
 @dataclass(frozen=True)
@@ -18,10 +19,12 @@ class CapturedCandidate:
 
 
 def _read_once(path: Path, maximum_bytes: int) -> bytes:
-    with path.open("rb") as stream:
-        data = stream.read(maximum_bytes + 1)
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(maximum_bytes + 1)
+    except OSError as exc:
+        raise PhaseError("candidate.input_unavailable") from exc
     if len(data) > maximum_bytes:
-        from ..errors import PhaseError
         raise PhaseError("candidate.too_large", f"candidate exceeds {maximum_bytes} bytes")
     return data
 

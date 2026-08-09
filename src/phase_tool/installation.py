@@ -27,6 +27,8 @@ def _resolved_existing_root(path: Path) -> Path:
     resolved = Path(path).resolve(strict=True)
     if os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)):
         raise PhaseError("guarantee.profile_scope_unsupported", str(path))
+    if not resolved.is_dir():
+        raise PhaseError("guarantee.profile_scope_unsupported")
     return resolved
 
 

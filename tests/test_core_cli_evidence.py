@@ -8,7 +8,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
+from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes, digest_bytes
 from phase_tool.core import PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
@@ -253,3 +255,48 @@ def test_standalone_cli_validate_plan_inspect_and_execute_refusal(tmp_path: Path
     assert failure_output["success"] is False
     assert failure_output["mutation_attempted"] is False
     assert failure_output["error"] == "cli.failure"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="production authority qualification is Linux-only")
+def test_regular_file_write_root_is_a_stable_pre_mutation_rejection(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text(json.dumps({
+        "operation_id": "operation-1",
+        "target_locator": "objects/item.bin",
+        "input_binding": "payload",
+        "idempotency_key": "root-file-key",
+    }), encoding="utf-8")
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"payload")
+    target = tmp_path / "configured-root"
+    target.write_bytes(b"root-sentinel")
+    evidence = tmp_path / "evidence"
+
+    response = PhaseApplication().run(
+        "execute",
+        contract_binding="fixture_create.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="root-file-rejection",
+        input_paths={"payload": payload},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    schema = BundledRegistry.load().schema_document(
+        "https://phase-tool.local/schemas/stage3-command-result.schema.json"
+    )
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response.payload)
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "guarantee.profile_scope_unsupported"
+    assert response.payload["blockers"] == ["guarantee.profile_scope_unsupported"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "root-file-rejection"
+    assert target.read_bytes() == b"root-sentinel"
+    assert str(target) not in serialized
+    assert "Not a directory" not in serialized
+    run_root = evidence / ".phase" / "runs" / "root-file-rejection"
+    assert sorted(path.name for path in run_root.iterdir()) == ["receipt.json"]

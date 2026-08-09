@@ -233,6 +233,24 @@ def test_source_validate_and_plan_do_not_mutate_target(tmp_path: Path) -> None:
     assert claimed_progress_error.value.code == "inspection.progress_semantic_mismatch"
 
 
+def test_source_admission_rejects_structurally_incomplete_candidate_before_mutation(
+    tmp_path: Path,
+) -> None:
+    request, target, _evidence, _source, _payload = _request(tmp_path, run_id="source-incomplete")
+    target_before = sorted(path.relative_to(target).as_posix() for path in target.rglob("*"))
+    incomplete = _candidate_value()
+    del incomplete["placement"]
+    _write_candidate(request.candidate_path, incomplete)
+
+    outcome = PhaseCore().run(request, execute=True)
+
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert outcome.receipt["blockers"] == ["candidate.schema_invalid"]
+    assert outcome.receipt["mutation_attempted"] is False
+    assert sorted(path.relative_to(target).as_posix() for path in target.rglob("*")) == target_before
+    assert not any((target / "blobs" / "sha256").iterdir())
+
+
 def test_source_reuse_conflicts_and_recovery_matrix(tmp_path: Path) -> None:
     first_request, target, evidence, _source, payload = _request(tmp_path, run_id="source-first", payload=b"same")
     first = PhaseCore().run(first_request, execute=True)

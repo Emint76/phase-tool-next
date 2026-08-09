@@ -60,10 +60,38 @@ class ValidatorRunner:
     def _candidate_validation(self, contract: ResolvedContract, candidate: CapturedCandidate) -> tuple[str, str, Any, Any, list[str]]:
         schema = self.registry.schema_document(contract.document["candidate"]["schema_ref"], contract.document["candidate"]["schema_digest"])
         value = parse_json_bytes(candidate.canonical_bytes)
-        errors = sorted(Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(value), key=lambda error: list(error.path))
+        errors = sorted(
+            Draft202012Validator(
+                schema,
+                registry=self.registry.schema_registry(),
+                format_checker=FormatChecker(),
+            ).iter_errors(value),
+            key=lambda error: list(error.path),
+        )
         if errors:
             return "fail", "candidate.schema_invalid", "schema_valid", errors[0].message, ["candidate.schema_invalid"]
         return "pass", "validation.pass", "schema_valid", "schema_valid", []
+
+    def run_candidate_schema(
+        self,
+        contract: ResolvedContract,
+        candidate: CapturedCandidate,
+        *,
+        run_id: str,
+        timestamp: str,
+    ) -> dict[str, Any]:
+        declaration = next(item for item in contract.document["validators"] if item["phase"] == "candidate")
+        outcome = self._candidate_validation(contract, candidate)
+        return self._result(
+            declaration,
+            run_id=run_id,
+            timestamp=timestamp,
+            status=outcome[0],
+            code=outcome[1],
+            expected=outcome[2],
+            actual=outcome[3],
+            blockers=outcome[4],
+        )
 
     def _target_root(self, contract: ResolvedContract, root_bindings: Mapping[str, Path]) -> Path:
         binding = contract.document["canonical_result"]["root_binding"]

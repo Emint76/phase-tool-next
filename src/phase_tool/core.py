@@ -656,6 +656,15 @@ class PhaseCore:
             if hook is not None and hasattr(hook, "normalize_candidate"):
                 normalized = hook.normalize_candidate(parse_json_bytes(candidate.canonical_bytes))
                 candidate = normalize_captured_structured(candidate, normalized)
+            schema_result = ValidatorRunner(self.registry).run_candidate_schema(
+                contract,
+                candidate,
+                run_id=request.run_id,
+                timestamp=timestamp,
+            )
+            if schema_result["status"] != "pass":
+                validator_results = [schema_result]
+                raise PhaseError(schema_result["code"])
             lifecycle.append("freeze")
             frozen = freeze_declared_inputs(
                 contract.document,

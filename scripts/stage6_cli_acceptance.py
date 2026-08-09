@@ -342,7 +342,7 @@ def main() -> int:
     c, p = source_files("empty", b"", "source-empty", "op-empty")
     cli("17_empty", "execute", common(CONTRACT, c, "empty", p), "empty", {"exit": 0}, p)
     c, p = source_files("unsafe", b"unsafe", "../unsafe", "op-unsafe")
-    cli("18_unsafe_logical_id", "execute", common(CONTRACT, c, "unsafe", p), "unsafe", {"exit": 10, "terminal_status": "rejected", "mutation_attempted": False, "blocker": "path.traversal", "unchanged": True}, p)
+    cli("18_unsafe_logical_id", "execute", common(CONTRACT, c, "unsafe", p), "unsafe", {"exit": 10, "terminal_status": "rejected", "mutation_attempted": False, "blocker": "candidate.schema_invalid", "unchanged": True}, p)
     c, p = source_files("digest-mismatch", b"digest mismatch", "source-digest-mismatch", "op-digest-mismatch")
     value = json.loads(c.read_text(encoding="utf-8")); value["asset_input"]["expected_digest"] = sha(b"not the payload"); write_json(c, value)
     cli("19_digest_mismatch", "execute", common(CONTRACT, c, "digest-mismatch", p), "digest-mismatch", {"exit": 10, "terminal_status": "rejected", "blocker": "source.expected_digest_mismatch", "unchanged": True}, p)

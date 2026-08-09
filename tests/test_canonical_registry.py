@@ -39,6 +39,16 @@ def test_canonical_profile_rejects_float_duplicate_keys_and_excessive_nesting() 
         parse_json_bytes(nested, maximum_bytes=1024)
 
 
+def test_json_integer_beyond_runtime_conversion_limit_is_invalid_candidate_json() -> None:
+    oversized_integer = b"1" * 5_000
+
+    with pytest.raises(PhaseError) as error:
+        parse_json_bytes(b'{"value":' + oversized_integer + b"}")
+
+    assert error.value.code == "candidate.invalid_json"
+    assert parse_json_bytes(b'{"value":123456789}') == {"value": 123456789}
+
+
 def test_exact_bundled_contract_resolution_succeeds() -> None:
     registry = BundledRegistry.load()
     binding = registry.contract_bindings()["fixture_append.v1@1.0.0"]

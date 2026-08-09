@@ -206,9 +206,12 @@ def inspect_run(
     """Verify evidence and, for observed results, re-read installation-bound target bytes."""
     validate_run_id(run_id)
     registry = registry or BundledRegistry.load()
-    root = Path(_platform_path(Path(evidence_root))).resolve(strict=True)
-    run_root = (root / ".phase" / "runs" / run_id).resolve(strict=True)
-    expected_parent = (root / ".phase" / "runs").resolve(strict=True)
+    try:
+        root = Path(_platform_path(Path(evidence_root))).resolve(strict=True)
+        run_root = (root / ".phase" / "runs" / run_id).resolve(strict=True)
+        expected_parent = (root / ".phase" / "runs").resolve(strict=True)
+    except OSError as exc:
+        raise PhaseError("inspection.run_unavailable") from exc
     try:
         run_root.relative_to(expected_parent)
     except ValueError as exc:

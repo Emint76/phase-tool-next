@@ -213,6 +213,112 @@ def test_missing_candidate_is_a_stable_pre_mutation_rejection(tmp_path: Path) ->
     assert receipt["evidence"]["intent_digest"] is None
 
 
+def test_unavailable_declared_input_is_a_stable_pre_mutation_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.json"
+    write_copy(candidate)
+    payload = tmp_path / "private-payload.bin"
+    payload.write_bytes(b"payload")
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "sentinel").write_bytes(b"unchanged")
+    evidence = tmp_path / "evidence"
+    original_open = Path.open
+
+    def unavailable_open(path: Path, *args: object, **kwargs: object):
+        if path == payload and args and args[0] == "rb":
+            raise PermissionError("private host diagnostic")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", unavailable_open)
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "execute",
+        contract_binding="fixture_copy.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="unavailable-input-rejection",
+        input_paths={"payload": payload},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    schema = BundledRegistry.load().schema_document(
+        "https://phase-tool.local/schemas/stage3-command-result.schema.json"
+    )
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response.payload)
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "freeze.input_unavailable"
+    assert response.payload["blockers"] == ["freeze.input_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "unavailable-input-rejection"
+    assert (target / "sentinel").read_bytes() == b"unchanged"
+    assert str(payload) not in serialized
+    assert "PermissionError" not in serialized
+    assert "private host diagnostic" not in serialized
+    run_root = evidence / ".phase" / "runs" / "unavailable-input-rejection"
+    assert sorted(path.name for path in run_root.iterdir()) == ["receipt.json"]
+    receipt = json.loads((run_root / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["blockers"] == ["freeze.input_unavailable"]
+    assert receipt["execution_disposition"] == "not_executed"
+    assert receipt["mutation_attempted"] is False
+    assert receipt["evidence"]["intent_digest"] is None
+
+
+def test_unavailable_root_during_separation_is_a_stable_pre_initialization_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.json"
+    write_copy(candidate)
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"payload")
+    target = tmp_path / "private-target"
+    target.mkdir()
+    (target / "sentinel").write_bytes(b"unchanged")
+    evidence = tmp_path / "evidence"
+    original_resolve = Path.resolve
+
+    def unavailable_resolve(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == target:
+            raise PermissionError("private root diagnostic")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", unavailable_resolve)
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "execute",
+        contract_binding="fixture_copy.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="root-separation-rejection",
+        input_paths={"payload": payload},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    schema = BundledRegistry.load().schema_document(
+        "https://phase-tool.local/schemas/stage3-command-result.schema.json"
+    )
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response.payload)
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "evidence.root_separation_failed"
+    assert response.payload["blockers"] == ["evidence.root_separation_failed"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] is None
+    assert (target / "sentinel").read_bytes() == b"unchanged"
+    assert not evidence.exists()
+    assert str(target) not in serialized
+    assert "PermissionError" not in serialized
+    assert "private root diagnostic" not in serialized
+
+
 def test_regular_file_evidence_root_is_a_stable_pre_mutation_rejection(tmp_path: Path) -> None:
     candidate = tmp_path / "candidate.json"
     candidate.write_text("{}", encoding="utf-8")
@@ -353,9 +459,18 @@ def test_standalone_cli_validate_plan_inspect_and_execute_refusal(tmp_path: Path
     )
     assert failure.returncode == 10, failure.stderr
     failure_output = json.loads(failure.stdout)
+    failure_serialized = json.dumps(failure_output, sort_keys=True)
     assert failure_output["success"] is False
+    assert failure_output["blockers"] == ["inspection.run_unavailable"]
+    assert failure_output["terminal_status"] == "rejected"
+    assert failure_output["execution_disposition"] == "not_executed"
     assert failure_output["mutation_attempted"] is False
-    assert failure_output["error"] == "cli.failure"
+    assert failure_output["run_id"] is None
+    assert failure_output["error"] == "inspection.run_unavailable"
+    assert str(tmp_path / "missing") not in failure_serialized
+    assert "FileNotFoundError" not in failure_serialized
+    assert "No such file or directory" not in failure_serialized
+    assert "Errno" not in failure_serialized
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="production authority qualification is Linux-only")

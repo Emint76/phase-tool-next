@@ -591,6 +591,47 @@ def test_structured_candidate_size_limit_is_checked_before_temp_materialization(
     assert response.payload["error"] == "candidate.too_large"
 
 
+def test_structured_candidate_integer_beyond_runtime_conversion_limit_is_invalid_json(tmp_path: Path) -> None:
+    response = PhaseApplication().run(
+        "execute",
+        contract_binding="fixture_create.v1@1.0.0",
+        candidate={"operation_id": 10**4_999},
+        evidence_root=tmp_path / "evidence",
+        run_id="oversized-integer-candidate",
+        input_paths={},
+        root_bindings={},
+    )
+
+    assert response.exit_code == 10
+    assert response.payload["error"] == "candidate.invalid_json"
+    assert response.payload["blockers"] == ["candidate.invalid_json"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] is None
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_structured_candidate_normalization_value_error_remains_unexpected(tmp_path: Path) -> None:
+    class BrokenMapping(dict[str, object]):
+        def items(self):
+            raise ValueError("programming failure")
+
+    response = PhaseApplication().run(
+        "execute",
+        contract_binding="fixture_create.v1@1.0.0",
+        candidate=BrokenMapping(),
+        evidence_root=tmp_path / "evidence",
+        run_id="broken-mapping-candidate",
+        input_paths={},
+        root_bindings={},
+    )
+
+    assert response.exit_code == 10
+    assert response.payload["error"] == "cli.failure"
+    assert response.payload["error"] != "candidate.invalid_json"
+
+
 def test_doctor_enforces_full_declared_mcp_version_range(monkeypatch: pytest.MonkeyPatch) -> None:
     import phase_tool.application as application_module
 

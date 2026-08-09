@@ -119,10 +119,15 @@ def copy_and_hash(
     frozen_at: str,
     maximum_bytes: int = 16 * 1024 * 1024,
 ) -> FrozenInput:
-    source = contained_read_path(input_root, relative_locator)
-    if not os.path.isfile(_platform_path(source)):
-        raise PhaseError("freeze.not_regular_file", relative_locator)
-    data = _read_file_stable(source, maximum_bytes)
+    try:
+        source = contained_read_path(input_root, relative_locator)
+        if not os.path.isfile(_platform_path(source)):
+            raise PhaseError("freeze.not_regular_file", relative_locator)
+        data = _read_file_stable(source, maximum_bytes)
+    except PhaseError:
+        raise
+    except OSError as exc:
+        raise PhaseError("freeze.input_unavailable") from exc
     if len(data) > maximum_bytes:
         raise PhaseError("freeze.input_too_large", relative_locator)
     digest = digest_bytes(data)
@@ -251,11 +256,16 @@ def _snapshot_token(path: Path, data: bytes) -> str:
 
 
 def lock_snapshot_revalidate(binding_id: str, root: Path, relative_locator: str, *, frozen_at: str) -> FrozenInput:
-    path = contained_read_path(root, relative_locator)
-    if not path.is_file():
-        raise PhaseError("freeze.not_regular_file", relative_locator)
-    data = path.read_bytes()
-    token = _snapshot_token(path, data)
+    try:
+        path = contained_read_path(root, relative_locator)
+        if not path.is_file():
+            raise PhaseError("freeze.not_regular_file", relative_locator)
+        data = path.read_bytes()
+        token = _snapshot_token(path, data)
+    except PhaseError:
+        raise
+    except OSError as exc:
+        raise PhaseError("freeze.input_unavailable") from exc
     return FrozenInput(
         binding_id,
         "lock_snapshot_revalidate",

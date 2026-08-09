@@ -126,9 +126,15 @@ class PhaseCore:
 
     @staticmethod
     def _check_root_separation(request: PhaseRequest) -> Path:
-        evidence = Path(request.evidence_root).resolve(strict=False)
+        try:
+            evidence = Path(request.evidence_root).resolve(strict=False)
+        except OSError as exc:
+            raise PhaseError("evidence.root_separation_failed") from exc
         for name, root_value in request.root_bindings.items():
-            root = Path(root_value).resolve(strict=False)
+            try:
+                root = Path(root_value).resolve(strict=False)
+            except OSError as exc:
+                raise PhaseError("evidence.root_separation_failed") from exc
             try:
                 evidence.relative_to(root)
             except ValueError:

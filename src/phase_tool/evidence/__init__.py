@@ -5,6 +5,7 @@ import errno
 import os
 import re
 import stat
+import sysconfig
 import uuid
 from pathlib import Path
 from typing import Any
@@ -89,8 +90,25 @@ def _write_descriptor(descriptor: int, data: bytes, label: str) -> None:
     os.fsync(descriptor)
 
 
+def _open_pinned_directory(path: Path) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return os.open(_platform_path(path), flags)
+
+
+def _open_temporary(parent_descriptor: int, file_name: str) -> int:
+    """Open an owned named stage relative to a pinned parent directory."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    return os.open(file_name, flags, 0o600, dir_fd=parent_descriptor)
+
+
 def _write_temporary(path: Path, data: bytes, label: str) -> None:
-    """Fallback staging for filesystems without anonymous temporary inodes."""
+    """Portable non-production fallback used where directory fds are unavailable."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
@@ -101,13 +119,89 @@ def _write_temporary(path: Path, data: bytes, label: str) -> None:
         os.close(descriptor)
 
 
+def _rename_noreplace(parent_descriptor: int, source_name: str, destination_name: str) -> None:
+    """Atomically consume a named stage only when the canonical name is absent."""
+    library = ctypes.CDLL(None, use_errno=True)
+    source = ctypes.c_char_p(os.fsencode(source_name))
+    destination = ctypes.c_char_p(os.fsencode(destination_name))
+    try:
+        renameat2 = library.renameat2
+    except AttributeError:
+        machine = os.uname().machine.lower()
+        generic_machines = {
+            "aarch64",
+            "arc",
+            "arceb",
+            "arm64",
+            "csky",
+            "hexagon",
+            "loongarch64",
+            "nios2",
+            "openrisc",
+            "or1k",
+            "riscv32",
+            "riscv64",
+        }
+        syscall_numbers = {
+            "alpha": 510,
+            "m68k": 351,
+            "microblaze": 383,
+            "parisc": 337,
+            "parisc64": 337,
+            "ppc": 357,
+            "ppc64": 357,
+            "ppc64le": 357,
+            "s390": 347,
+            "s390x": 347,
+            "sh4": 371,
+            "sh4eb": 371,
+            "sparc": 345,
+            "sparc64": 345,
+            "xtensa": 336,
+        }
+        if machine in generic_machines:
+            syscall_number = 276
+        elif machine.startswith("arm"):
+            syscall_number = 382
+        elif machine == "x86_64":
+            syscall_number = 316 if ctypes.sizeof(ctypes.c_void_p) == 8 else 0x4000013C
+        elif re.fullmatch(r"i[3-6]86", machine):
+            syscall_number = 353
+        elif machine.startswith("mips"):
+            multiarch = str(sysconfig.get_config_var("MULTIARCH") or "")
+            if "abin32" in multiarch:
+                syscall_number = 6315
+            elif "abi64" in multiarch or (not multiarch and ctypes.sizeof(ctypes.c_void_p) == 8):
+                syscall_number = 5311
+            else:
+                syscall_number = 4351
+        else:
+            syscall_number = syscall_numbers.get(machine)
+        if syscall_number is None:
+            raise OSError(errno.ENOSYS, "renameat2 is unavailable")
+        syscall = library.syscall
+        syscall.restype = ctypes.c_long
+        result = syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(parent_descriptor),
+            source,
+            ctypes.c_int(parent_descriptor),
+            destination,
+            ctypes.c_uint(1),
+        )
+    else:
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(parent_descriptor, source, parent_descriptor, destination, 1)
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), destination_name)
+
+
 def _open_anonymous_staging(parent: Path) -> tuple[int, int] | None:
     if os.name != "posix" or not hasattr(os, "O_TMPFILE"):
         return None
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        directory_flags |= os.O_NOFOLLOW
-    parent_descriptor = os.open(_platform_path(parent), directory_flags)
+    parent_descriptor = _open_pinned_directory(parent)
     try:
         descriptor = os.open(".", os.O_WRONLY | os.O_TMPFILE, 0o600, dir_fd=parent_descriptor)
     except OSError as exc:
@@ -143,8 +237,10 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes, label: str) -> None:
     """Fsync staged bytes, then atomically link an absent canonical name.
 
     Linux uses an anonymous inode, so partial bytes never have a directory
-    name. The named fallback deliberately retains UUID staging names rather
-    than risking provenance-unsafe cleanup; exact-name readers ignore them.
+    name. The named fallback atomically renames a complete stage into the
+    canonical name, consuming the owned staging entry without any unlink.
+    Failed or contended attempts retain their stage fail-closed because POSIX
+    has no inode-conditional unlink primitive.
     """
     anonymous = _open_anonymous_staging(path.parent)
     if anonymous is not None:
@@ -159,10 +255,26 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes, label: str) -> None:
             finally:
                 os.close(parent_descriptor)
         return
-    temporary = _temporary_path(path)
-    _write_temporary(temporary, data, label)
-    os.link(_platform_path(temporary), _platform_path(path), follow_symlinks=False)
-    _fsync_directory(path.parent)
+    if os.name != "posix":
+        temporary = _temporary_path(path)
+        _write_temporary(temporary, data, label)
+        os.link(_platform_path(temporary), _platform_path(path), follow_symlinks=False)
+        _fsync_directory(path.parent)
+        return
+    parent_descriptor = _open_pinned_directory(path.parent)
+    descriptor: int | None = None
+    temporary_name = _temporary_path(path).name
+    try:
+        descriptor = _open_temporary(parent_descriptor, temporary_name)
+        _write_descriptor(descriptor, data, label)
+        _rename_noreplace(parent_descriptor, temporary_name, path.name)
+        _fsync_pinned_directory(parent_descriptor, path.parent)
+    finally:
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            os.close(parent_descriptor)
 
 
 def _replace_bytes_atomic(path: Path, data: bytes, label: str) -> None:
@@ -287,6 +399,19 @@ class EvidenceStore:
 
     def write_or_verify_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
         data = canonical_bytes(value)
+        if "/" in relative:
+            parent_name, file_name = relative.split("/", 1)
+            if parent_name != "attachments" or "/" in file_name:
+                raise PhaseError("evidence.invalid_path", relative)
+            path = self.attachment_root / file_name
+        else:
+            path = self.run_root / relative
+        if evidence_file_exists(path):
+            if read_evidence_bytes(path) != data:
+                raise PhaseError("evidence.artifact_conflict", relative)
+            if relative in {"intent.json", "receipt.json"}:
+                self._authoritative_evidence_published = True
+            return path, digest_bytes(data)
         try:
             return self.write_canonical(relative, value)
         except FileExistsError:

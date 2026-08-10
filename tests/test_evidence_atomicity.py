@@ -39,6 +39,310 @@ def _partial_then_fail_writer(original_write, injected: list[bool]):
     return write
 
 
+def _named_staging_artifacts(parent: Path) -> list[Path]:
+    return sorted(parent.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_success_reclaims_owned_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-success-cleanup")
+    value = {"state": "complete"}
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    canonical, _ = store.write_canonical("intent.json", value)
+
+    assert canonical.read_bytes() == canonical_bytes(value)
+    assert _named_staging_artifacts(store.run_root) == []
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_uses_syscall_when_libc_lacks_renameat2_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-syscall")
+    canonical = store.run_root / "intent.json"
+    real_library = evidence_module.ctypes.CDLL(None, use_errno=True)
+
+    class SyscallOnlyLibrary:
+        syscall = real_library.syscall
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    monkeypatch.setattr(
+        evidence_module.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: SyscallOnlyLibrary(),
+    )
+    store.write_canonical("intent.json", {"state": "complete"})
+
+    assert canonical.read_bytes() == canonical_bytes({"state": "complete"})
+    assert _named_staging_artifacts(store.run_root) == []
+
+
+@pytest.mark.parametrize(
+    ("machine", "multiarch", "expected"),
+    [
+        ("armv6l", "", 382),
+        ("armv8l", "", 382),
+        ("loongarch64", "", 276),
+        ("m68k", "", 351),
+        ("microblaze", "", 383),
+        ("mipsel", "mips-linux-gnu", 4351),
+        ("mips64", "mips64-linux-gnuabin32", 6315),
+        ("mips64el", "mips64el-linux-gnuabi64", 5311),
+        ("ppc", "", 357),
+        ("s390", "", 347),
+        ("sh4", "", 371),
+        ("sparc64", "", 345),
+        ("xtensa", "", 336),
+    ],
+)
+def test_renameat2_syscall_fallback_covers_linux_architectures(
+    machine: str,
+    multiarch: str,
+    expected: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSyscall:
+        restype: object = None
+        number: int | None = None
+
+        def __call__(self, number: object, *_args: object) -> int:
+            self.number = int(getattr(number, "value"))
+            return 0
+
+    syscall = FakeSyscall()
+
+    class SyscallOnlyLibrary:
+        def __init__(self, call: FakeSyscall) -> None:
+            self.syscall = call
+
+    library = SyscallOnlyLibrary(syscall)
+    uname_result = type("UnameResult", (), {"machine": machine})()
+    monkeypatch.setattr(evidence_module.ctypes, "CDLL", lambda *_args, **_kwargs: library)
+    monkeypatch.setattr(evidence_module.os, "uname", lambda: uname_result, raising=False)
+    monkeypatch.setattr(evidence_module.sysconfig, "get_config_var", lambda _name: multiarch)
+
+    evidence_module._rename_noreplace(1, "stage", "canonical")
+
+    assert syscall.number == expected
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_idempotent_verify_reclaims_owned_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-idempotent-cleanup")
+    value = {"state": "complete"}
+    canonical, _ = store.write_canonical("intent.json", value)
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    verified, _ = store.write_or_verify_canonical("intent.json", value)
+
+    assert verified == canonical
+    assert canonical.read_bytes() == canonical_bytes(value)
+    assert _named_staging_artifacts(store.run_root) == []
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_partial_failure_retains_only_noncanonical_fail_closed_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-partial-cleanup")
+    canonical = store.run_root / "intent.json"
+    injected: list[bool] = []
+    original_write = evidence_module.os.write
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    monkeypatch.setattr(
+        evidence_module.os,
+        "write",
+        _partial_then_fail_writer(original_write, injected),
+    )
+    with pytest.raises(OSError, match="controlled partial evidence write"):
+        store.write_canonical("intent.json", {"state": "complete"})
+
+    assert injected
+    assert not canonical.exists()
+    leftovers = _named_staging_artifacts(store.run_root)
+    assert len(leftovers) == 1
+    assert leftovers[0].read_bytes() == canonical_bytes({"state": "complete"})[:5]
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_conflict_reclaims_owned_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-conflict-cleanup")
+    canonical, _ = store.write_canonical("intent.json", {"state": "original"})
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    with pytest.raises(PhaseError) as error:
+        store.write_or_verify_canonical("intent.json", {"state": "different"})
+
+    assert error.value.code == "evidence.artifact_conflict"
+    assert canonical.read_bytes() == canonical_bytes({"state": "original"})
+    assert _named_staging_artifacts(store.run_root) == []
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+@pytest.mark.parametrize("same_content", [True, False])
+def test_named_fallback_raced_collision_retains_stage_fail_closed(
+    same_content: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", f"fallback-raced-collision-{same_content}")
+    canonical = store.run_root / "intent.json"
+    original = {"state": "original"}
+    attempted = original if same_content else {"state": "different"}
+    store.write_canonical("intent.json", original)
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    monkeypatch.setattr(evidence_module, "evidence_file_exists", lambda _path: False)
+    if same_content:
+        store.write_or_verify_canonical("intent.json", attempted)
+    else:
+        with pytest.raises(PhaseError) as captured:
+            store.write_or_verify_canonical("intent.json", attempted)
+        assert captured.value.code == "evidence.artifact_conflict"
+
+    assert canonical.read_bytes() == canonical_bytes(original)
+    leftovers = _named_staging_artifacts(store.run_root)
+    assert len(leftovers) == 1
+    assert leftovers[0].read_bytes() == canonical_bytes(attempted)
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_partial_failure_preserves_recreated_foreign_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-partial-rebound")
+    canonical = store.run_root / "intent.json"
+    temporary = store.run_root / ".controlled-partial.tmp"
+    foreign_bytes = b"foreign partial replacement"
+    original_write = evidence_module.os.write
+
+    def replace_stage_then_fail(descriptor: int, data: memoryview) -> int:
+        original_write(descriptor, data[: min(5, len(data))])
+        temporary.unlink()
+        temporary.write_bytes(foreign_bytes)
+        raise OSError("controlled rebound partial write")
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    monkeypatch.setattr(evidence_module, "_temporary_path", lambda _path: temporary)
+    monkeypatch.setattr(evidence_module.os, "write", replace_stage_then_fail)
+
+    with pytest.raises(OSError, match="controlled rebound partial write"):
+        store.write_canonical("intent.json", {"state": "complete"})
+
+    assert not canonical.exists()
+    assert temporary.read_bytes() == foreign_bytes
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_success_never_cleans_recreated_foreign_source_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-claim-rebound")
+    canonical = store.run_root / "intent.json"
+    foreign_bytes = b"foreign entry after publication"
+    original_rename_noreplace = evidence_module._rename_noreplace
+    recreated: list[Path] = []
+
+    def publish_then_recreate(parent_descriptor: int, source_name: str, destination_name: str) -> None:
+        original_rename_noreplace(parent_descriptor, source_name, destination_name)
+        foreign = evidence_module.os.open(
+            source_name,
+            evidence_module.os.O_WRONLY | evidence_module.os.O_CREAT | evidence_module.os.O_EXCL,
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            evidence_module.os.write(foreign, foreign_bytes)
+        finally:
+            evidence_module.os.close(foreign)
+        recreated.append(store.run_root / source_name)
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    monkeypatch.setattr(evidence_module, "_rename_noreplace", publish_then_recreate)
+    store.write_canonical("intent.json", {"state": "complete"})
+
+    assert canonical.read_bytes() == canonical_bytes({"state": "complete"})
+    assert len(recreated) == 1
+    assert recreated[0].read_bytes() == foreign_bytes
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_repeated_operations_have_no_owned_staging_growth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-resource-closure")
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+
+    for index in range(12):
+        store.write_canonical(f"attachments/success-{index}.json", {"index": index})
+    assert set(store.attachment_root.iterdir()) == {
+        store.attachment_root / f"success-{index}.json" for index in range(12)
+    }
+
+    for _index in range(12):
+        store.write_or_verify_canonical("attachments/success-0.json", {"index": 0})
+    assert _named_staging_artifacts(store.attachment_root) == []
+
+    for _index in range(12):
+        with pytest.raises(PhaseError) as error:
+            store.write_or_verify_canonical("attachments/success-0.json", {"index": -1})
+        assert error.value.code == "evidence.artifact_conflict"
+    assert _named_staging_artifacts(store.attachment_root) == []
+
+    original_write = evidence_module.os.write
+    injected: list[bool] = []
+    with monkeypatch.context() as failures:
+        failures.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+        failures.setattr(evidence_module.os, "write", _partial_then_fail_writer(original_write, injected))
+        for index in range(2):
+            with pytest.raises(OSError, match="controlled partial evidence write"):
+                store.write_canonical(f"attachments/failed-{index}.json", {"index": index})
+    assert len(injected) == 2
+    fail_closed = _named_staging_artifacts(store.attachment_root)
+    assert len(fail_closed) == 2
+    assert all(path.stat().st_size == 5 for path in fail_closed)
+
+
+@pytest.mark.skipif(evidence_module.os.name != "posix", reason="release fallback is POSIX-only")
+def test_named_fallback_publication_failure_preserves_stage_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = EvidenceStore(tmp_path / "evidence", "fallback-publication-failure")
+    canonical = store.run_root / "intent.json"
+    data = canonical_bytes({"state": "complete"})
+
+    monkeypatch.setattr(evidence_module, "_open_anonymous_staging", lambda _parent: None)
+    monkeypatch.setattr(
+        evidence_module,
+        "_rename_noreplace",
+        lambda *_args: (_ for _ in ()).throw(OSError("controlled publication failure")),
+    )
+    with pytest.raises(OSError, match="controlled publication failure"):
+        store.write_canonical("intent.json", {"state": "complete"})
+
+    assert not canonical.exists()
+    leftovers = _named_staging_artifacts(store.run_root)
+    assert len(leftovers) == 1
+    assert leftovers[0].read_bytes() == data
+
+
 def test_initialization_failure_before_run_reservation_allows_same_run_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -397,16 +701,31 @@ def test_cleanup_never_unlinks_a_recreated_foreign_temporary(
         if publication_kind == "exclusive":
             canonical = store.run_root / "intent.json"
             value = {"state": "complete"}
-            original_link = evidence_module.os.link
+            if evidence_module.os.name == "posix":
+                original_rename_noreplace = evidence_module._rename_noreplace
 
-            def publish_then_recreate(source: object, target: object, **kwargs: object) -> None:
-                original_link(source, target, **kwargs)
-                evidence_module.os.unlink(source)
-                temporary = Path(str(source))
-                temporary.write_bytes(foreign_bytes)
-                recreated.append(temporary)
+                def publish_then_recreate(
+                    parent_descriptor: int,
+                    source_name: str,
+                    destination_name: str,
+                ) -> None:
+                    original_rename_noreplace(parent_descriptor, source_name, destination_name)
+                    temporary = canonical.parent / source_name
+                    temporary.write_bytes(foreign_bytes)
+                    recreated.append(temporary)
 
-            fallback.setattr(evidence_module.os, "link", publish_then_recreate)
+                fallback.setattr(evidence_module, "_rename_noreplace", publish_then_recreate)
+            else:
+                original_link = evidence_module.os.link
+
+                def publish_then_recreate(source: object, target: object, **kwargs: object) -> None:
+                    original_link(source, target, **kwargs)
+                    evidence_module.os.unlink(source)
+                    temporary = Path(str(source))
+                    temporary.write_bytes(foreign_bytes)
+                    recreated.append(temporary)
+
+                fallback.setattr(evidence_module.os, "link", publish_then_recreate)
             store.write_canonical("intent.json", value)
             expected = canonical_bytes(value)
         else:

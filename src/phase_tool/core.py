@@ -761,6 +761,10 @@ class PhaseCore:
                     plan_digest,
                 )
             if isinstance(exc, OSError):
+                try:
+                    store.release_unpublished_run()
+                except OSError:
+                    pass
                 raise
             receipt = self._rejection_receipt(
                 request,
@@ -772,7 +776,14 @@ class PhaseCore:
                 implementation_binding=intent["implementation_binding"] if intent is not None else None,
             )
             validate_receipt(receipt, self.registry)
-            store.write_canonical("receipt.json", receipt)
+            try:
+                store.write_canonical("receipt.json", receipt)
+            except OSError:
+                try:
+                    store.release_unpublished_run()
+                except OSError:
+                    pass
+                raise
             receipt_digest = profile_digest("receipt", receipt)
             return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, intent, plan, tuple(lifecycle + ["receipt"]), receipt_digest, plan_digest)
 
@@ -1032,6 +1043,13 @@ class PhaseCore:
                 implementation_binding=intent["implementation_binding"] if intent is not None else None,
             )
             validate_receipt(receipt, self.registry)
-            store.write_canonical("receipt.json", receipt)
+            try:
+                store.write_canonical("receipt.json", receipt)
+            except OSError:
+                try:
+                    store.release_unpublished_run()
+                except OSError:
+                    pass
+                raise
             receipt_digest = profile_digest("receipt", receipt)
             return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, intent, plan, tuple(lifecycle + ["receipt"]), receipt_digest, plan_digest)

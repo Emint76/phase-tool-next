@@ -8,7 +8,8 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any, Mapping
 
 from . import __version__
-from .canonical import canonical_bytes, profile_digest
+from .candidate import encode_structured_input
+from .canonical import profile_digest
 from .core import PhaseCore, PhaseRequest
 from .errors import PhaseError
 from .inspection import inspect_run
@@ -105,7 +106,7 @@ class PhaseApplication:
             if (candidate_path is None) == (candidate is None):
                 raise PhaseError("application.exactly_one_candidate_input_required")
             if candidate is not None:
-                candidate_bytes = canonical_bytes(candidate)
+                candidate_bytes = encode_structured_input(candidate)
                 if len(candidate_bytes) > maximum_candidate_bytes:
                     raise PhaseError(
                         "candidate.too_large",

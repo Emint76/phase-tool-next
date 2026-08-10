@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,31 @@ class ValidatorRunner:
         except KeyError as exc:
             raise PhaseError("plan.root_binding_missing", binding) from exc
 
+    @staticmethod
+    def _inspect_target(root: Path, locator: str) -> tuple[Path, bool]:
+        try:
+            resolved_root = root.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise PhaseError("validation.target_unavailable") from exc
+        try:
+            return inspect_target_path(resolved_root, locator)
+        except OSError as exc:
+            raise PhaseError("validation.target_unavailable") from exc
+
+    @staticmethod
+    def _read_target(path: Path) -> bytes:
+        try:
+            return path.read_bytes()
+        except OSError as exc:
+            raise PhaseError("validation.target_unavailable") from exc
+
+    @staticmethod
+    def _target_is_file(path: Path) -> bool:
+        try:
+            return stat.S_ISREG(path.stat().st_mode)
+        except OSError as exc:
+            raise PhaseError("validation.target_unavailable") from exc
+
     def _run_builtin(
         self,
         identifier: str,
@@ -115,7 +141,18 @@ class ValidatorRunner:
         hook = load_contract_hook(contract)
         if hook is not None:
             setattr(hook, "_registry", self.registry)
-            handled = hook.run_validator(identifier, contract, value, frozen_inputs, root_bindings, self.registry, evidence_root=evidence_root)
+            try:
+                handled = hook.run_validator(
+                    identifier,
+                    contract,
+                    value,
+                    frozen_inputs,
+                    root_bindings,
+                    self.registry,
+                    evidence_root=evidence_root,
+                )
+            except OSError as exc:
+                raise PhaseError("validation.observation_unavailable") from exc
             if handled is not None:
                 return handled
         if identifier == "phase.ordered_effect_plan_progress_v1":
@@ -136,8 +173,11 @@ class ValidatorRunner:
         if identifier == "task_journal.state_v1":
             root = self._target_root(contract, root_bindings)
             locator = append_locator(contract.document, value)
-            path, _exists = inspect_target_path(root, locator)
-            return task_journal_v1.validate_state(value, path)
+            path, _exists = self._inspect_target(root, locator)
+            try:
+                return task_journal_v1.validate_state(value, path)
+            except OSError as exc:
+                raise PhaseError("validation.target_unavailable") from exc
         if identifier == "validator.frozen_blob_v1":
             frozen = frozen_inputs.get("payload")
             if frozen is None:
@@ -149,14 +189,14 @@ class ValidatorRunner:
             return "pass", "validation.pass", frozen.digest, frozen.digest, []
         if identifier == "validator.destination_absent_v1":
             root = self._target_root(contract, root_bindings)
-            target, exists = inspect_target_path(root, value["target_locator"])
+            target, exists = self._inspect_target(root, value["target_locator"])
             if exists:
                 return "fail", "target.destination_exists", "absent", "present", ["target.destination_exists"]
             return "pass", "validation.pass", "absent", "absent", []
         if identifier == "validator.expected_head_v1":
             root = self._target_root(contract, root_bindings)
             locator = append_locator(contract.document, value) if contract.document["operation"]["intent"] == "append" else value["target_locator"]
-            target, exists = inspect_target_path(root, locator)
+            target, exists = self._inspect_target(root, locator)
             expected = value["expected_head"]
             if expected is None:
                 if exists:
@@ -167,7 +207,7 @@ class ValidatorRunner:
                 return "fail", "freeze.stale_snapshot", expected, None, ["freeze.stale_snapshot"]
             if contract.document["operation"]["intent"] == "append":
                 try:
-                    current_head = stream_head_token(target.read_bytes())
+                    current_head = stream_head_token(self._read_target(target))
                 except PhaseError as exc:
                     return "fail", exc.code, expected, "invalid_stream", [exc.code]
                 if expected != current_head:
@@ -185,11 +225,11 @@ class ValidatorRunner:
                 return "pass", "validation.pass", "not_applicable", "not_applicable", []
             root = self._target_root(contract, root_bindings)
             locator = append_locator(contract.document, value)
-            target, exists = inspect_target_path(root, locator)
-            if not exists or not target.is_file():
+            target, exists = self._inspect_target(root, locator)
+            if not exists or not self._target_is_file(target):
                 return "fail", "input.invalid_tail", True, False, ["input.invalid_tail"]
             try:
-                validate_stream_bytes(target.read_bytes())
+                validate_stream_bytes(self._read_target(target))
             except PhaseError as exc:
                 return "fail", exc.code, True, False, [exc.code]
             return "pass", "validation.pass", True, True, []
@@ -204,9 +244,9 @@ class ValidatorRunner:
                 locators = value["destinations"]
             observed: list[str] = []
             for locator in locators:
-                target, exists = inspect_target_path(root, locator)
+                target, exists = self._inspect_target(root, locator)
                 if exists:
-                    if not target.is_file() or digest_bytes(target.read_bytes()) != frozen.digest:
+                    if not self._target_is_file(target) or digest_bytes(self._read_target(target)) != frozen.digest:
                         return "fail", "target.same_key_conflict", frozen.digest, locator, ["target.same_key_conflict"]
                     observed.append("same_digest")
                 else:

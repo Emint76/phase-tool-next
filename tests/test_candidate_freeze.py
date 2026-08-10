@@ -18,7 +18,7 @@ from phase_tool.freeze import (
     revalidate_snapshot,
     value_snapshot,
 )
-from phase_tool.paths import safe_relative_locator
+from phase_tool.paths import inspect_target_path, safe_relative_locator
 
 
 def test_structured_candidate_is_captured_once_and_immutable(tmp_path: Path) -> None:
@@ -61,6 +61,38 @@ def test_copy_and_hash_uses_only_frozen_blob_after_capture(tmp_path: Path) -> No
     revalidate_frozen(frozen)
 
 
+def test_copy_and_hash_preserves_not_regular_file_classification(tmp_path: Path) -> None:
+    source = tmp_path / "directory-input"
+    source.mkdir()
+
+    with pytest.raises(PhaseError) as error:
+        copy_and_hash("payload", tmp_path, source.name, tmp_path / "blobs", frozen_at="2026-07-27T00:00:00Z")
+
+    assert error.value.code == "freeze.not_regular_file"
+
+
+def test_lock_snapshot_normalizes_only_source_filesystem_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "target"
+    root.mkdir()
+    source = root / "state.txt"
+    source.write_bytes(b"head\n")
+    original_read_bytes = Path.read_bytes
+
+    def unavailable_read(path: Path) -> bytes:
+        if path == source:
+            raise PermissionError("private host diagnostic")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unavailable_read)
+    with pytest.raises(PhaseError) as error:
+        lock_snapshot_revalidate("current_state", root, source.name, frozen_at="2026-07-27T00:00:00Z")
+
+    assert error.value.code == "freeze.input_unavailable"
+
+
 def test_frozen_blob_tampering_is_detected(tmp_path: Path) -> None:
     root = tmp_path / "inputs"
     blobs = tmp_path / "evidence" / "blobs"
@@ -71,6 +103,39 @@ def test_frozen_blob_tampering_is_detected(tmp_path: Path) -> None:
     frozen.blob_path.write_bytes(b"tampered")
     with pytest.raises(PhaseError, match="freeze.blob_tampered"):
         revalidate_frozen(frozen)
+
+
+def test_revalidate_frozen_normalizes_blob_read_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import phase_tool.freeze as freeze_module
+
+    root = tmp_path / "input"
+    root.mkdir()
+    (root / "payload").write_bytes(b"payload")
+    frozen = copy_and_hash("payload", root, "payload", tmp_path / "blobs", frozen_at="2026-07-27T00:00:00Z")
+
+    def fail_blob_read(path: Path, maximum_bytes: int) -> bytes:
+        raise PermissionError("private frozen blob diagnostic")
+
+    monkeypatch.setattr(freeze_module, "_read_file_stable", fail_blob_read)
+    with pytest.raises(PhaseError) as unavailable:
+        revalidate_frozen(frozen)
+
+    assert unavailable.value.code == "freeze.blob_unavailable"
+    assert "private frozen blob diagnostic" not in str(unavailable.value)
+
+
+def test_target_inspection_preserves_missing_classification_below_file_parent(tmp_path: Path) -> None:
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "parent").write_bytes(b"not-a-directory")
+
+    target, exists = inspect_target_path(root, "parent/item.bin")
+
+    assert target == root / "parent" / "item.bin"
+    assert exists is False
 
 
 def test_manifest_and_hash_is_deterministic_and_read_only(tmp_path: Path) -> None:

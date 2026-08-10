@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..canonical import canonical_bytes, immutable_value, parse_json_bytes, profile_digest_bytes
+from ..canonical import canonical_bytes, canonical_candidate_bytes, immutable_value, parse_json_bytes, profile_digest_bytes
 from ..errors import PhaseError
 
 
@@ -18,9 +18,17 @@ class CapturedCandidate:
     value: Any
 
 
+def encode_structured_input(value: Any) -> bytes:
+    return canonical_candidate_bytes(value)
+
+
 def _read_once(path: Path, maximum_bytes: int) -> bytes:
     try:
-        with path.open("rb") as stream:
+        stream = path.open("rb")
+    except (OSError, ValueError) as exc:
+        raise PhaseError("candidate.input_unavailable") from exc
+    try:
+        with stream:
             data = stream.read(maximum_bytes + 1)
     except OSError as exc:
         raise PhaseError("candidate.input_unavailable") from exc

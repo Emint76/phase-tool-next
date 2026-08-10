@@ -126,9 +126,15 @@ class PhaseCore:
 
     @staticmethod
     def _check_root_separation(request: PhaseRequest) -> Path:
-        evidence = Path(request.evidence_root).resolve(strict=False)
+        try:
+            evidence = Path(request.evidence_root).resolve(strict=False)
+        except (OSError, ValueError) as exc:
+            raise PhaseError("evidence.root_separation_failed") from exc
         for name, root_value in request.root_bindings.items():
-            root = Path(root_value).resolve(strict=False)
+            try:
+                root = Path(root_value).resolve(strict=False)
+            except (OSError, ValueError) as exc:
+                raise PhaseError("evidence.root_separation_failed") from exc
             try:
                 evidence.relative_to(root)
             except ValueError:
@@ -823,13 +829,16 @@ class PhaseCore:
             )
             hook = load_contract_hook(contract)
             if execute and blocking_valid and hook is not None and hasattr(hook, "find_reusable_result"):
-                prior = hook.find_reusable_result(
-                    parse_json_bytes(candidate.canonical_bytes),
-                    frozen,
-                    request.root_bindings,
-                    evidence_root,
-                    self.registry,
-                )
+                try:
+                    prior = hook.find_reusable_result(
+                        parse_json_bytes(candidate.canonical_bytes),
+                        frozen,
+                        request.root_bindings,
+                        evidence_root,
+                        self.registry,
+                    )
+                except OSError as exc:
+                    raise PhaseError("idempotency.observation_unavailable") from exc
                 if prior is not None:
                     receipt = self._reused_receipt(request, validator_results, timestamp, prior[0], prior[1])
                     validate_receipt(receipt, self.registry)

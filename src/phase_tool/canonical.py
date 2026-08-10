@@ -65,6 +65,8 @@ def parse_json_bytes(
         raise PhaseError("candidate.maximum_depth_exceeded", str(maximum_depth)) from exc
     except json.JSONDecodeError as exc:
         raise PhaseError("candidate.invalid_json", str(exc)) from exc
+    except ValueError as exc:
+        raise PhaseError("candidate.invalid_json") from exc
     _check_shape(value, maximum_depth, maximum_nodes)
     return value
 
@@ -93,8 +95,7 @@ def _normalize(value: Any) -> Any:
     raise PhaseError("canonical.unsupported_type", type(value).__name__)
 
 
-def canonical_bytes(value: Any) -> bytes:
-    normalized = _normalize(value)
+def _encode_normalized(normalized: Any) -> bytes:
     return json.dumps(
         normalized,
         ensure_ascii=False,
@@ -102,6 +103,18 @@ def canonical_bytes(value: Any) -> bytes:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return _encode_normalized(_normalize(value))
+
+
+def canonical_candidate_bytes(value: Any) -> bytes:
+    normalized = _normalize(value)
+    try:
+        return _encode_normalized(normalized)
+    except ValueError as exc:
+        raise PhaseError("candidate.invalid_json") from exc
 
 
 def canonical_digest(value: Any) -> str:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from phase_tool.application import PhaseApplication
 from phase_tool.canonical import parse_json_bytes
 from phase_tool.contracts.publish_new_version_v2 import PublishNewVersionV2Hook
 from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
@@ -582,6 +583,34 @@ def test_v2_inspection_accepts_executed_receipt(tmp_path: Path) -> None:
     assert outcome.receipt["terminal_status"] == "succeeded_verified"
     assert inspected["terminal_status"] == "succeeded_verified"
     assert inspected["target_verified"] is True
+
+
+def test_v2_inspection_normalizes_unavailable_declared_hook_root(tmp_path: Path) -> None:
+    request, current_root, _objects_root, evidence_root, current = _request(
+        tmp_path, run_id="v2-inspect-unavailable-hook-root", before=b"old", content="new"
+    )
+    outcome = PhaseCore().run(request, execute=True)
+    assert outcome.receipt["terminal_status"] == "succeeded_verified"
+    current_bytes = current.read_bytes()
+    before_evidence = sorted(path.relative_to(evidence_root).as_posix() for path in evidence_root.rglob("*"))
+
+    response = PhaseApplication().inspect(
+        evidence_root=evidence_root,
+        run_id=request.run_id,
+        root_bindings={"current_root": current_root, "objects_root": Path("private\0objects")},
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "inspection.target_unavailable"
+    assert response.payload["blockers"] == ["inspection.target_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert current.read_bytes() == current_bytes
+    assert sorted(path.relative_to(evidence_root).as_posix() for path in evidence_root.rglob("*")) == before_evidence
+    assert "private" not in serialized
+    assert "ValueError" not in serialized
 
 
 def test_v2_inspection_accepts_reused_existing_receipt(tmp_path: Path) -> None:

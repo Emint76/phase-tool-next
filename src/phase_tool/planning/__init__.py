@@ -21,15 +21,26 @@ def _exact(binding: Mapping[str, Any]) -> dict[str, str]:
     return {"id": str(binding["id"]), "version": str(binding["version"]), "package_digest": str(binding["package_digest"])}
 
 
+def _resolved_root(root_bindings: Mapping[str, Path], binding_id: str) -> Path:
+    try:
+        root = Path(root_bindings[binding_id])
+    except KeyError as exc:
+        raise PhaseError("plan.root_binding_missing", binding_id) from exc
+    try:
+        return root.resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        raise PhaseError("plan.root_unavailable", binding_id) from exc
+
+
 def root_identity_records(contract: ResolvedContract, root_bindings: Mapping[str, Path]) -> list[dict[str, object]]:
     root_identities = []
     for declaration in sorted(contract.document["write_scope"]["roots"], key=lambda item: item["binding_id"]):
         binding_id = declaration["binding_id"]
+        resolved = _resolved_root(root_bindings, binding_id)
         try:
-            resolved = Path(root_bindings[binding_id]).resolve(strict=True)
-        except KeyError as exc:
-            raise PhaseError("plan.root_binding_missing", binding_id) from exc
-        info = resolved.stat()
+            info = resolved.stat()
+        except OSError as exc:
+            raise PhaseError("plan.root_unavailable", binding_id) from exc
         root_identities.append({
             "binding_id": binding_id,
             "resolved_path": os.path.normcase(str(resolved)),
@@ -88,7 +99,7 @@ def _require_roots(contract: ResolvedContract, root_bindings: Mapping[str, Path]
     forbidden = set(contract.document["write_scope"]["forbidden_root_bindings"])
     if forbidden.intersection(root_bindings):
         raise PhaseError("plan.forbidden_root_binding", sorted(forbidden.intersection(root_bindings))[0])
-    resolved = [Path(root_bindings[item]).resolve(strict=True) for item in required]
+    resolved = [_resolved_root(root_bindings, item) for item in required]
     if len(resolved) != len(set(resolved)):
         raise PhaseError("plan.root_binding_collision")
 
@@ -154,8 +165,12 @@ def build_static_plan(
         expected_head = value["expected_head"]
         current_bytes = b""
         if expected_head is not None:
-            root = Path(root_bindings[contract.document["canonical_result"]["root_binding"]])
-            current_bytes = (root / locator).read_bytes()
+            binding_id = contract.document["canonical_result"]["root_binding"]
+            root = _resolved_root(root_bindings, binding_id)
+            try:
+                current_bytes = (root / locator).read_bytes()
+            except OSError as exc:
+                raise PhaseError("plan.root_unavailable", binding_id) from exc
         content = append_record_bytes(value, existing_bytes=current_bytes, expected_head=expected_head, request_digest=request_digest)
         operation_identity = value.get("operation_id", value.get("idempotency_key"))
         record_identity = str(value["record_id"]) if "record" in value else append_record_identity(content)
@@ -184,8 +199,8 @@ def build_static_plan(
             "on_failure": "stop_and_classify",
         })
     elif (hook := load_contract_hook(contract)) is not None:
-        effects.extend(
-            hook.build_effects(
+        try:
+            hook_effects = hook.build_effects(
                 contract,
                 value,
                 frozen_inputs,
@@ -193,7 +208,9 @@ def build_static_plan(
                 generated_at=generated_at,
                 root_bindings=root_bindings,
             )
-        )
+        except OSError as exc:
+            raise PhaseError("plan.root_unavailable") from exc
+        effects.extend(hook_effects)
     elif operation["intent"] == "copy":
         frozen = frozen_inputs.get(value["input_binding"])
         if frozen is None:

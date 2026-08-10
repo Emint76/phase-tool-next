@@ -7,7 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
+from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from phase_tool.contracts import load_contract_hook
 from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
@@ -413,6 +415,42 @@ def test_publish_missing_receipt_inspection_classifies_no_effect_archived_and_pu
     inspected = inspect_run(evidence3, "missing-published", root_bindings={"fixture_result_root": target3})
     assert inspected["state_classification"] == "published_not_finalized"
     assert (target3 / _archive_locator(before3)).read_bytes() == before3
+
+
+def test_publish_missing_receipt_inspection_normalizes_unavailable_target(tmp_path: Path) -> None:
+    request, target, evidence, current, before, _after = _request(
+        tmp_path,
+        run_id="missing-unavailable-target",
+        key="missing-unavailable-target",
+    )
+    planned = PhaseCore().run(request, execute=False)
+    assert planned.receipt["execution_disposition"] == "not_executed"
+    (evidence / ".phase" / "runs" / request.run_id / "receipt.json").unlink()
+
+    before_evidence = sorted(path.relative_to(evidence).as_posix() for path in evidence.rglob("*"))
+    response = PhaseApplication().inspect(
+        evidence_root=evidence,
+        run_id=request.run_id,
+        root_bindings={"fixture_result_root": Path("private\0target")},
+    )
+
+    schema = BundledRegistry.load().schema_document(
+        "https://phase-tool.local/schemas/stage3-command-result.schema.json"
+    )
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response.payload)
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "inspection.target_unavailable"
+    assert response.payload["blockers"] == ["inspection.target_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] is None
+    assert current.read_bytes() == before
+    assert sorted(path.relative_to(evidence).as_posix() for path in evidence.rglob("*")) == before_evidence
+    assert "private" not in serialized
+    assert "ValueError" not in serialized
+    assert "embedded null" not in serialized
 
 
 def test_publish_partial_archive_write_blocks_publication_and_retry(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -119,10 +120,15 @@ def copy_and_hash(
     frozen_at: str,
     maximum_bytes: int = 16 * 1024 * 1024,
 ) -> FrozenInput:
-    source = contained_read_path(input_root, relative_locator)
-    if not os.path.isfile(_platform_path(source)):
-        raise PhaseError("freeze.not_regular_file", relative_locator)
-    data = _read_file_stable(source, maximum_bytes)
+    try:
+        source = contained_read_path(input_root, relative_locator)
+        if not os.path.isfile(_platform_path(source)):
+            raise PhaseError("freeze.not_regular_file", relative_locator)
+        data = _read_file_stable(source, maximum_bytes)
+    except PhaseError:
+        raise
+    except OSError as exc:
+        raise PhaseError("freeze.input_unavailable") from exc
     if len(data) > maximum_bytes:
         raise PhaseError("freeze.input_too_large", relative_locator)
     digest = digest_bytes(data)
@@ -170,9 +176,20 @@ def copy_and_hash(
 
 
 def revalidate_frozen(frozen: FrozenInput) -> None:
-    if frozen.blob_path is None or not os.path.isfile(_platform_path(frozen.blob_path)):
+    if frozen.blob_path is None:
         raise PhaseError("freeze.blob_missing", frozen.binding_id)
-    data = _read_file_stable(frozen.blob_path, frozen.length)
+    try:
+        info = os.stat(_platform_path(frozen.blob_path))
+    except FileNotFoundError as exc:
+        raise PhaseError("freeze.blob_missing", frozen.binding_id) from exc
+    except OSError as exc:
+        raise PhaseError("freeze.blob_unavailable", frozen.binding_id) from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise PhaseError("freeze.blob_missing", frozen.binding_id)
+    try:
+        data = _read_file_stable(frozen.blob_path, frozen.length)
+    except OSError as exc:
+        raise PhaseError("freeze.blob_unavailable", frozen.binding_id) from exc
     if digest_bytes(data) != frozen.blob_digest or len(data) != frozen.length:
         raise PhaseError("freeze.blob_tampered", frozen.binding_id)
 
@@ -251,11 +268,16 @@ def _snapshot_token(path: Path, data: bytes) -> str:
 
 
 def lock_snapshot_revalidate(binding_id: str, root: Path, relative_locator: str, *, frozen_at: str) -> FrozenInput:
-    path = contained_read_path(root, relative_locator)
-    if not path.is_file():
-        raise PhaseError("freeze.not_regular_file", relative_locator)
-    data = path.read_bytes()
-    token = _snapshot_token(path, data)
+    try:
+        path = contained_read_path(root, relative_locator)
+        if not path.is_file():
+            raise PhaseError("freeze.not_regular_file", relative_locator)
+        data = path.read_bytes()
+        token = _snapshot_token(path, data)
+    except PhaseError:
+        raise
+    except OSError as exc:
+        raise PhaseError("freeze.input_unavailable") from exc
     return FrozenInput(
         binding_id,
         "lock_snapshot_revalidate",

@@ -207,7 +207,7 @@ class PhaseCore:
                 if receipt.get("evidence", {}).get("finalization_status") != "finalized":
                     raise PhaseError("idempotency.prior_inspection_required", path.parent.name)
                 try:
-                    inspected = inspect_run(store.evidence_root, path.parent.name, root_bindings=root_bindings)
+                    inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings)
                 except (PhaseError, ValidationError) as exc:
                     raise PhaseError("idempotency.prior_result_changed", str(exc)) from exc
                 if inspected.get("target_verified") is not True:

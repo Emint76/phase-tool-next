@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import re
 import stat
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -56,34 +59,142 @@ def iter_run_artifacts(runs_root: Path, file_name: str) -> list[Path]:
     return sorted(artifacts, key=lambda path: path.parent.name)
 
 
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(_platform_path(path), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_directory_durable(path: Path, *, parents: bool) -> None:
+    path.mkdir(parents=parents, exist_ok=True)
+    _fsync_directory(path.parent)
+
+
+def _temporary_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+
+
+def _write_descriptor(descriptor: int, data: bytes, label: str) -> None:
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        count = os.write(descriptor, view[written:])
+        if count <= 0:
+            raise PhaseError("evidence.short_write", label)
+        written += count
+    os.fsync(descriptor)
+
+
+def _write_temporary(path: Path, data: bytes, label: str) -> None:
+    """Fallback staging for filesystems without anonymous temporary inodes."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = os.open(_platform_path(path), flags, 0o600)
+    try:
+        _write_descriptor(descriptor, data, label)
+    finally:
+        os.close(descriptor)
+
+
+def _open_anonymous_staging(parent: Path) -> tuple[int, int] | None:
+    if os.name != "posix" or not hasattr(os, "O_TMPFILE"):
+        return None
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    parent_descriptor = os.open(_platform_path(parent), directory_flags)
+    try:
+        descriptor = os.open(".", os.O_WRONLY | os.O_TMPFILE, 0o600, dir_fd=parent_descriptor)
+    except OSError as exc:
+        os.close(parent_descriptor)
+        unsupported = {errno.EINVAL, errno.EISDIR, errno.ENOSYS, errno.EOPNOTSUPP}
+        if hasattr(errno, "ENOTSUP"):
+            unsupported.add(errno.ENOTSUP)
+        if exc.errno in unsupported:
+            return None
+        raise
+    return parent_descriptor, descriptor
+
+
+def _link_anonymous(descriptor: int, parent_descriptor: int, file_name: str) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    linkat = library.linkat
+    linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    linkat.restype = ctypes.c_int
+    if linkat(descriptor, ctypes.c_char_p(b""), parent_descriptor, ctypes.c_char_p(os.fsencode(file_name)), 0x1000) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), file_name)
+
+
+def _fsync_pinned_directory(parent_descriptor: int, parent: Path) -> None:
+    os.fsync(parent_descriptor)
+    pinned = os.fstat(parent_descriptor)
+    current = os.stat(_platform_path(parent), follow_symlinks=False)
+    if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+        raise OSError(errno.ESTALE, "evidence parent directory identity changed", str(parent))
+
+
+def _write_bytes_exclusive_atomic(path: Path, data: bytes, label: str) -> None:
+    """Fsync staged bytes, then atomically link an absent canonical name.
+
+    Linux uses an anonymous inode, so partial bytes never have a directory
+    name. The named fallback deliberately retains UUID staging names rather
+    than risking provenance-unsafe cleanup; exact-name readers ignore them.
+    """
+    anonymous = _open_anonymous_staging(path.parent)
+    if anonymous is not None:
+        parent_descriptor, descriptor = anonymous
+        try:
+            _write_descriptor(descriptor, data, label)
+            _link_anonymous(descriptor, parent_descriptor, path.name)
+            _fsync_pinned_directory(parent_descriptor, path.parent)
+        finally:
+            try:
+                os.close(descriptor)
+            finally:
+                os.close(parent_descriptor)
+        return
+    temporary = _temporary_path(path)
+    _write_temporary(temporary, data, label)
+    os.link(_platform_path(temporary), _platform_path(path), follow_symlinks=False)
+    _fsync_directory(path.parent)
+
+
+def _replace_bytes_atomic(path: Path, data: bytes, label: str) -> None:
+    """Replace a mutable projection only after its complete staged bytes are synced."""
+    anonymous = _open_anonymous_staging(path.parent)
+    if anonymous is not None:
+        parent_descriptor, descriptor = anonymous
+        temporary_name = _temporary_path(path).name
+        try:
+            _write_descriptor(descriptor, data, label)
+            _link_anonymous(descriptor, parent_descriptor, temporary_name)
+            os.replace(temporary_name, path.name, src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor)
+            _fsync_pinned_directory(parent_descriptor, path.parent)
+        finally:
+            try:
+                os.close(descriptor)
+            finally:
+                os.close(parent_descriptor)
+        return
+    temporary = _temporary_path(path)
+    _write_temporary(temporary, data, label)
+    os.replace(_platform_path(temporary), _platform_path(path))
+    _fsync_directory(path.parent)
+
+
 def replace_attachment_canonical(attachment_root: Path, file_name: str, value: Any) -> tuple[Path, str]:
     if "/" in file_name or not file_name.endswith(".json"):
         raise PhaseError("evidence.invalid_path", file_name)
-    attachment_root.mkdir(parents=False, exist_ok=True)
+    _ensure_directory_durable(attachment_root, parents=False)
     path = attachment_root / file_name
     data = canonical_bytes(value)
-    tmp = attachment_root / (file_name + ".tmp")
-    try:
-        os.unlink(_platform_path(tmp))
-    except FileNotFoundError:
-        pass
-    with open(_platform_path(tmp), "xb", buffering=0) as stream:
-        view = memoryview(data)
-        written = 0
-        while written < len(view):
-            count = stream.write(view[written:])
-            if count is None or count <= 0:
-                raise PhaseError("evidence.short_write", file_name)
-            written += count
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(_platform_path(tmp), _platform_path(path))
-    if os.name != "nt":
-        descriptor = os.open(attachment_root, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+    _replace_bytes_atomic(path, data, file_name)
     return path, digest_bytes(data)
 
 
@@ -94,20 +205,34 @@ class EvidenceStore:
             absolute = evidence_root.absolute()
             _reject_existing_links(absolute)
             os.makedirs(_platform_path(absolute), exist_ok=True)
+            _fsync_directory(absolute.parent)
             _reject_existing_links(absolute)
             self.evidence_root = Path(_platform_path(absolute)).resolve(strict=True)
             phase_root = self.evidence_root / ".phase"
-            runs_root = phase_root / "runs"
-            os.makedirs(_platform_path(runs_root), exist_ok=True)
-            self.run_root = runs_root / run_id
-            try:
-                os.mkdir(_platform_path(self.run_root))
-            except FileExistsError as exc:
-                raise PhaseError("evidence.run_exists", run_id) from exc
+            self.runs_root = phase_root / "runs"
+            os.makedirs(_platform_path(self.runs_root), exist_ok=True)
+            _fsync_directory(phase_root)
+            _fsync_directory(self.evidence_root)
+            self.run_root = self.runs_root / run_id
             self.blob_root = self.run_root / "blobs"
             self.attachment_root = self.run_root / "attachments"
             self.operational_lock_root = phase_root / "locks"
+            # Shared roots are prepared before the exclusive run-id reservation.
             os.makedirs(_platform_path(self.operational_lock_root), exist_ok=True)
+            _fsync_directory(phase_root)
+            try:
+                os.mkdir(_platform_path(self.run_root), 0o700)
+            except FileExistsError as exc:
+                raise PhaseError("evidence.run_exists", run_id) from exc
+            try:
+                run_info = os.stat(_platform_path(self.run_root), follow_symlinks=False)
+                _fsync_directory(self.runs_root)
+            except OSError:
+                # Ownership could not be proven after reservation. Keep the
+                # canonical run id blocked rather than deleting by path.
+                raise
+            self._owned_run_identity = (run_info.st_dev, run_info.st_ino)
+            self._authoritative_evidence_published = False
         except PhaseError:
             raise
         except OSError as exc:
@@ -118,22 +243,47 @@ class EvidenceStore:
             parent_name, file_name = relative.split("/", 1)
             if parent_name != "attachments" or "/" in file_name:
                 raise PhaseError("evidence.invalid_path", relative)
-            self.attachment_root.mkdir(parents=False, exist_ok=True)
+            _ensure_directory_durable(self.attachment_root, parents=False)
             path = self.attachment_root / file_name
         else:
             path = self.run_root / relative
         data = canonical_bytes(value)
-        with open(_platform_path(path), "xb", buffering=0) as stream:
-            view = memoryview(data)
-            written = 0
-            while written < len(view):
-                count = stream.write(view[written:])
-                if count is None or count <= 0:
-                    raise PhaseError("evidence.short_write", relative)
-                written += count
-            stream.flush()
-            os.fsync(stream.fileno())
+        _write_bytes_exclusive_atomic(path, data, relative)
+        if relative in {"intent.json", "receipt.json"}:
+            self._authoritative_evidence_published = True
         return path, digest_bytes(data)
+
+    def release_unpublished_run(self) -> bool:
+        """Quarantine an owned pre-intent reservation without deleting its bytes."""
+        if self._owned_run_identity is None or self._authoritative_evidence_published:
+            return False
+        if evidence_file_exists(self.run_root / "intent.json") or evidence_file_exists(self.run_root / "receipt.json"):
+            return False
+        try:
+            run_info = os.stat(_platform_path(self.run_root), follow_symlinks=False)
+        except FileNotFoundError:
+            self._owned_run_identity = None
+            return True
+        if not stat.S_ISDIR(run_info.st_mode) or (run_info.st_dev, run_info.st_ino) != self._owned_run_identity:
+            return False
+        abandoned = self.runs_root / f".abandoned-{self.run_root.name}-{uuid.uuid4().hex}"
+        os.rename(_platform_path(self.run_root), _platform_path(abandoned))
+        abandoned_info = os.stat(_platform_path(abandoned), follow_symlinks=False)
+        if (abandoned_info.st_dev, abandoned_info.st_ino) != self._owned_run_identity:
+            # Namespace identity became uncertain. Preserve every byte and
+            # leave the canonical run id blocked rather than guessing.
+            try:
+                os.mkdir(_platform_path(self.run_root), 0o000)
+            except FileExistsError:
+                pass
+            try:
+                _fsync_directory(self.runs_root)
+            except OSError:
+                pass
+            return False
+        self._owned_run_identity = None
+        _fsync_directory(self.runs_root)
+        return True
 
     def write_or_verify_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
         data = canonical_bytes(value)
@@ -149,6 +299,8 @@ class EvidenceStore:
                 path = self.run_root / relative
             if read_evidence_bytes(path) != data:
                 raise PhaseError("evidence.artifact_conflict", relative)
+            if relative in {"intent.json", "receipt.json"}:
+                self._authoritative_evidence_published = True
             return path, digest_bytes(data)
 
     def replace_attachment_canonical(self, file_name: str, value: Any) -> tuple[Path, str]:
@@ -161,17 +313,8 @@ class EvidenceStore:
         if actual != digest:
             raise PhaseError("evidence.blob_digest_mismatch", digest)
         path = self.blob_root / digest.split(":", 1)[1]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(_platform_path(path), "xb", buffering=0) as stream:
-            view = memoryview(data)
-            written = 0
-            while written < len(view):
-                count = stream.write(view[written:])
-                if count is None or count <= 0:
-                    raise PhaseError("evidence.short_write", path.name)
-                written += count
-            stream.flush()
-            os.fsync(stream.fileno())
+        _ensure_directory_durable(path.parent, parents=True)
+        _write_bytes_exclusive_atomic(path, data, path.name)
         return path
 
 

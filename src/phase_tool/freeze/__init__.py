@@ -10,6 +10,7 @@ from ..candidate import capture_structured
 from ..canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
 from ..contracts import append_locator
 from ..errors import PhaseError
+from ..evidence import _ensure_directory_durable, _write_bytes_exclusive_atomic
 from ..paths import _platform_path, contained_read_path, safe_relative_locator
 
 
@@ -132,7 +133,7 @@ def copy_and_hash(
     if len(data) > maximum_bytes:
         raise PhaseError("freeze.input_too_large", relative_locator)
     digest = digest_bytes(data)
-    blob_root.mkdir(parents=True, exist_ok=True)
+    _ensure_directory_durable(blob_root, parents=True)
     if blob_root.is_symlink():
         raise PhaseError("path.link_forbidden", str(blob_root))
     destination = blob_root / digest.removeprefix("sha256:")
@@ -141,26 +142,11 @@ def copy_and_hash(
         if os.path.islink(platform_destination) or _read_file_stable(destination, maximum_bytes) != data:
             raise PhaseError("freeze.blob_collision", digest)
     else:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
-        descriptor: int | None = None
         try:
-            descriptor = os.open(platform_destination, flags, 0o600)
-            written = 0
-            view = memoryview(data)
-            while written < len(data):
-                actual = os.write(descriptor, view[written:])
-                if actual <= 0:
-                    raise OSError("blob write made no progress")
-                written += actual
-            os.fsync(descriptor)
+            _write_bytes_exclusive_atomic(destination, data, digest)
         except FileExistsError:
             if os.path.islink(platform_destination) or _read_file_stable(destination, maximum_bytes) != data:
                 raise PhaseError("freeze.blob_collision", digest)
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
     if _read_file_stable(destination, maximum_bytes) != data:
         raise PhaseError("freeze.blob_readback_mismatch", digest)
     return FrozenInput(

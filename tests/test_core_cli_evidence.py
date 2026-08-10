@@ -92,6 +92,18 @@ def boundary_test_installation() -> Installation:
     )
 
 
+class _DisappearingRootInstallation(_BoundaryTestInstallation):
+    def qualify_authority_roots(self, root_bindings: dict[str, Path]) -> None:
+        next(iter(root_bindings.values())).rmdir()
+
+
+def disappearing_root_installation() -> Installation:
+    return _DisappearingRootInstallation(
+        authority_provider=HostAuthorityProvider(),
+        authority_profile_binding=registered_profile_binding("phase.posix.authority.v1@1.0.0"),
+    )
+
+
 def test_append_and_copy_share_one_core_lifecycle_and_do_not_mutate_targets(tmp_path: Path) -> None:
     core = PhaseCore()
 
@@ -358,6 +370,467 @@ def test_regular_file_evidence_root_is_a_stable_pre_mutation_rejection(tmp_path:
     assert "FileExistsError" not in serialized
     assert "Not a directory" not in serialized
     assert "Errno" not in serialized
+
+
+def test_embedded_nul_candidate_path_is_an_input_unavailable_rejection(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "sentinel").write_bytes(b"unchanged")
+    evidence = tmp_path / "evidence"
+
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=Path("private\0candidate.json"),
+        evidence_root=evidence,
+        run_id="invalid-candidate-path",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "candidate.input_unavailable"
+    assert response.payload["blockers"] == ["candidate.input_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "invalid-candidate-path"
+    assert (target / "sentinel").read_bytes() == b"unchanged"
+    assert "private" not in serialized
+    assert "ValueError" not in serialized
+    assert sorted(path.name for path in (evidence / ".phase" / "runs" / "invalid-candidate-path").iterdir()) == [
+        "receipt.json"
+    ]
+
+
+@pytest.mark.parametrize("invalid_binding", ["evidence", "target"])
+def test_embedded_nul_root_is_a_stable_separation_rejection(
+    invalid_binding: str,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "sentinel").write_bytes(b"unchanged")
+    evidence = tmp_path / "evidence"
+    invalid_path = Path("private\0root")
+
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate={
+            "stream_id": "alpha",
+            "target_locator": "streams/alpha.jsonl",
+            "record_id": "record-1",
+            "expected_head": None,
+            "record": {"value": 1},
+            "idempotency_key": "invalid-root-key",
+        },
+        evidence_root=invalid_path if invalid_binding == "evidence" else evidence,
+        run_id="invalid-root-path",
+        input_paths={},
+        root_bindings={"fixture_result_root": invalid_path if invalid_binding == "target" else target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "evidence.root_separation_failed"
+    assert response.payload["blockers"] == ["evidence.root_separation_failed"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] is None
+    assert (target / "sentinel").read_bytes() == b"unchanged"
+    assert "private" not in serialized
+    assert "ValueError" not in serialized
+    assert not evidence.exists()
+
+
+def test_root_disappearing_after_admission_is_a_stable_planning_rejection(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    target.mkdir()
+    evidence = tmp_path / "evidence"
+
+    response = PhaseApplication(installation=disappearing_root_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="disappearing-root",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "plan.root_unavailable"
+    assert response.payload["blockers"] == ["plan.root_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "disappearing-root"
+    assert "FileNotFoundError" not in serialized
+    assert "No such file" not in serialized
+    assert sorted(path.name for path in (evidence / ".phase" / "runs" / "disappearing-root").iterdir()) == [
+        "receipt.json"
+    ]
+
+
+def test_root_disappearing_before_validation_is_a_stable_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import phase_tool.core as core_module
+
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate, key="disappearing-validation-root-key")
+    target = tmp_path / "target"
+    target.mkdir()
+    evidence = tmp_path / "evidence"
+    original = core_module.build_idempotency_digests
+
+    def remove_root_after_identity(*args, **kwargs):
+        result = original(*args, **kwargs)
+        target.rmdir()
+        return result
+
+    monkeypatch.setattr(core_module, "build_idempotency_digests", remove_root_after_identity)
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="disappearing-validation-root",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "validation.target_unavailable"
+    assert response.payload["blockers"] == ["validation.target_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "disappearing-validation-root"
+    assert "FileNotFoundError" not in serialized
+    assert "No such file" not in serialized
+    assert sorted(path.name for path in (evidence / ".phase" / "runs" / "disappearing-validation-root").iterdir()) == [
+        "receipt.json"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (PermissionError("private target diagnostic"), "validation.observation_unavailable"),
+        (ValueError("programmer-side validator defect"), "cli.failure"),
+    ],
+)
+def test_validator_hook_normalizes_only_operational_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Exception,
+    expected_code: str,
+) -> None:
+    import phase_tool.validation as validation_module
+
+    class FailingHook:
+        def run_validator(self, *args, **kwargs):
+            raise failure
+
+    monkeypatch.setattr(validation_module, "load_contract_hook", lambda contract: FailingHook())
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    target.mkdir()
+    evidence = tmp_path / "evidence"
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="validator-hook-failure",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == expected_code
+    assert response.payload["mutation_attempted"] is False
+    assert "private target diagnostic" not in serialized
+    assert "programmer-side validator defect" not in serialized
+
+
+def test_target_inspection_does_not_mask_programmer_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import phase_tool.validation as validation_module
+
+    def fail_target_inspection(*args, **kwargs):
+        raise ValueError("programmer-side target inspection defect")
+
+    monkeypatch.setattr(validation_module, "inspect_target_path", fail_target_inspection)
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    target.mkdir()
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=tmp_path / "evidence",
+        run_id="target-inspection-programmer-defect",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "cli.failure"
+    assert response.payload["mutation_attempted"] is False
+    assert "programmer-side target inspection defect" not in serialized
+
+
+def test_unavailable_nested_target_component_is_a_stable_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import phase_tool.paths as paths_module
+
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    (target / "streams").mkdir(parents=True)
+    unavailable = target / "streams" / "alpha.jsonl"
+    original_lstat = paths_module.os.lstat
+
+    def fail_nested_component(path):
+        candidate_path = Path(path)
+        if candidate_path.name == unavailable.name and candidate_path.parent.name == unavailable.parent.name:
+            raise PermissionError("private nested target diagnostic")
+        return original_lstat(path)
+
+    monkeypatch.setattr(paths_module.os, "lstat", fail_nested_component)
+    evidence = tmp_path / "evidence"
+    before = tree_digest(target)
+    response = PhaseApplication(installation=boundary_test_installation()).run(
+        "validate",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id="nested-target-unavailable",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "validation.target_unavailable"
+    assert response.payload["blockers"] == ["validation.target_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] == "nested-target-unavailable"
+    assert tree_digest(target) == before
+    assert sorted(path.name for path in (evidence / ".phase" / "runs" / "nested-target-unavailable").iterdir()) == ["receipt.json"]
+    assert str(unavailable) not in serialized
+    assert "PermissionError" not in serialized
+    assert "private nested target diagnostic" not in serialized
+
+
+@pytest.mark.skipif(os.name == "nt", reason="execution guarantees require POSIX")
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        (PermissionError("private reusable-result diagnostic"), "idempotency.observation_unavailable"),
+        (ValueError("programmer-side reusable-result defect"), "cli.failure"),
+    ],
+)
+def test_reusable_result_hook_normalizes_only_operational_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Exception,
+    expected_error: str,
+) -> None:
+    import phase_tool.core as core_module
+
+    class FailingReuseHook:
+        def find_reusable_result(self, *args, **kwargs):
+            raise failure
+
+    monkeypatch.setattr(core_module, "load_contract_hook", lambda contract: FailingReuseHook())
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    (target / "streams").mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    before = tree_digest(target)
+    response = PhaseApplication().run(
+        "execute",
+        contract_binding="fixture_append.v1@1.0.0",
+        candidate_path=candidate,
+        evidence_root=evidence,
+        run_id=f"reuse-hook-{expected_error.replace('.', '-')}",
+        input_paths={},
+        root_bindings={"fixture_result_root": target},
+        timestamp=NOW,
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == expected_error
+    assert response.payload["mutation_attempted"] is False
+    assert tree_digest(target) == before
+    assert str(target) not in serialized
+    assert str(failure) not in serialized
+
+
+@pytest.mark.skipif(os.name == "nt", reason="execution guarantees require POSIX")
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        (PermissionError("private inspection hook diagnostic"), "inspection.target_unavailable"),
+        (ValueError("programmer-side inspection hook defect"), "cli.failure"),
+    ],
+)
+def test_final_inspection_hook_normalizes_only_operational_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Exception,
+    expected_error: str,
+) -> None:
+    import phase_tool.inspection as inspection_module
+
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    (target / "streams").mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    run_id = f"inspection-hook-{expected_error.replace('.', '-')}"
+    outcome = PhaseCore().run(
+        request("fixture_append.v1", candidate, evidence, target, run_id),
+        execute=True,
+    )
+    assert outcome.exit_code == 0
+
+    class FailingInspectionHook:
+        def inspect_result(self, *args, **kwargs):
+            raise failure
+
+    monkeypatch.setattr(inspection_module, "load_contract_hook", lambda contract: FailingInspectionHook())
+    before = tree_digest(target)
+    response = PhaseApplication().inspect(
+        evidence_root=evidence,
+        run_id=run_id,
+        root_bindings={"fixture_result_root": target},
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == expected_error
+    assert response.payload["mutation_attempted"] is False
+    assert tree_digest(target) == before
+    assert str(target) not in serialized
+    assert str(failure) not in serialized
+
+
+@pytest.mark.skipif(os.name == "nt", reason="execution guarantees require POSIX")
+def test_final_target_helper_does_not_mask_programmer_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import phase_tool.inspection as inspection_module
+
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    (target / "streams").mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    run_id = "final-target-programmer-defect"
+    outcome = PhaseCore().run(
+        request("fixture_append.v1", candidate, evidence, target, run_id),
+        execute=True,
+    )
+    assert outcome.exit_code == 0
+
+    def fail_contained_read(*args, **kwargs):
+        raise ValueError("programmer-side final target defect")
+
+    monkeypatch.setattr(inspection_module, "contained_read_path", fail_contained_read)
+    before = tree_digest(target)
+    response = PhaseApplication().inspect(
+        evidence_root=evidence,
+        run_id=run_id,
+        root_bindings={"fixture_result_root": target},
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "cli.failure"
+    assert response.payload["mutation_attempted"] is False
+    assert tree_digest(target) == before
+    assert str(target) not in serialized
+    assert "programmer-side final target defect" not in serialized
+
+
+def test_embedded_nul_inspection_root_is_a_stable_rejection() -> None:
+    response = PhaseApplication().inspect(
+        evidence_root=Path("private\0evidence"),
+        run_id="invalid-inspection-root",
+        root_bindings={},
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "inspection.run_unavailable"
+    assert response.payload["blockers"] == ["inspection.run_unavailable"]
+    assert response.payload["terminal_status"] == "rejected"
+    assert response.payload["execution_disposition"] == "not_executed"
+    assert response.payload["mutation_attempted"] is False
+    assert response.payload["run_id"] is None
+    assert "private" not in serialized
+    assert "ValueError" not in serialized
+
+
+@pytest.mark.skipif(os.name == "nt", reason="execution guarantees require POSIX")
+def test_embedded_nul_inspection_target_root_is_a_stable_rejection(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.json"
+    write_append(candidate)
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "streams").mkdir()
+    evidence = tmp_path / "evidence"
+    outcome = PhaseCore().run(
+        request("fixture_append.v1", candidate, evidence, target, "invalid-inspection-target"),
+        execute=True,
+    )
+    assert outcome.exit_code == 0
+
+    response = PhaseApplication().inspect(
+        evidence_root=evidence,
+        run_id="invalid-inspection-target",
+        root_bindings={"fixture_result_root": Path("private\0target")},
+    )
+
+    serialized = json.dumps(response.payload, sort_keys=True)
+    assert response.exit_code == 10
+    assert response.payload["error"] == "inspection.target_mismatch"
+    assert response.payload["blockers"] == ["inspection.target_mismatch"]
+    assert response.payload["mutation_attempted"] is False
+    assert "private" not in serialized
+    assert "ValueError" not in serialized
 
 
 def test_inspect_is_read_only_and_detects_tampering(tmp_path: Path) -> None:

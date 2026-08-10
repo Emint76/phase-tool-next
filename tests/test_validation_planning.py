@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from phase_tool.candidate import capture_structured
 from phase_tool.errors import PhaseError
 from phase_tool.freeze import copy_and_hash
-from phase_tool.planning import build_static_plan, validate_static_plan
+from phase_tool.planning import build_static_plan, root_identity_records, validate_static_plan
 from phase_tool.registry import BundledRegistry
 from phase_tool.validation import ValidatorRunner
 
@@ -201,3 +201,39 @@ def test_plan_requires_complete_root_bindings(tmp_path: Path) -> None:
     results = ValidatorRunner(registry).run(contract, captured, {}, root_bindings={"fixture_result_root": target_root}, run_id="run", timestamp=NOW)
     with pytest.raises(PhaseError, match="plan.root_binding_missing"):
         build_static_plan(contract, captured, {}, results, root_bindings={}, run_id="run", generated_at=NOW)
+
+    target_root.rmdir()
+    with pytest.raises(PhaseError) as unavailable:
+        build_static_plan(
+            contract,
+            captured,
+            {},
+            results,
+            root_bindings={"fixture_result_root": target_root},
+            run_id="run",
+            generated_at=NOW,
+        )
+    assert unavailable.value.code == "plan.root_unavailable"
+
+
+def test_root_identity_does_not_mask_programmer_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import phase_tool.planning as planning_module
+
+    _registry, contract = resolved("fixture_append.v1")
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    target_resolved = target_root.resolve()
+    original_stat = Path.stat
+
+    def fail_target_stat(path: Path, *args, **kwargs):
+        if path == target_resolved:
+            raise ValueError("programmer-side stat defect")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(planning_module, "_resolved_root", lambda *args, **kwargs: target_resolved)
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+    with pytest.raises(ValueError, match="programmer-side stat defect"):
+        root_identity_records(contract, {"fixture_result_root": target_root})

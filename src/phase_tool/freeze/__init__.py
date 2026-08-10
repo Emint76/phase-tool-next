@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -175,9 +176,20 @@ def copy_and_hash(
 
 
 def revalidate_frozen(frozen: FrozenInput) -> None:
-    if frozen.blob_path is None or not os.path.isfile(_platform_path(frozen.blob_path)):
+    if frozen.blob_path is None:
         raise PhaseError("freeze.blob_missing", frozen.binding_id)
-    data = _read_file_stable(frozen.blob_path, frozen.length)
+    try:
+        info = os.stat(_platform_path(frozen.blob_path))
+    except FileNotFoundError as exc:
+        raise PhaseError("freeze.blob_missing", frozen.binding_id) from exc
+    except OSError as exc:
+        raise PhaseError("freeze.blob_unavailable", frozen.binding_id) from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise PhaseError("freeze.blob_missing", frozen.binding_id)
+    try:
+        data = _read_file_stable(frozen.blob_path, frozen.length)
+    except OSError as exc:
+        raise PhaseError("freeze.blob_unavailable", frozen.binding_id) from exc
     if digest_bytes(data) != frozen.blob_digest or len(data) != frozen.length:
         raise PhaseError("freeze.blob_tampered", frozen.binding_id)
 

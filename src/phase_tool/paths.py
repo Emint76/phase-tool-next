@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -79,13 +80,15 @@ def inspect_target_path(root: Path, locator: str) -> tuple[Path, bool]:
         if missing:
             continue
         platform_current = Path(_platform_path(current))
-        if platform_current.is_symlink():
-            raise PhaseError("path.link_forbidden", normalized)
-        if os.path.exists(platform_current):
-            if _is_reparse_point(platform_current):
-                raise PhaseError("path.reparse_forbidden", normalized)
-        else:
+        try:
+            info = os.lstat(platform_current)
+        except (FileNotFoundError, NotADirectoryError):
             missing = True
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise PhaseError("path.link_forbidden", normalized)
+        if bool(getattr(info, "st_file_attributes", 0) & 0x400):
+            raise PhaseError("path.reparse_forbidden", normalized)
     if not missing:
         if os.name == "nt":
             return current, True

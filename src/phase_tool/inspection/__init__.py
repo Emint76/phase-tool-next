@@ -195,6 +195,40 @@ def _prior_receipt_run_id(runs_root: Path, current_run_id: str, prior_digest: st
     raise PhaseError("inspection.prior_receipt_missing", prior_digest)
 
 
+def _inspect_missing_receipt_state(
+    hook: Any,
+    plan: Mapping[str, Any],
+    contract: ResolvedContract,
+    root_bindings: Mapping[str, Path],
+    registry: RegistrySnapshot,
+) -> str | None:
+    try:
+        validate_static_plan(plan, contract, root_bindings, registry)
+        return hook.inspect_missing_receipt_result(plan, root_bindings, registry)
+    except PhaseError as exc:
+        if exc.code != "plan.root_unavailable":
+            raise
+        raise PhaseError("inspection.target_unavailable") from exc
+    except OSError as exc:
+        raise PhaseError("inspection.target_unavailable") from exc
+
+
+def _resolved_hook_roots(
+    contract: ResolvedContract,
+    root_bindings: Mapping[str, Path],
+) -> dict[str, Path]:
+    resolved = dict(root_bindings)
+    for declaration in contract.document["write_scope"]["roots"]:
+        binding_id = declaration["binding_id"]
+        if binding_id not in root_bindings:
+            continue
+        try:
+            resolved[binding_id] = Path(root_bindings[binding_id]).resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise PhaseError("inspection.target_unavailable") from exc
+    return resolved
+
+
 def inspect_run(
     evidence_root: Path,
     run_id: str,
@@ -210,7 +244,7 @@ def inspect_run(
         root = Path(_platform_path(Path(evidence_root))).resolve(strict=True)
         run_root = (root / ".phase" / "runs" / run_id).resolve(strict=True)
         expected_parent = (root / ".phase" / "runs").resolve(strict=True)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise PhaseError("inspection.run_unavailable") from exc
     try:
         run_root.relative_to(expected_parent)
@@ -248,8 +282,13 @@ def inspect_run(
         state_classification = None
         hook = load_contract_hook(contract)
         if hook is not None and hasattr(hook, "inspect_missing_receipt_result"):
-            validate_static_plan(plan, contract, root_bindings or {}, registry)
-            state_classification = hook.inspect_missing_receipt_result(plan, root_bindings or {}, registry)
+            state_classification = _inspect_missing_receipt_state(
+                hook,
+                plan,
+                contract,
+                root_bindings or {},
+                registry,
+            )
         return {
             "run_id": run_id,
             "terminal_status": None,
@@ -346,8 +385,13 @@ def inspect_run(
             or receipt["evidence"]["finalization_status"] != "finalized"
         )
         if needs_state_classification and hook_for_plan is not None and hasattr(hook_for_plan, "inspect_missing_receipt_result"):
-            validate_static_plan(plan, contract_for_plan, root_bindings or {}, registry)
-            state_classification = hook_for_plan.inspect_missing_receipt_result(plan, root_bindings or {}, registry)
+            state_classification = _inspect_missing_receipt_state(
+                hook_for_plan,
+                plan,
+                contract_for_plan,
+                root_bindings or {},
+                registry,
+            )
     canonical_result = receipt["canonical_result"]
     if canonical_result is not None:
         if canonical_result.get("contract") != receipt.get("contract"):
@@ -366,7 +410,11 @@ def inspect_run(
         except KeyError as exc:
             raise PhaseError("inspection.target_root_missing", root_id) from exc
         try:
-            target = contained_read_path(target_root, canonical_result["locator"])
+            resolved_target_root = target_root.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
+        try:
+            target = contained_read_path(resolved_target_root, canonical_result["locator"])
             with open(_platform_path(target), "rb") as stream:
                 data = stream.read()
         except (OSError, PhaseError) as exc:
@@ -413,20 +461,24 @@ def inspect_run(
             hook = load_contract_hook(contract)
             if hook is not None:
                 setattr(hook, "_registry", registry)
-                contract_result = hook.inspect_result(data, state["digest"], target_root, receipt_digest, registry, evidence_root=root)
-                if hasattr(hook, "inspect_receipt_result"):
-                    receipt_result = hook.inspect_receipt_result(
-                        receipt,
-                        plan,
-                        target_root,
-                        registry,
-                        root,
-                        root_bindings=root_bindings,
-                    )
-                    if isinstance(contract_result, dict) and isinstance(receipt_result, dict):
-                        contract_result = dict(contract_result) | receipt_result
-                    else:
-                        contract_result = receipt_result
+                hook_roots = _resolved_hook_roots(contract, root_bindings or {})
+                try:
+                    contract_result = hook.inspect_result(data, state["digest"], target_root, receipt_digest, registry, evidence_root=root)
+                    if hasattr(hook, "inspect_receipt_result"):
+                        receipt_result = hook.inspect_receipt_result(
+                            receipt,
+                            plan,
+                            target_root,
+                            registry,
+                            root,
+                            root_bindings=hook_roots,
+                        )
+                        if isinstance(contract_result, dict) and isinstance(receipt_result, dict):
+                            contract_result = dict(contract_result) | receipt_result
+                        else:
+                            contract_result = receipt_result
+                except OSError as exc:
+                    raise PhaseError("inspection.target_unavailable") from exc
         target_verified = True
     result = {
         "run_id": run_id,

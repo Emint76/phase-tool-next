@@ -176,7 +176,7 @@ class PhaseApplication:
         root_bindings: Mapping[str, Path],
     ) -> ApplicationResponse:
         try:
-            inspected = inspect_run(evidence_root, run_id, root_bindings=root_bindings)
+            inspected = inspect_run(evidence_root, run_id, self.registry, root_bindings=root_bindings)
             return ApplicationResponse(self._command_payload(
                 "inspect",
                 success=True,

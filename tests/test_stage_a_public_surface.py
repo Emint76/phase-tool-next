@@ -95,8 +95,14 @@ def test_public_surface_snapshot_is_concise_and_complete() -> None:
         "phase_execute",
         "phase_inspect",
         "stage3-command-result.schema.json",
+        "stage3_command_result_version",
         "phase-intent.schema.json",
         "phase-receipt.schema.json",
+        "field-extensible discovery payloads",
+        "string `status`",
+        "string `snapshot_digest`",
+        "string `distribution`",
+        "string `required_range`",
         "exit 2",
         "exit 10",
         "deprecat",
@@ -146,14 +152,43 @@ def test_installed_cli_public_operations_and_json_rejections(tmp_path: Path) -> 
 
     doctor = _run_phase("doctor")
     assert doctor.returncode == 0
-    assert json.loads(doctor.stdout)["success"] is True
+    doctor_payload = json.loads(doctor.stdout)
+    assert doctor_payload["success"] is True
+    assert {"success", "version", "registry", "mcp_sdk"} <= doctor_payload.keys()
+    assert {"status", "snapshot_digest", "contract_count"} <= doctor_payload["registry"].keys()
+    assert {"distribution", "version", "required_range", "compatible"} <= doctor_payload["mcp_sdk"].keys()
+    assert isinstance(doctor_payload["version"], str)
+    assert isinstance(doctor_payload["registry"]["status"], str)
+    assert isinstance(doctor_payload["registry"]["snapshot_digest"], str)
+    assert type(doctor_payload["registry"]["contract_count"]) is int
+    assert isinstance(doctor_payload["mcp_sdk"]["distribution"], str)
+    assert doctor_payload["mcp_sdk"]["version"] is None or isinstance(doctor_payload["mcp_sdk"]["version"], str)
+    assert isinstance(doctor_payload["mcp_sdk"]["required_range"], str)
+    assert type(doctor_payload["mcp_sdk"]["compatible"]) is bool
     listed = _run_phase("contracts", "list")
     contracts = json.loads(listed.stdout)
     assert listed.returncode == 0
     assert contracts["contracts"]
+    assert {"contracts", "registry_snapshot_digest"} <= contracts.keys()
+    assert isinstance(contracts["registry_snapshot_digest"], str)
+    assert {
+        "contract_binding", "id", "version", "package_digest", "operation_intent",
+    } <= contracts["contracts"][0].keys()
+    assert all(isinstance(contracts["contracts"][0][field], str) for field in (
+        "contract_binding", "id", "version", "package_digest", "operation_intent",
+    ))
     described = _run_phase("contracts", "describe", "--contract", "fixture_create.v1@1.0.0")
     assert described.returncode == 0
-    assert json.loads(described.stdout)["contract_binding"] == "fixture_create.v1@1.0.0"
+    described_payload = json.loads(described.stdout)
+    assert described_payload["contract_binding"] == "fixture_create.v1@1.0.0"
+    assert {
+        "contract_binding", "package_digest", "registry_snapshot_digest", "contract", "package_artifacts",
+    } <= described_payload.keys()
+    assert all(isinstance(described_payload[field], str) for field in (
+        "contract_binding", "package_digest", "registry_snapshot_digest",
+    ))
+    assert isinstance(described_payload["contract"], dict)
+    assert isinstance(described_payload["package_artifacts"], list)
 
     validate = _run_phase("validate", *common, "--run-id", "stage-a-cli-validate")
     plan = _run_phase("plan", *common, "--run-id", "stage-a-cli-plan")

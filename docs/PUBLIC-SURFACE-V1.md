@@ -55,11 +55,20 @@ Missing, extra, or wrongly typed MCP arguments are MCP invalid-call errors. A we
 
 ### Machine-readable results and binding
 
-The stable transport-neutral command envelope is `stage3-command-result.schema.json` version `1.0`. Its required fields and enum meanings are stable: `command`, `success`, `run_id`, `terminal_status`, `execution_disposition`, `mutation_attempted`, digest fields, `blockers`, `error`, and `exit_code`; `target_verified` is present in current producers and remains optional in the schema for compatibility with earlier 1.0 producers.
+The stable transport-neutral command envelope is `stage3-command-result.schema.json` version `1.0`. Its required fields and enum meanings are stable: `stage3_command_result_version` (the `"1.0"` discriminator), `command`, `success`, `run_id`, `terminal_status`, `execution_disposition`, `mutation_attempted`, digest fields, `blockers`, `error`, and `exit_code`; `target_verified` is present in current producers and remains optional in the schema for compatibility with earlier 1.0 producers.
 
 `phase-intent.schema.json` and `phase-receipt.schema.json`, both version `1.0`, are stable durable evidence schemas. Their terminal statuses, execution dispositions, mutation flag, intent/receipt digest semantics, and inspection meaning are stable.
 
 Contract candidate/result/effect schemas returned through exact registry package metadata are bound by the selected contract ID, version, package digest, and registry snapshot digest. An exact package digest identifies exact artifact bytes. A package with changed contract/schema bytes requires a different package digest; Phase fails closed on a mismatched requested digest. Phase Tool v1 has no separate protocol-version negotiation beyond package/core compatibility checks and MCP's own protocol initialization.
+
+The unversioned discovery objects are **field-extensible discovery payloads**. Their following fields, types, and meanings are stable in 1.x:
+
+- `doctor`: boolean `success`, string `version`, object `registry` (string `status`, string `snapshot_digest`, integer `contract_count`), and object `mcp_sdk` (string `distribution`, string-or-null `version`, string `required_range`, boolean `compatible`);
+- `contracts list` / `phase_contracts_list`: array `contracts` and string `registry_snapshot_digest`; each contract item has string `contract_binding`, `id`, `version`, `package_digest`, and `operation_intent`;
+- successful `contracts describe` / `phase_contract_describe`: string `contract_binding`, string `package_digest`, string `registry_snapshot_digest`, object `contract`, and array `package_artifacts`;
+- rejected contract description: `success=false`, string `error`, array `blockers`, and `exit_code=10`.
+
+Additional fields in these discovery objects are compatible additions; consumers must ignore fields they do not understand. Removing a listed field, changing its type or meaning, or making a currently optional nested detail mandatory is breaking. Collection order is non-semantic unless an exact contract artifact says otherwise.
 
 ## Public but extensible in 1.x
 
@@ -69,6 +78,7 @@ Compatible 1.x additions include:
 - a new enum member only where the consuming schema explicitly permits extension; closed enums otherwise require a breaking version;
 - a new Phase error code with a new, non-contradictory meaning;
 - a new registry contract/version/package generation;
+- a new field in the explicitly field-extensible discovery payloads above;
 - additional entries in contract listings, blockers, or other collections where ordering is not declared semantic.
 
 The stable result schemas are closed (`additionalProperties: false`). Adding a field to

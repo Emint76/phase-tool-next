@@ -37,7 +37,15 @@ def tool_payload(result: object) -> dict[str, Any]:
     return json.loads(getattr(result, "content")[0].text)
 
 
-async def mcp_call(server: Path, tool: str, arguments: dict[str, Any], cwd: Path) -> dict[str, Any]:
+async def mcp_installed_acceptance(
+    server: Path,
+    *,
+    cwd: Path,
+    candidate: dict[str, Any],
+    payload: Path,
+    target: Path,
+    evidence: Path,
+) -> dict[str, Any]:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -47,10 +55,45 @@ async def mcp_call(server: Path, tool: str, arguments: dict[str, Any], cwd: Path
     async with stdio_client(parameters) as (reader, writer):
         async with ClientSession(reader, writer) as session:
             await session.initialize()
-            result = await session.call_tool(tool, arguments)
-            if result.isError:
-                raise AssertionError(str(result))
-            return tool_payload(result)
+            tools = await session.list_tools()
+            names = sorted(tool.name for tool in tools.tools)
+            schemas_strict = all(tool.inputSchema.get("additionalProperties") is False for tool in tools.tools)
+            extra = await session.call_tool("phase_execute", {
+                "contract_binding": "fixture_create.v1@1.0.0", "candidate": candidate,
+                "evidence_root": str(evidence), "run_id": "clean-wheel-extra", "unknown": True,
+            })
+            boolean_integer = await session.call_tool("phase_execute", {
+                "contract_binding": "fixture_create.v1@1.0.0", "candidate": candidate,
+                "evidence_root": str(evidence), "run_id": "clean-wheel-bool",
+                "maximum_candidate_bytes": True,
+            })
+            application_rejection = tool_payload(await session.call_tool("phase_execute", {
+                "contract_binding": "missing.v1@1.0.0", "candidate": candidate,
+                "evidence_root": str(evidence), "run_id": "clean-wheel-missing-contract",
+            }))
+            listed_after_rejections = tool_payload(await session.call_tool("phase_contracts_list", {}))
+            executed = tool_payload(await session.call_tool("phase_execute", {
+                "contract_binding": "fixture_create.v1@1.0.0", "candidate": candidate,
+                "evidence_root": str(evidence), "run_id": "clean-wheel-mcp",
+                "input_paths": {"payload": str(payload)},
+                "root_bindings": {"fixture_result_root": str(target)}, "timestamp": NOW,
+            }))
+            inspected = tool_payload(await session.call_tool("phase_inspect", {
+                "evidence_root": str(evidence), "run_id": "clean-wheel-mcp",
+                "root_bindings": {"fixture_result_root": str(target)},
+            }))
+            return {
+                "tool_names": names,
+                "tool_inventory": names == [
+                    "phase_contract_describe", "phase_contracts_list", "phase_execute",
+                    "phase_inspect", "phase_plan", "phase_validate",
+                ],
+                "schemas_strict": schemas_strict,
+                "protocol_rejections": extra.isError is True and boolean_integer.isError is True,
+                "application_rejection": application_rejection.get("error") == "application.contract_binding_not_found",
+                "survived_rejections": bool(listed_after_rejections.get("contracts")),
+                "execute_inspect": executed.get("terminal_status") == "succeeded_verified" and inspected.get("target_verified") is True,
+            }
 
 
 def main() -> int:
@@ -105,9 +148,18 @@ def main() -> int:
         run([str(python), "-m", "pip", "install", str(wheel)], cwd=external)
 
         metadata = json.loads(run([str(python), "-c", "import importlib.metadata as m,json; d=m.distribution('phase-tool'); f=next((f for f in (d.files or []) if str(f).endswith('direct_url.json')),None); u=json.loads(d.locate_file(f).read_text()) if f else {}; print(json.dumps({'root':str(d.locate_file('')),'editable':bool(u.get('dir_info',{}).get('editable',False))}))"], cwd=external).stdout)
+        imported = run([str(python), "-c", "import phase_tool; print(phase_tool.__version__)"], cwd=external).stdout.strip()
+        help_result = run([str(phase), "--help"], cwd=external)
         version = run([str(phase), "--version"], cwd=external).stdout.strip()
         doctor = json.loads(run([str(phase), "doctor"], cwd=external).stdout)
         contracts = json.loads(run([str(phase), "contracts", "list"], cwd=external).stdout)
+        unknown_option = run([str(phase), "doctor", "--unknown"], cwd=external, check=False)
+        missing_arguments = run([str(phase), "execute"], cwd=external, check=False)
+        unknown_contract = run([
+            str(phase), "execute", "--contract", "missing.v1@1.0.0", "--candidate", str(external / "missing.json"),
+            "--evidence-root", str(external / "rejected-evidence"), "--run-id", "clean-wheel-rejected",
+        ], cwd=external, check=False)
+        unknown_contract_payload = json.loads(unknown_contract.stdout)
 
         payload = external / "fixture.bin"
         payload.write_bytes(b"clean wheel fixture payload")
@@ -122,6 +174,16 @@ def main() -> int:
         target = external / "target"
         target.mkdir()
         evidence = external / "evidence"
+        validate = json.loads(run([
+            str(phase), "validate", "--contract", "fixture_create.v1@1.0.0", "--candidate", str(candidate),
+            "--evidence-root", str(evidence), "--run-id", "clean-wheel-validate", "--input", f"payload={payload}",
+            "--root", f"fixture_result_root={target}", "--timestamp", NOW,
+        ], cwd=external).stdout)
+        plan = json.loads(run([
+            str(phase), "plan", "--contract", "fixture_create.v1@1.0.0", "--candidate", str(candidate),
+            "--evidence-root", str(evidence), "--run-id", "clean-wheel-plan", "--input", f"payload={payload}",
+            "--root", f"fixture_result_root={target}", "--timestamp", NOW,
+        ], cwd=external).stdout)
         execute = json.loads(run([
             str(phase), "execute", "--contract", "fixture_create.v1@1.0.0", "--candidate", str(candidate),
             "--evidence-root", str(evidence), "--run-id", "clean-wheel-cli", "--input", f"payload={payload}",
@@ -138,14 +200,10 @@ def main() -> int:
             "operation_id": "clean-wheel-mcp-operation",
             "target_locator": "objects/clean-wheel-mcp.bin",
         }
-        mcp_execute = asyncio.run(mcp_call(phase_mcp, "phase_execute", {
-            "contract_binding": "fixture_create.v1@1.0.0", "candidate": mcp_candidate,
-            "evidence_root": str(evidence), "run_id": "clean-wheel-mcp",
-            "input_paths": {"payload": str(payload)}, "root_bindings": {"fixture_result_root": str(target)}, "timestamp": NOW,
-        }, external))
-        mcp_inspect = asyncio.run(mcp_call(phase_mcp, "phase_inspect", {
-            "evidence_root": str(evidence), "run_id": "clean-wheel-mcp", "root_bindings": {"fixture_result_root": str(target)},
-        }, external))
+        mcp_acceptance = asyncio.run(mcp_installed_acceptance(
+            phase_mcp, cwd=external, candidate=mcp_candidate, payload=payload,
+            target=target, evidence=evidence,
+        ))
 
         run([str(python), "-m", "pip", "uninstall", "--yes", "phase-tool"], cwd=external)
         absent = run([str(python), "-c", "import phase_tool"], cwd=external, check=False)
@@ -161,17 +219,22 @@ def main() -> int:
             "installed_outside_checkout": repository.resolve() not in Path(metadata["root"]).resolve().parents,
             "editable_install": metadata["editable"],
             "pythonpath_present": "PYTHONPATH" in os.environ and bool(os.environ.get("PYTHONPATH")),
+            "import_version": imported,
+            "help_discovery": help_result.returncode == 0 and "contracts" in help_result.stdout and "execute" in help_result.stdout,
             "version": version,
             "doctor": doctor,
             "contracts": {"count": len(contracts["contracts"])},
-            "cli_execute_inspect": execute["terminal_status"] == "succeeded_verified" and inspect["target_verified"] is True,
-            "phase_mcp_execute_inspect": mcp_execute["terminal_status"] == "succeeded_verified" and mcp_inspect["target_verified"] is True,
+            "cli_parse_rejections": unknown_option.returncode == 2 and missing_arguments.returncode == 2 and not unknown_option.stdout and not missing_arguments.stdout,
+            "cli_application_rejection": unknown_contract.returncode == 10 and unknown_contract_payload.get("error") == "application.contract_binding_not_found",
+            "cli_validate_plan_execute_inspect": validate["terminal_status"] == "validated_planned" and plan["terminal_status"] == "validated_planned" and execute["terminal_status"] == "succeeded_verified" and inspect["target_verified"] is True,
+            "mcp": mcp_acceptance,
             "uninstall_verified": uninstall_verified,
             "reinstall_verified": reinstall_verified,
         }
         summary["success"] = all([
             summary["installed_outside_checkout"], not summary["editable_install"], not summary["pythonpath_present"],
-            doctor["success"], summary["cli_execute_inspect"], summary["phase_mcp_execute_inspect"],
+            imported == "1.0.0", summary["help_discovery"], doctor["success"], summary["cli_parse_rejections"],
+            summary["cli_application_rejection"], summary["cli_validate_plan_execute_inspect"], all(mcp_acceptance.values()),
             uninstall_verified, reinstall_verified,
         ])
     finally:

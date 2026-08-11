@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from .application import PhaseApplication
 
@@ -64,7 +65,7 @@ def phase_validate(
     input_paths: dict[str, str] | None = None,
     root_bindings: dict[str, str] | None = None,
     timestamp: str | None = None,
-    maximum_candidate_bytes: int = 1_048_576,
+    maximum_candidate_bytes: StrictInt = 1_048_576,
 ) -> dict[str, Any]:
     """Validate a candidate through the universal Phase lifecycle."""
     return _run("validate", **locals())
@@ -79,7 +80,7 @@ def phase_plan(
     input_paths: dict[str, str] | None = None,
     root_bindings: dict[str, str] | None = None,
     timestamp: str | None = None,
-    maximum_candidate_bytes: int = 1_048_576,
+    maximum_candidate_bytes: StrictInt = 1_048_576,
 ) -> dict[str, Any]:
     """Plan a candidate through the universal Phase lifecycle."""
     return _run("plan", **locals())
@@ -94,7 +95,7 @@ def phase_execute(
     input_paths: dict[str, str] | None = None,
     root_bindings: dict[str, str] | None = None,
     timestamp: str | None = None,
-    maximum_candidate_bytes: int = 1_048_576,
+    maximum_candidate_bytes: StrictInt = 1_048_576,
 ) -> dict[str, Any]:
     """Execute a registry-bound contract through the application service."""
     return _run("execute", **locals())
@@ -112,6 +113,18 @@ def phase_inspect(
         run_id=run_id,
         root_bindings={name: Path(value) for name, value in (root_bindings or {}).items()},
     ).payload
+
+
+def _seal_tool_argument_models() -> None:
+    """Keep advertised MCP schemas and runtime validation equally strict."""
+    for tool in _SERVER._tool_manager.list_tools():  # type: ignore[attr-defined]
+        argument_model = tool.fn_metadata.arg_model
+        argument_model.model_config["extra"] = "forbid"
+        argument_model.model_rebuild(force=True)
+        tool.parameters = argument_model.model_json_schema(by_alias=True)
+
+
+_seal_tool_argument_models()
 
 
 def main() -> int:

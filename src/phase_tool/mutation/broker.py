@@ -61,6 +61,19 @@ class BrokerExecutionResult(list[dict[str, Any]]):
         return tuple(self)
 
 
+class BrokerExecutionInterrupted(Exception):
+    def __init__(
+        self,
+        cause: PhaseError | OSError,
+        effect_receipts: list[dict[str, Any]],
+        progress_digest: str | None,
+    ) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.effect_receipts = tuple(effect_receipts)
+        self.progress_digest = progress_digest
+
+
 def ordered_progress_document(plan: Mapping[str, Any], effect_receipts: list[dict[str, Any]]) -> dict[str, Any]:
     receipt_by_id = {receipt["effect_id"]: receipt for receipt in effect_receipts}
     completed: list[str] = []
@@ -486,22 +499,32 @@ class EffectBroker:
                 target_root = Path(root_bindings[root_id]).resolve(strict=True)
             except KeyError as exc:
                 raise PhaseError("plan.root_binding_missing", str(root_id)) from exc
-            lock_scope = effect.get("lock_scope")
-            if isinstance(lock_scope, str) and mechanism_authority_usage(mechanism) == "provider_backed":
-                context = self.authority_provider.lock_target_root(target_root, lock_scope)
-            else:
-                context = None
-            if context is None:
-                receipt = self._execute_one(
-                    active, candidate, contract, effect, frozen_inputs, hook, intent, intent_path,
-                    ordinal, target_root, root_bindings, evidence_root, timestamp
-                )
-            else:
-                with context:
+            receipt: dict[str, object] | None = None
+            try:
+                lock_scope = effect.get("lock_scope")
+                if isinstance(lock_scope, str) and mechanism_authority_usage(mechanism) == "provider_backed":
+                    context = self.authority_provider.lock_target_root(target_root, lock_scope)
+                else:
+                    context = None
+                if context is None:
                     receipt = self._execute_one(
                         active, candidate, contract, effect, frozen_inputs, hook, intent, intent_path,
                         ordinal, target_root, root_bindings, evidence_root, timestamp
                     )
+                else:
+                    with context:
+                        receipt = self._execute_one(
+                            active, candidate, contract, effect, frozen_inputs, hook, intent, intent_path,
+                            ordinal, target_root, root_bindings, evidence_root, timestamp
+                        )
+            except (PhaseError, OSError) as exc:
+                if receipt is not None:
+                    self._receipt_validator.validate(receipt)
+                    receipts.append(receipt)
+                if receipts:
+                    raise BrokerExecutionInterrupted(exc, receipts, progress_digest) from exc
+                raise
+            assert receipt is not None
             self._receipt_validator.validate(receipt)
             receipts.append(receipt)
             if len(effects) > 1:

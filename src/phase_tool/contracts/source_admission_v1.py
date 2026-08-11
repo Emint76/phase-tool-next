@@ -13,8 +13,9 @@ from jsonschema import Draft202012Validator, FormatChecker
 from ..canonical import digest_bytes, parse_json_bytes, profile_digest
 from ..errors import PhaseError
 from ..freeze import FrozenInput, revalidate_frozen
-from ..paths import _platform_path, contained_read_path, inspect_target_path, safe_relative_locator
+from ..paths import inspect_target_path, safe_relative_locator
 from ..registry import RegistrySnapshot, ResolvedContract
+from .target_io import observe_target, read_target_bytes
 
 CONTRACT_ID = "source_admission.v1"
 CONTRACT_VERSION = "1.0.0"
@@ -22,6 +23,7 @@ ROOT_BINDING = "admission_result_root"
 ASSET_BINDING = "asset"
 DESCRIPTOR_BINDING = "descriptor_bytes"
 _SAFE_INT = 9_007_199_254_740_991
+_MAX_DESCRIPTOR_BYTES = 1024 * 1024
 _LOGICAL_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 
 
@@ -207,9 +209,12 @@ def validate_preconditions(value: Mapping[str, Any], frozen: FrozenInput, root: 
     desc_locator = descriptor_locator(value, result_id)
     blob_locator = content_locator(frozen.digest)
     try:
-        blob, blob_exists = inspect_target_path(root, blob_locator)
-        blob_ok = blob_exists and digest_bytes(blob.read_bytes()) == frozen.digest and blob.stat().st_size == frozen.length
-        descriptor, descriptor_exists = inspect_target_path(root, desc_locator)
+        _blob, blob_exists = inspect_target_path(root, blob_locator)
+        blob_observation = observe_target(root, blob_locator) if blob_exists else None
+        blob_ok = blob_observation is not None and (
+            blob_observation["digest"] == frozen.digest and blob_observation["length"] == frozen.length
+        )
+        _descriptor, descriptor_exists = inspect_target_path(root, desc_locator)
     except PhaseError as exc:
         return "fail", exc.code, "safe_placement", str(exc), [exc.code]
     logical_dir = root / "r" / value["placement"]["namespace"] / value["logical_source_id"]
@@ -219,7 +224,7 @@ def validate_preconditions(value: Mapping[str, Any], frozen: FrozenInput, root: 
                 continue
             return "fail", "source.logical_identity_conflict", result_id, existing.name, ["source.logical_identity_conflict"]
     if descriptor_exists:
-        data = descriptor.read_bytes()
+        data = read_target_bytes(root, desc_locator, maximum_bytes=_MAX_DESCRIPTOR_BYTES)
         if digest_bytes(data) != digest_bytes(descriptor_bytes(value, frozen, run_id=parse_json_bytes(data)["admission_run"]["run_id"], observed_at=parse_json_bytes(data)["observed_at"])):
             return "fail", "target.same_key_conflict", "expected_descriptor", desc_locator, ["target.same_key_conflict"]
         if not blob_ok:
@@ -275,10 +280,11 @@ def verify_result_reference(descriptor: Mapping[str, Any], descriptor_digest: st
     schema_keys = {"source_result_id", "logical_source_id", "content_digest", "content_length", "blob_locator", "descriptor_locator"}
     if not schema_keys.issubset(descriptor):
         raise PhaseError("source.result_invalid")
-    blob = contained_read_path(root, str(descriptor["blob_locator"]))
-    with open(_platform_path(blob), "rb") as stream:
-        data = stream.read()
-    if digest_bytes(data) != descriptor["content_digest"] or len(data) != descriptor["content_length"]:
+    blob_observation = observe_target(root, str(descriptor["blob_locator"]))
+    if (
+        blob_observation["digest"] != descriptor["content_digest"]
+        or blob_observation["length"] != descriptor["content_length"]
+    ):
         raise PhaseError("source.blob_mismatch")
     if descriptor_digest != digest_bytes(admission_canonical_bytes(dict(descriptor))):
         raise PhaseError("source.descriptor_mismatch")
@@ -406,9 +412,11 @@ class SourceAdmissionHook:
         locator = effect_plan["effects"][-1]["target"]["relative_locator"]
         expected_digest = effect_plan["effects"][-1]["content_digest"]
         try:
-            path = contained_read_path(root, locator)
-            with open(_platform_path(path), "rb") as stream:
-                data = stream.read()
+            data = read_target_bytes(
+                root,
+                locator,
+                maximum_bytes=int(effect_plan["effects"][-1]["content_length"]),
+            )
             actual_digest = digest_bytes(data)
             descriptor = parse_json_bytes(data)
             verify_result_reference(descriptor, actual_digest, root)

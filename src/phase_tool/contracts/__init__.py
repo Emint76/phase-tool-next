@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Mapping
 
 from ..canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ..errors import PhaseError
@@ -73,12 +74,37 @@ def expected_append_locator(contract_document: dict[str, Any], candidate: dict[s
     raise PhaseError("contract.append_codec_unavailable")
 
 
-def append_record_bytes(candidate: dict[str, Any], *, existing_bytes: bytes, expected_head: str | None, request_digest: str | None = None) -> bytes:
+def append_record_bytes(
+    candidate: dict[str, Any],
+    *,
+    existing_bytes: bytes | None = None,
+    existing_path: Path | None = None,
+    expected_head: str | None,
+    request_digest: str | None = None,
+) -> bytes:
     if "record" in candidate:
         return canonical_bytes(candidate["record"]) + b"\n"
     if "task_id" in candidate:
-        record = task_journal_v1.build_record(candidate, existing_bytes=existing_bytes, expected_head=expected_head, request_digest=request_digest)
-        return task_journal_v1.finalize_record(record, previous_head=expected_head, previous_length=len(existing_bytes))
+        if existing_path is not None:
+            state = task_journal_v1.stream_state(existing_path)
+            record = task_journal_v1.build_record_from_state(
+                candidate,
+                record_count=state.record_count,
+                state=state.state,
+                expected_head=expected_head,
+                request_digest=request_digest,
+            )
+            previous_length = state.length
+        else:
+            materialized = b"" if existing_bytes is None else existing_bytes
+            record = task_journal_v1.build_record(
+                candidate,
+                existing_bytes=materialized,
+                expected_head=expected_head,
+                request_digest=request_digest,
+            )
+            previous_length = len(materialized)
+        return task_journal_v1.finalize_record(record, previous_head=expected_head, previous_length=previous_length)
     raise PhaseError("contract.append_codec_unavailable")
 
 

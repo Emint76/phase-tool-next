@@ -120,6 +120,23 @@ def test_v2_inline_utf8_publishes_current_and_external_old_new_objects(tmp_path:
     assert inspected["contract_result"]["new_object"]["digest"] == _sha(after)
 
 
+def test_v2_rejects_oversized_predecessor_before_materialization_or_mutation(tmp_path: Path) -> None:
+    before = b"x" * (512 * 1024 + 1)
+    request, _current_root, objects_root, _evidence_root, current = _request(
+        tmp_path,
+        run_id="v2-oversized-predecessor",
+        before=before,
+        content="small replacement",
+    )
+
+    outcome = PhaseCore().run(request, execute=True)
+
+    assert outcome.receipt["terminal_status"] == "rejected"
+    assert "publish.archive_too_large" in outcome.receipt["blockers"]
+    assert current.read_bytes() == before
+    assert list(objects_root.rglob("*")) == []
+
+
 def test_v2_reuses_exact_existing_old_and_new_objects(tmp_path: Path) -> None:
     before = b"old"
     content = "new ✓"

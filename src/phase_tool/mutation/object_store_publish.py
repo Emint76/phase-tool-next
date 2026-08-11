@@ -220,9 +220,12 @@ def execute_object_store_publish(
                 new_after=new_before, bytes_written=0, refs=["current.before", "old_object.before", "new_object.before"],
                 error_code="publish.current_mismatch",
             )
+        archive_length = effect["archive_length"]
+        if not isinstance(archive_length, int) or isinstance(archive_length, bool) or archive_length > _MAX_CONTENT_BYTES:
+            raise PhaseError("publish.archive_too_large")
         current_descriptor = current.open_existing(deny_write_sharing=True)
         try:
-            current_bytes = os.read(current_descriptor, int(effect["archive_length"]) + 1)
+            current_bytes = current.read_bytes(current_descriptor, maximum_bytes=_MAX_CONTENT_BYTES)
         finally:
             os.close(current_descriptor)
         if len(current_bytes) != effect["archive_length"] or digest_bytes(current_bytes) != effect["archive_digest"]:

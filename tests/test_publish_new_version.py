@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
+import phase_tool.contracts.publish_new_version_v1 as publish_v1
+import phase_tool.contracts.publish_new_version_v2 as publish_v2
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from phase_tool.contracts import load_contract_hook
@@ -16,7 +18,9 @@ from phase_tool.core import CoreFaults, PhaseCore, PhaseRequest
 from phase_tool.errors import PhaseError
 from phase_tool.inspection import inspect_run
 from phase_tool.mutation import BrokerFaults
-from phase_tool.mutation.archive_then_publish import ArchiveThenPublishFaults
+from phase_tool.mutation.archive_then_publish import ArchiveThenPublishFaults, execute_archive_then_publish
+from phase_tool.mutation.posix import PosixAuthorityProvider
+from phase_tool.mutation.posix.authority import PosixTargetAuthority
 from phase_tool.registry import BundledRegistry
 
 NOW = "2026-07-31T20:00:00Z"
@@ -29,6 +33,27 @@ pytestmark = pytest.mark.skipif(
 
 def _sha(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("contract_module", [publish_v1, publish_v2])
+def test_publish_lifecycle_state_observation_never_materializes_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contract_module: object,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "current.bin"
+    payload = b"current-state" * 100_000
+    target.write_bytes(payload)
+
+    def reject_materialized_read(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("publish lifecycle materialized the target")
+
+    monkeypatch.setattr(PosixTargetAuthority, "read_bytes", reject_materialized_read)
+    state = contract_module._state(root, "current.bin")  # type: ignore[attr-defined]
+
+    assert state == {"exists": True, "digest": digest_bytes(payload), "length": len(payload)}
 
 
 def _archive_locator(data: bytes) -> str:
@@ -130,6 +155,54 @@ def test_publish_plan_is_archive_first_format_neutral_and_does_not_mutate_target
     inspected = inspect_run(evidence, request.run_id)
     assert inspected["terminal_status"] == "validated_planned"
     assert inspected["target_verified"] is None
+
+
+def test_archive_rejects_oversized_existing_target_before_full_byte_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    (target / "documents").mkdir(parents=True)
+    before_chunk = b"o" * (1024 * 1024)
+    current = target / "documents" / "item.bin"
+    digest = hashlib.sha256()
+    with current.open("wb") as stream:
+        for _ in range(17):
+            stream.write(before_chunk)
+            digest.update(before_chunk)
+    before_digest = "sha256:" + digest.hexdigest()
+    after = b"new-content"
+    effect = {
+        "effect_id": "effect.publish.oversized-current",
+        "kind": "publish_new_version",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "documents/item.bin"},
+        "archive_target": {
+            "root_binding": "fixture_result_root",
+            "relative_locator": f"archive/sha256/{before_digest[7:9]}/{before_digest[7:]}",
+        },
+        "archive_digest": before_digest,
+        "archive_length": 17 * 1024 * 1024,
+        "content_digest": _sha(after),
+        "content_length": len(after),
+    }
+
+    def reject_materialization(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("archive materialized the oversized current target")
+
+    monkeypatch.setattr(PosixTargetAuthority, "read_bytes", reject_materialization)
+    with pytest.raises(PhaseError) as captured:
+        execute_archive_then_publish(
+            effect,
+            target,
+            after,
+            run_id="oversized-current",
+            timestamp=NOW,
+            authority_provider=PosixAuthorityProvider(),
+        )
+
+    assert captured.value.code == "mechanism.content_too_large"
+    assert current.stat().st_size == 17 * 1024 * 1024
+    assert not (target / "archive").exists()
 
 
 @pytest.mark.parametrize("receipt_present", [True, False])

@@ -11,8 +11,9 @@ from ..canonical import digest_bytes, parse_json_bytes, profile_digest
 from ..errors import PhaseError
 from ..evidence import evidence_file_exists, read_evidence_bytes, validate_intent
 from ..freeze import FrozenInput
-from ..paths import _platform_path, inspect_target_path, safe_relative_locator
+from ..paths import inspect_target_path, safe_relative_locator
 from ..registry import RegistrySnapshot, ResolvedContract
+from .target_io import observe_target
 
 CONTRACT_ID = "publish_new_version.v2"
 CONTRACT_VERSION = "1.0.0"
@@ -47,9 +48,8 @@ def _state(root: Path, locator: str) -> dict[str, Any]:
         return {"exists": False, "digest": None, "length": None}
     if not path.is_file():
         return {"exists": True, "digest": None, "length": None}
-    with open(_platform_path(path), "rb") as stream:
-        data = stream.read()
-    return {"exists": True, "digest": digest_bytes(data), "length": len(data)}
+    observation = observe_target(root, locator)
+    return {"exists": True, "digest": observation["digest"], "length": observation["length"]}
 
 
 def _exact(state: Mapping[str, Any], digest: str, length: int) -> bool:
@@ -124,6 +124,8 @@ def validate_preconditions(value: Mapping[str, Any], current_root: Path, objects
     old_object = _state(objects_root, object_locator(old_digest))
     new_object = _state(objects_root, object_locator(new_digest))
     current_old = current.get("digest") == old_digest
+    if current_old and (not isinstance(current.get("length"), int) or current["length"] > _MAX_CONTENT_BYTES):
+        return "fail", "publish.archive_too_large", _MAX_CONTENT_BYTES, current.get("length"), ["publish.archive_too_large"]
     old_allowed = _absent(old_object) or (old_object.get("digest") == old_digest and old_object.get("length") == current.get("length"))
     new_allowed = _absent(new_object) or _exact(new_object, new_digest, len(content))
     completed = _exact(current, new_digest, len(content)) and old_object.get("digest") == old_digest and new_allowed
@@ -162,6 +164,8 @@ class PublishNewVersionV2Hook:
         if old_length is None:
             old_state = _state(Path(roots[OBJECTS_ROOT_BINDING]), object_locator(old_digest))
             old_length = old_state["length"] if old_state.get("digest") == old_digest else None
+        if not isinstance(old_length, int) or old_length > _MAX_CONTENT_BYTES:
+            raise PhaseError("publish.archive_too_large")
         return [{
             "ordinal": 0,
             "effect_id": "effect.publish.v2.001",

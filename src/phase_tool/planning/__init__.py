@@ -163,15 +163,20 @@ def build_static_plan(
         if locator != expected_locator:
             raise PhaseError("plan.locator_template_mismatch", locator)
         expected_head = value["expected_head"]
-        current_bytes = b""
+        existing_path: Path | None = None
+        binding_id = contract.document["canonical_result"]["root_binding"]
         if expected_head is not None:
-            binding_id = contract.document["canonical_result"]["root_binding"]
             root = _resolved_root(root_bindings, binding_id)
-            try:
-                current_bytes = (root / locator).read_bytes()
-            except OSError as exc:
-                raise PhaseError("plan.root_unavailable", binding_id) from exc
-        content = append_record_bytes(value, existing_bytes=current_bytes, expected_head=expected_head, request_digest=request_digest)
+            existing_path = root / locator
+        try:
+            content = append_record_bytes(
+                value,
+                existing_path=existing_path,
+                expected_head=expected_head,
+                request_digest=request_digest,
+            )
+        except OSError as exc:
+            raise PhaseError("plan.root_unavailable", binding_id) from exc
         operation_identity = value.get("operation_id", value.get("idempotency_key"))
         record_identity = str(value["record_id"]) if "record" in value else append_record_identity(content)
         content_digest = digest_bytes(content)

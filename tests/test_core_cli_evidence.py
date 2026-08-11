@@ -24,6 +24,34 @@ NOW = "2026-07-27T00:00:00Z"
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_core_operational_lock_timeout_and_unlock_error_are_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fcntl
+    import phase_tool.core as core_module
+
+    path = tmp_path / "locks" / "idempotency.lock"
+    holder = core_module._OperationalFileLock(path)
+    holder.__enter__()
+    descriptor_count = len(os.listdir("/proc/self/fd"))
+    try:
+        with pytest.raises(PhaseError, match="lock.acquire_timeout"):
+            core_module._OperationalFileLock(path).__enter__()
+        assert len(os.listdir("/proc/self/fd")) == descriptor_count
+    finally:
+        original_flock = fcntl.flock
+
+        def fail_unlock(descriptor: int, operation: int) -> None:
+            if operation == fcntl.LOCK_UN:
+                raise OSError("unlock failed")
+            original_flock(descriptor, operation)
+
+        monkeypatch.setattr(fcntl, "flock", fail_unlock)
+        holder.__exit__(None, None, None)
+    assert len(os.listdir("/proc/self/fd")) == descriptor_count - 1
+
+
 def exact(contract_id: str) -> dict[str, str]:
     return BundledRegistry.load().contract_bindings()[f"{contract_id}@1.0.0"]
 
@@ -729,6 +757,9 @@ def test_final_inspection_hook_normalizes_only_operational_failures(
         def inspect_result(self, *args, **kwargs):
             raise failure
 
+        def inspect_stream_result(self, *args, **kwargs):
+            raise failure
+
     monkeypatch.setattr(inspection_module, "load_contract_hook", lambda contract: FailingInspectionHook())
     before = tree_digest(target)
     response = PhaseApplication().inspect(
@@ -765,10 +796,10 @@ def test_final_target_helper_does_not_mask_programmer_value_error(
     )
     assert outcome.exit_code == 0
 
-    def fail_contained_read(*args, **kwargs):
+    def fail_authority_open(*args, **kwargs):
         raise ValueError("programmer-side final target defect")
 
-    monkeypatch.setattr(inspection_module, "contained_read_path", fail_contained_read)
+    monkeypatch.setattr(inspection_module.HostAuthorityProvider, "open_authority", fail_authority_open)
     before = tree_digest(target)
     response = PhaseApplication().inspect(
         evidence_root=evidence,

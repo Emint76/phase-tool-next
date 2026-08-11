@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import errno
+import hashlib
 import os
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..append_codec import append_head_token, absent_head_token, stream_head_token, validate_record_bytes
+from ..append_codec import (
+    append_head_token,
+    absent_head_token,
+    stream_head_token,
+    stream_head_token_from_summary,
+    validate_record_bytes,
+)
 from ..canonical import digest_bytes
 from ..evidence import operational_lock_path
 from ..errors import PhaseError
@@ -14,6 +23,9 @@ from ..paths import _is_reparse_point, contained_target_path
 from .platform import HostTargetAuthority
 
 _MAX_RECORD_BYTES = 1_048_576
+_READ_CHUNK_BYTES = 1_048_576
+_LOCK_ACQUIRE_TIMEOUT_SECONDS = 5.0
+_LOCK_RETRY_INTERVAL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -30,6 +42,60 @@ def _unknown() -> dict[str, object]:
     return {"known": False, "exists": None, "digest": None, "length": None, "head_token": None}
 
 
+def _stream_descriptor(
+    descriptor: int,
+    *,
+    capture_offset: int | None = None,
+    capture_length: int = 0,
+) -> tuple[dict[str, object], int, object, bytes]:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    length = 0
+    record_count = 0
+    pending = bytearray()
+    captured = bytearray()
+    while True:
+        chunk = os.read(descriptor, _READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        if capture_offset is not None and len(captured) < capture_length:
+            capture_end = capture_offset + capture_length
+            overlap_start = max(length, capture_offset)
+            overlap_end = min(length + len(chunk), capture_end)
+            if overlap_start < overlap_end:
+                captured.extend(chunk[overlap_start - length : overlap_end - length])
+        digest.update(chunk)
+        length += len(chunk)
+        pending.extend(chunk)
+        while True:
+            newline = pending.find(b"\n")
+            if newline < 0:
+                break
+            if newline + 1 > _MAX_RECORD_BYTES:
+                raise PhaseError("input.invalid_tail")
+            record = bytes(pending[: newline + 1])
+            del pending[: newline + 1]
+            validate_record_bytes(record)
+            record_count += 1
+        if len(pending) > _MAX_RECORD_BYTES:
+            raise PhaseError("input.invalid_tail")
+    if pending:
+        raise PhaseError("input.invalid_tail")
+    stream_digest = "sha256:" + digest.hexdigest()
+    return (
+        {
+            "known": True,
+            "exists": True,
+            "digest": stream_digest,
+            "length": length,
+            "head_token": stream_head_token_from_summary(stream_digest, length, record_count),
+        },
+        record_count,
+        digest,
+        bytes(captured),
+    )
+
+
 def _observe(path: Path) -> dict[str, object]:
     try:
         info = path.lstat()
@@ -41,8 +107,32 @@ def _observe(path: Path) -> dict[str, object]:
         raise PhaseError("path.reparse_forbidden", str(path))
     if not stat.S_ISREG(info.st_mode):
         return {"known": True, "exists": True, "digest": None, "length": None, "head_token": None}
-    data = path.read_bytes()
-    return {"known": True, "exists": True, "digest": digest_bytes(data), "length": len(data), "head_token": stream_head_token(data)}
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        observation, _record_count, _digest, _captured = _stream_descriptor(descriptor)
+        return observation
+    finally:
+        os.close(descriptor)
+
+
+def _observe_authority(
+    authority: HostTargetAuthority,
+    *,
+    capture_offset: int | None = None,
+    capture_length: int = 0,
+) -> tuple[dict[str, object], int, object, bytes]:
+    observed = authority.observe()
+    if observed["exists"] is not True or observed["digest"] is None:
+        return observed, 0, hashlib.sha256(), b""
+    descriptor = authority.open_existing()
+    try:
+        return _stream_descriptor(
+            descriptor,
+            capture_offset=capture_offset,
+            capture_length=capture_length,
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _receipt(
@@ -94,6 +184,7 @@ class _CooperativeFileLock:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._stream = None
+        self.release_error: OSError | None = None
 
     def __enter__(self) -> "_CooperativeFileLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,21 +197,47 @@ class _CooperativeFileLock:
         else:
             import fcntl
 
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + _LOCK_ACQUIRE_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno == errno.EINTR:
+                        if deadline - time.monotonic() <= 0:
+                            self._stream.close()
+                            self._stream = None
+                            raise PhaseError("lock.acquire_timeout", str(self.path)) from exc
+                        continue
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                        self._stream.close()
+                        self._stream = None
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._stream.close()
+                        self._stream = None
+                        raise PhaseError("lock.acquire_timeout", str(self.path)) from exc
+                    time.sleep(min(_LOCK_RETRY_INTERVAL_SECONDS, remaining))
         return self
 
     def __exit__(self, *_exc: object) -> None:
         assert self._stream is not None
-        if os.name == "nt":
-            import msvcrt
+        try:
+            if os.name == "nt":
+                import msvcrt
 
-            self._stream.seek(0)
-            msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
+                self._stream.seek(0)
+                msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
 
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
-        self._stream.close()
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            self.release_error = exc
+        finally:
+            self._stream.close()
+            self._stream = None
 
 
 def execute_append_record(
@@ -188,7 +305,7 @@ def execute_append_record(
     try:
         lock_context = _CooperativeFileLock(lock)
         lock_context.__enter__()
-    except OSError as exc:
+    except (OSError, PhaseError) as exc:
         try:
             observed = _observe(target)
         except (OSError, PhaseError):
@@ -202,7 +319,7 @@ def execute_append_record(
             before=observed,
             after=observed,
             bytes_written=0,
-            error_code="lock.acquire_failed",
+            error_code=exc.code if isinstance(exc, PhaseError) else "lock.acquire_failed",
             error_message=str(exc),
             verification_refs=["lock.acquire", "target.after"] if observed["known"] else ["lock.acquire"],
             attempted=True,
@@ -215,7 +332,7 @@ def execute_append_record(
             expected_root_identity=expected_root_identity,
         )
         try:
-            before = _observe(target)
+            before, before_record_count, before_digest_state, _captured = _observe_authority(authority)
         except PhaseError as exc:
             return _receipt(
                 effect,
@@ -226,11 +343,10 @@ def execute_append_record(
                 after=_unknown(),
                 bytes_written=0,
                 error_code="target.invalid_existing_tail" if exc.code == "input.invalid_tail" else exc.code,
-                error_message=exc.message,
+                error_message=str(exc),
                 verification_refs=["target.before"],
                 **append_metadata,
             )
-        before_bytes = authority.read_bytes() if before["exists"] is True else b""
         create_absent = expected_head is None or expected_head == absent_head_token()
         if before["exists"] is not True:
             if not create_absent:
@@ -277,6 +393,29 @@ def execute_append_record(
         try:
             authority.assert_namespace_binding()
             descriptor = authority.open_exclusive() if create_absent else authority.open_existing(writable=True)
+            if not create_absent:
+                pinned = authority.observe_record_stream(descriptor)
+                if pinned.head_token != before["head_token"]:
+                    os.close(descriptor)
+                    descriptor = None
+                    return _receipt(
+                        effect,
+                        run_id=run_id,
+                        timestamp=timestamp,
+                        status="failed_no_effect",
+                        before=before,
+                        after={
+                            "known": True,
+                            "exists": True,
+                            "digest": pinned.digest,
+                            "length": pinned.length,
+                            "head_token": pinned.head_token,
+                        },
+                        bytes_written=0,
+                        error_code="target.stale_head",
+                        verification_refs=["target.pinned_before_append"],
+                        **append_metadata,
+                    )
             append_offset = 0 if before["length"] is None else int(before["length"])
             os.lseek(descriptor, append_offset, os.SEEK_SET)
             view = memoryview(record)
@@ -322,16 +461,35 @@ def execute_append_record(
                 append_offset=append_offset if "append_offset" in locals() else None,
                 **append_metadata,
             )
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
         try:
             if active.readback_error:
                 raise OSError("injected read-back failure")
-            data = authority.read_bytes() if active.readback_override is None else active.readback_override
             append_offset = 0 if before["length"] is None else int(before["length"])
-            readback = data[append_offset : append_offset + len(record)]
-            after = {"known": True, "exists": True, "digest": digest_bytes(data), "length": len(data), "head_token": stream_head_token(data)}
+            if active.readback_override is None:
+                observed = authority.observe_record_stream(
+                    descriptor,
+                    prefix_length=append_offset + len(record),
+                    segment_offset=append_offset,
+                    segment_length=len(record),
+                )
+                after = {
+                    "known": True,
+                    "exists": True,
+                    "digest": observed.digest,
+                    "length": observed.length,
+                    "head_token": observed.head_token,
+                }
+                readback = observed.segment or b""
+            else:
+                data = active.readback_override
+                readback = data[append_offset : append_offset + len(record)]
+                after = {
+                    "known": True,
+                    "exists": True,
+                    "digest": digest_bytes(data),
+                    "length": len(data),
+                    "head_token": stream_head_token(data),
+                }
         except (OSError, PhaseError) as exc:
             return _receipt(
                 effect,
@@ -347,7 +505,18 @@ def execute_append_record(
                 append_offset=0 if before["length"] is None else int(before["length"]),
                 **append_metadata,
             )
-        expected_after_head = stream_head_token(before_bytes + record)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+                descriptor = None
+        expected_digest_state = before_digest_state.copy()
+        expected_digest_state.update(record)
+        expected_after_digest = "sha256:" + expected_digest_state.hexdigest()
+        expected_after_head = stream_head_token_from_summary(
+            expected_after_digest,
+            append_offset + len(record),
+            before_record_count + 1,
+        )
         verified = readback == record and after["head_token"] == expected_after_head
         receipt = _receipt(
             effect,

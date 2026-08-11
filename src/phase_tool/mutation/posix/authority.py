@@ -1,33 +1,62 @@
 from __future__ import annotations
 
+import errno
 import fcntl
+import hashlib
 import os
 import stat
+import time
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Callable
 
+from ...append_codec import observe_stream
 from ...canonical import digest_bytes
 from ...errors import PhaseError
 from ...paths import _is_reparse_point, safe_relative_locator
-from ..authority import TargetAuthority
+from ..authority import RecordStreamObservation, TargetAuthority
 from ..guarantees import GuaranteeProfileBinding, registered_profile_binding
 
 
-def _read_descriptor(descriptor: int) -> bytes:
+_READ_CHUNK_BYTES = 1024 * 1024
+_TARGET_ROOT_LOCK_TIMEOUT_SECONDS = 5.0
+_TARGET_ROOT_LOCK_RETRY_SECONDS = 0.05
+
+
+def _read_descriptor(descriptor: int, *, maximum_bytes: int | None = None) -> bytes:
     os.lseek(descriptor, 0, os.SEEK_SET)
     chunks: list[bytes] = []
+    length = 0
     while True:
-        chunk = os.read(descriptor, 1024 * 1024)
+        read_size = _READ_CHUNK_BYTES
+        if maximum_bytes is not None:
+            read_size = min(read_size, max(1, maximum_bytes - length + 1))
+        chunk = os.read(descriptor, read_size)
         if not chunk:
             return b"".join(chunks)
         chunks.append(chunk)
+        length += len(chunk)
+        if maximum_bytes is not None and length > maximum_bytes:
+            raise PhaseError("target.read_limit_exceeded")
+
+
+def _observe_descriptor(descriptor: int) -> tuple[str, int]:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    length = 0
+    while True:
+        chunk = os.read(descriptor, _READ_CHUNK_BYTES)
+        if not chunk:
+            return "sha256:" + digest.hexdigest(), length
+        digest.update(chunk)
+        length += len(chunk)
 
 
 class PosixTargetRootLock:
-    def __init__(self, root: Path, scope: str) -> None:
+    def __init__(self, root: Path, scope: str, *, timeout_seconds: float = _TARGET_ROOT_LOCK_TIMEOUT_SECONDS) -> None:
         self.root = Path(root)
         self.scope = scope
+        self.timeout_seconds = timeout_seconds
         self._descriptor: int | None = None
 
     def __enter__(self) -> "PosixTargetRootLock":
@@ -37,7 +66,18 @@ class PosixTargetRootLock:
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         self._descriptor = os.open(root, flags)
         try:
-            fcntl.flock(self._descriptor, fcntl.LOCK_EX)
+            deadline = time.monotonic() + self.timeout_seconds
+            while True:
+                try:
+                    fcntl.flock(self._descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EINTR}:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise PhaseError("lock.acquire_timeout") from exc
+                    time.sleep(min(_TARGET_ROOT_LOCK_RETRY_SECONDS, remaining))
         except Exception:
             os.close(self._descriptor)
             self._descriptor = None
@@ -46,9 +86,12 @@ class PosixTargetRootLock:
 
     def __exit__(self, *_exc: object) -> None:
         if self._descriptor is not None:
-            fcntl.flock(self._descriptor, fcntl.LOCK_UN)
-            os.close(self._descriptor)
+            descriptor = self._descriptor
             self._descriptor = None
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 class PosixTargetAuthority:
@@ -58,6 +101,8 @@ class PosixTargetAuthority:
         locator: str,
         reparse_detector: Callable[[Path], bool] | None = None,
         expected_root_identity: tuple[int, int] | None = None,
+        *,
+        create_parents: bool = True,
     ) -> None:
         self.locator = safe_relative_locator(locator)
         self.reparse_detector = reparse_detector or _is_reparse_point
@@ -69,7 +114,7 @@ class PosixTargetAuthority:
         self.parent_fd: int | None = None
         self._namespace_bindings: list[tuple[Path, tuple[int, int]]] = []
         try:
-            self._prepare_and_pin_parent(expected_root_identity)
+            self._prepare_and_pin_parent(expected_root_identity, create_parents=create_parents)
         except Exception:
             self.close()
             raise
@@ -78,7 +123,7 @@ class PosixTargetAuthority:
     def _directory_flags() -> int:
         return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
-    def _prepare_and_pin_parent(self, expected_root_identity: tuple[int, int] | None) -> None:
+    def _prepare_and_pin_parent(self, expected_root_identity: tuple[int, int] | None, *, create_parents: bool) -> None:
         root_fd = os.open(self.root, self._directory_flags())
         self._handles.append(root_fd)
         root_info = os.fstat(root_fd)
@@ -97,6 +142,8 @@ class PosixTargetAuthority:
             try:
                 child_fd = os.open(part, self._directory_flags(), dir_fd=parent_fd)
             except FileNotFoundError:
+                if not create_parents:
+                    raise
                 try:
                     os.mkdir(part, 0o700, dir_fd=parent_fd)
                 except FileExistsError:
@@ -121,7 +168,7 @@ class PosixTargetAuthority:
         self.parent_fd = None
         self._namespace_bindings = []
 
-    def assert_namespace_binding(self) -> None:
+    def _assert_parent_bindings(self) -> None:
         for path, expected_identity in self._namespace_bindings:
             try:
                 current = os.lstat(path)
@@ -132,6 +179,19 @@ class PosixTargetAuthority:
             current_identity = (int(current.st_dev), int(current.st_ino))
             if current_identity != expected_identity:
                 raise PhaseError("path.parent_identity_changed", self.locator)
+
+    def assert_namespace_binding(self) -> None:
+        self._assert_parent_bindings()
+
+    def _assert_target_descriptor_binding(self, descriptor: int) -> None:
+        assert self.parent_fd is not None
+        opened = os.fstat(descriptor)
+        try:
+            current = os.stat(self.name, dir_fd=self.parent_fd, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise PhaseError("path.target_identity_changed", self.locator) from exc
+        if (int(opened.st_dev), int(opened.st_ino)) != (int(current.st_dev), int(current.st_ino)):
+            raise PhaseError("path.target_identity_changed", self.locator)
 
     def observe(self) -> dict[str, object]:
         assert self.parent_fd is not None
@@ -145,10 +205,47 @@ class PosixTargetAuthority:
             return {"known": True, "exists": True, "digest": None, "length": None, "head_token": None}
         descriptor = os.open(self.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self.parent_fd)
         try:
-            data = _read_descriptor(descriptor)
+            digest, length = _observe_descriptor(descriptor)
+            self._assert_target_descriptor_binding(descriptor)
         finally:
             os.close(descriptor)
-        return {"known": True, "exists": True, "digest": digest_bytes(data), "length": len(data), "head_token": None}
+        return {"known": True, "exists": True, "digest": digest, "length": length, "head_token": None}
+
+    def observe_record_stream(
+        self,
+        descriptor: int | None = None,
+        *,
+        tail_bytes: int = 0,
+        prefix_length: int | None = None,
+        segment_offset: int | None = None,
+        segment_length: int | None = None,
+    ) -> RecordStreamObservation:
+        opened = descriptor if descriptor is not None else self.open_existing()
+        try:
+            os.lseek(opened, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(opened), "rb") as stream:
+                observation = observe_stream(
+                    stream,
+                    tail_bytes=tail_bytes,
+                    prefix_length=prefix_length,
+                    segment_offset=segment_offset,
+                    segment_length=segment_length,
+                )
+            self._assert_target_descriptor_binding(opened)
+        finally:
+            if descriptor is None:
+                os.close(opened)
+        self._assert_parent_bindings()
+        return RecordStreamObservation(
+            observation.digest,
+            observation.length,
+            observation.record_count,
+            observation.head_token,
+            observation.tail,
+            observation.prefix_head_token,
+            observation.segment_digest,
+            observation.segment,
+        )
 
     def open_exclusive(self) -> int:
         assert self.parent_fd is not None
@@ -161,17 +258,32 @@ class PosixTargetAuthority:
         flags = (os.O_RDWR if writable else os.O_RDONLY) | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         return os.open(self.name, flags, dir_fd=self.parent_fd)
 
-    def read_bytes(self, descriptor: int | None = None) -> bytes:
+    def read_bytes(
+        self,
+        descriptor: int | None = None,
+        *,
+        maximum_bytes: int | None = None,
+    ) -> bytes:
         opened = descriptor if descriptor is not None else self.open_existing()
         try:
-            return _read_descriptor(opened)
+            data = _read_descriptor(opened, maximum_bytes=maximum_bytes)
+            self._assert_target_descriptor_binding(opened)
         finally:
             if descriptor is None:
                 os.close(opened)
+        return data
 
     def readback(self, override: bytes | None, descriptor: int | None = None) -> dict[str, object]:
-        observed_bytes = override if override is not None else self.read_bytes(descriptor)
-        return {"known": True, "exists": True, "digest": digest_bytes(observed_bytes), "length": len(observed_bytes), "head_token": None}
+        if override is not None:
+            return {"known": True, "exists": True, "digest": digest_bytes(override), "length": len(override), "head_token": None}
+        opened = descriptor if descriptor is not None else self.open_existing()
+        try:
+            digest, length = _observe_descriptor(opened)
+            self._assert_target_descriptor_binding(opened)
+        finally:
+            if descriptor is None:
+                os.close(opened)
+        return {"known": True, "exists": True, "digest": digest, "length": length, "head_token": None}
 
     def replace_from(self, source: TargetAuthority) -> None:
         assert source.parent_fd is not None
@@ -212,8 +324,16 @@ class PosixAuthorityProvider:
         locator: str,
         reparse_detector: Callable[[Path], bool] | None = None,
         expected_root_identity: tuple[int, int] | None = None,
+        *,
+        create_parents: bool = True,
     ) -> PosixTargetAuthority:
-        return PosixTargetAuthority(root, locator, reparse_detector, expected_root_identity)
+        return PosixTargetAuthority(
+            root,
+            locator,
+            reparse_detector,
+            expected_root_identity,
+            create_parents=create_parents,
+        )
 
     def lock_target_root(self, root: Path, scope: str) -> AbstractContextManager[object]:
         return PosixTargetRootLock(root, scope)

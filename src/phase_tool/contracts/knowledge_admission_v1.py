@@ -13,10 +13,11 @@ from ..errors import PhaseError
 from ..evidence import iter_run_artifacts, read_evidence_bytes, validate_receipt
 from ..freeze import FrozenInput, revalidate_frozen
 from ..inspection import inspect_run
-from ..paths import _platform_path, contained_read_path, inspect_target_path, safe_relative_locator
+from ..paths import inspect_target_path, safe_relative_locator
 from ..registry import RegistrySnapshot, ResolvedContract
 from .source_admission_v1 import admission_canonical_bytes, admission_digest, content_locator
 from . import source_admission_v1
+from .target_io import observe_target, read_target_bytes
 
 CONTRACT_ID = "knowledge_admission.v1"
 CONTRACT_VERSION = "1.0.0"
@@ -25,6 +26,7 @@ ROOT_BINDING = "admission_result_root"
 ASSET_BINDING = "asset"
 DESCRIPTOR_BINDING = "descriptor_bytes"
 _LOGICAL_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+_MAX_DESCRIPTOR_BYTES = 1024 * 1024
 
 
 def _binding_key(binding: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -150,9 +152,11 @@ def _verify_source_descriptor_identity(descriptor: Mapping[str, Any]) -> None:
 def _verify_source_binding(binding: Mapping[str, Any], root: Path, evidence_root: Path, registry: RegistrySnapshot) -> None:
     if binding["source_contract"] != {"id": SOURCE_CONTRACT_ID, "version": CONTRACT_VERSION}:
         raise PhaseError("knowledge.source_contract_mismatch")
-    descriptor_path = contained_read_path(root, str(binding["source_descriptor_locator"]))
-    with open(_platform_path(descriptor_path), "rb") as stream:
-        descriptor_bytes_value = stream.read()
+    descriptor_bytes_value = read_target_bytes(
+        root,
+        str(binding["source_descriptor_locator"]),
+        maximum_bytes=_MAX_DESCRIPTOR_BYTES,
+    )
     descriptor_digest = digest_bytes(descriptor_bytes_value)
     if descriptor_digest != binding["source_descriptor_digest"]:
         raise PhaseError("knowledge.source_descriptor_mismatch")
@@ -219,9 +223,7 @@ def _verify_all_source_bindings(candidate: Mapping[str, Any], root: Path, eviden
 
 
 def _verify_supersedes(reference: Mapping[str, Any], root: Path, evidence_root: Path, registry: RegistrySnapshot) -> None:
-    descriptor_path = contained_read_path(root, str(reference["descriptor_locator"]))
-    with open(_platform_path(descriptor_path), "rb") as stream:
-        data = stream.read()
+    data = read_target_bytes(root, str(reference["descriptor_locator"]), maximum_bytes=_MAX_DESCRIPTOR_BYTES)
     descriptor_digest = digest_bytes(data)
     if descriptor_digest != reference["descriptor_digest"]:
         raise PhaseError("knowledge.supersedes_mismatch")
@@ -315,13 +317,12 @@ def validate_preconditions(value: Mapping[str, Any], frozen: FrozenInput, root: 
     desc_locator = descriptor_locator(value, result_id)
     blob_locator = content_locator(frozen.digest)
     try:
-        blob, blob_exists = inspect_target_path(root, blob_locator)
-        blob_data = b""
-        if blob_exists:
-            with open(_platform_path(blob), "rb") as stream:
-                blob_data = stream.read()
-        blob_ok = blob_exists and digest_bytes(blob_data) == frozen.digest and blob.stat().st_size == frozen.length
-        descriptor, descriptor_exists = inspect_target_path(root, desc_locator)
+        _blob, blob_exists = inspect_target_path(root, blob_locator)
+        blob_observation = observe_target(root, blob_locator) if blob_exists else None
+        blob_ok = blob_observation is not None and (
+            blob_observation["digest"] == frozen.digest and blob_observation["length"] == frozen.length
+        )
+        _descriptor, descriptor_exists = inspect_target_path(root, desc_locator)
     except PhaseError as exc:
         return "fail", exc.code, "safe_placement", str(exc), [exc.code]
     logical_dir = root / "namespaces" / value["placement"]["namespace"] / "knowledge-results" / value["logical_knowledge_id"]
@@ -331,8 +332,7 @@ def validate_preconditions(value: Mapping[str, Any], frozen: FrozenInput, root: 
                 continue
             return "fail", "knowledge.logical_identity_conflict", result_id, existing.name, ["knowledge.logical_identity_conflict"]
     if descriptor_exists:
-        with open(_platform_path(descriptor), "rb") as stream:
-            data = stream.read()
+        data = read_target_bytes(root, desc_locator, maximum_bytes=_MAX_DESCRIPTOR_BYTES)
         descriptor_value_existing = parse_json_bytes(data)
         expected = descriptor_bytes(value, frozen, run_id=descriptor_value_existing["admission_run"]["run_id"], observed_at=descriptor_value_existing["observed_at"])
         if digest_bytes(data) != digest_bytes(expected):
@@ -396,10 +396,11 @@ def verify_result_reference(
     schema_keys = {"knowledge_result_id", "logical_knowledge_id", "artifact_digest", "artifact_length", "blob_locator", "descriptor_locator"}
     if not schema_keys.issubset(descriptor):
         raise PhaseError("knowledge.result_invalid")
-    blob = contained_read_path(root, str(descriptor["blob_locator"]))
-    with open(_platform_path(blob), "rb") as stream:
-        data = stream.read()
-    if digest_bytes(data) != descriptor["artifact_digest"] or len(data) != descriptor["artifact_length"]:
+    blob_observation = observe_target(root, str(descriptor["blob_locator"]))
+    if (
+        blob_observation["digest"] != descriptor["artifact_digest"]
+        or blob_observation["length"] != descriptor["artifact_length"]
+    ):
         raise PhaseError("knowledge.blob_mismatch")
     if descriptor_digest != digest_bytes(admission_canonical_bytes(dict(descriptor))):
         raise PhaseError("knowledge.descriptor_mismatch")
@@ -470,11 +471,10 @@ class KnowledgeAdmissionHook:
             return None
         root = Path(root_bindings[ROOT_BINDING])
         locator = descriptor_locator(value, knowledge_result_id(value, frozen))
-        descriptor_path, exists = inspect_target_path(root, locator)
+        _descriptor_path, exists = inspect_target_path(root, locator)
         if not exists:
             return None
-        with open(_platform_path(descriptor_path), "rb") as stream:
-            data = stream.read()
+        data = read_target_bytes(root, locator, maximum_bytes=_MAX_DESCRIPTOR_BYTES)
         descriptor = parse_json_bytes(data)
         expected = descriptor_bytes(value, frozen, run_id=descriptor["admission_run"]["run_id"], observed_at=descriptor["observed_at"])
         if data != expected:
@@ -585,9 +585,11 @@ class KnowledgeAdmissionHook:
             root = Path(root_bindings[root_id])
             locator = effect_plan["effects"][-1]["target"]["relative_locator"]
             expected_digest = effect_plan["effects"][-1]["content_digest"]
-            path = contained_read_path(root, locator)
-            with open(_platform_path(path), "rb") as stream:
-                data = stream.read()
+            data = read_target_bytes(
+                root,
+                locator,
+                maximum_bytes=int(effect_plan["effects"][-1]["content_length"]),
+            )
             actual_digest = digest_bytes(data)
             descriptor = parse_json_bytes(data)
             verify_result_reference(descriptor, actual_digest, root)

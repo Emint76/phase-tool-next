@@ -24,13 +24,14 @@
   "limitations": [
     "No distributed-filesystem or network-lock guarantee is claimed.",
     "No process-crash recovery guarantee is claimed.",
+    "Target-root lock acquisition waits at most five seconds before failing closed with lock.acquire_timeout.",
     "Power-loss durability remains bounded by the filesystem and storage stack after successful file and parent-directory fsync calls."
   ],
   "implementation": {
     "id": "phase.posix.authority",
     "version": "1.0.0",
     "artifact": "phase_tool/mutation/posix/authority.py",
-    "artifact_digest": "sha256:55e150103df579615232d7c213d03d777fe836dab1130d6b30647275be838ab6"
+    "artifact_digest": "sha256:befc13e686c0c19b4cf765617f60e81b9ed474d6bf20a7f46ff149a181715f3e"
   },
   "descriptor_digest_binding": {
     "algorithm": "sha256",

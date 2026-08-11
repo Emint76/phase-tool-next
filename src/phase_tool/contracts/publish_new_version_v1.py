@@ -10,8 +10,9 @@ from ..canonical import digest_bytes, parse_json_bytes, profile_digest
 from ..errors import PhaseError
 from ..evidence import evidence_file_exists, read_evidence_bytes, validate_intent
 from ..freeze import FrozenInput, revalidate_frozen
-from ..paths import _platform_path, contained_read_path, inspect_target_path, safe_relative_locator
+from ..paths import contained_read_path, inspect_target_path, safe_relative_locator
 from ..registry import RegistrySnapshot, ResolvedContract
+from .target_io import observe_target
 
 CONTRACT_ID = "publish_new_version.v1"
 CONTRACT_VERSION = "1.0.0"
@@ -26,19 +27,14 @@ def archive_locator(current_digest: str) -> str:
     return safe_relative_locator(f"archive/sha256/{hex_digest[:2]}/{hex_digest}")
 
 
-def _read(path: Path) -> bytes:
-    with open(_platform_path(path), "rb") as stream:
-        return stream.read()
-
-
 def _state(root: Path, locator: str) -> dict[str, Any]:
     path, exists = inspect_target_path(root, locator)
     if not exists:
         return {"exists": False, "digest": None, "length": None}
     if not path.is_file():
         return {"exists": True, "digest": None, "length": None}
-    data = _read(path)
-    return {"exists": True, "digest": digest_bytes(data), "length": len(data)}
+    observation = observe_target(root, locator)
+    return {"exists": True, "digest": observation["digest"], "length": observation["length"]}
 
 
 def _classify_states(

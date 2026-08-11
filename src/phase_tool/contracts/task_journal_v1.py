@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from jsonschema import Draft202012Validator
 
 from ..canonical import canonical_bytes, parse_json_bytes
 from ..errors import PhaseError
-from ..append_codec import append_head_token, stream_head_token
+from ..append_codec import append_head_token, iter_bounded_lines, stream_head_token_from_summary
 from ..paths import safe_relative_locator
 
 _WIRE_RECORD_TYPES = {
@@ -54,6 +57,12 @@ _ACTION_REQUIRED = {
     "close": ["outcome"],
     "correction": ["target_sequence", "target_event_hash", "reason", "replacement"],
 }
+@dataclass(frozen=True)
+class JournalStreamState:
+    record_count: int
+    state: str
+    length: int
+    head_token: str
 
 
 def _validate_record_shape(record: dict[str, Any]) -> None:
@@ -76,26 +85,68 @@ def _validate_record_shape(record: dict[str, Any]) -> None:
 def _load_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    data = path.read_bytes()
-    if data and not data.endswith(b"\n"):
-        raise PhaseError("input.invalid_tail")
+    records, _summary, _matched = _scan_records(iter_bounded_lines(path), collect=True)
+    return records
+
+
+def _scan_records(
+    lines: Iterable[bytes],
+    *,
+    collect: bool,
+    target_identity: tuple[str, int, str] | None = None,
+    visitor: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[dict[str, Any]], JournalStreamState, bool]:
     records: list[dict[str, Any]] = []
     offset = 0
-    prefix = b""
+    digest = hashlib.sha256()
+    previous_head: str | None = None
+    record_count = 0
     task_id = None
     state = "absent"
-    for line in data.splitlines(keepends=True):
+    matched_target = False
+    for line in lines:
         value = parse_json_bytes(line.rstrip(b"\n"))
-        _validate_record_replay(value, index=len(records) + 1, previous_bytes=prefix, task_id=task_id, state=state)
+        _validate_record_replay(
+            value,
+            index=record_count + 1,
+            previous_head=previous_head,
+            task_id=task_id,
+            state=state,
+        )
         expected_hash = _event_hash(value, offset)
         if value.get("event_hash") != expected_hash:
             raise PhaseError("task_journal.hash_mismatch")
         task_id = value["task_id"]
         state = _next_state(state, value["action"])
-        records.append(value)
-        prefix += line
+        if target_identity == (value.get("task_id"), value.get("sequence"), value.get("event_hash")):
+            matched_target = True
+        if collect:
+            records.append(value)
+        if visitor is not None:
+            visitor(value)
+        digest.update(line)
         offset += len(line)
-    return records
+        record_count += 1
+        previous_head = stream_head_token_from_summary(
+            "sha256:" + digest.hexdigest(),
+            offset,
+            record_count,
+        )
+    stream_digest = "sha256:" + digest.hexdigest()
+    return records, JournalStreamState(
+        record_count=record_count,
+        state=state,
+        length=offset,
+        head_token=stream_head_token_from_summary(stream_digest, offset, record_count),
+    ), matched_target
+
+
+def stream_state(path: Path) -> JournalStreamState:
+    if not path.exists():
+        empty_digest = "sha256:" + hashlib.sha256().hexdigest()
+        return JournalStreamState(0, "absent", 0, stream_head_token_from_summary(empty_digest, 0, 0))
+    _records, summary, _matched = _scan_records(iter_bounded_lines(path), collect=False)
+    return summary
 
 
 def _next_state(state: str, action: str) -> str:
@@ -106,7 +157,14 @@ def _next_state(state: str, action: str) -> str:
     return state
 
 
-def _validate_record_replay(record: dict[str, Any], *, index: int, previous_bytes: bytes, task_id: str | None, state: str) -> None:
+def _validate_record_replay(
+    record: dict[str, Any],
+    *,
+    index: int,
+    previous_head: str | None,
+    task_id: str | None,
+    state: str,
+) -> None:
     _validate_record_shape(record)
     action = record.get("action")
     if action not in _WIRE_RECORD_TYPES:
@@ -121,8 +179,7 @@ def _validate_record_replay(record: dict[str, Any], *, index: int, previous_byte
         raise PhaseError("task_journal.duplicate_open")
     if task_id is not None and record.get("task_id") != task_id:
         raise PhaseError("task_journal.task_id_mismatch")
-    expected_previous = None if not previous_bytes else stream_head_token(previous_bytes)
-    if record.get("previous_head") != expected_previous:
+    if record.get("previous_head") != previous_head:
         raise PhaseError("task_journal.previous_head_mismatch")
     if action in {"event", "close"} and state != "open":
         raise PhaseError("task_journal.not_open")
@@ -146,19 +203,35 @@ def locator_for(candidate: dict[str, Any]) -> str:
 
 def build_record(candidate: dict[str, Any], *, existing_bytes: bytes, expected_head: str | None, request_digest: str | None = None) -> dict[str, Any]:
     records = _load_records_from_bytes(existing_bytes)
+    return build_record_from_state(
+        candidate,
+        record_count=len(records),
+        state=_state(records),
+        expected_head=expected_head,
+        request_digest=request_digest,
+    )
+
+
+def build_record_from_state(
+    candidate: dict[str, Any],
+    *,
+    record_count: int,
+    state: str,
+    expected_head: str | None,
+    request_digest: str | None = None,
+) -> dict[str, Any]:
     action = candidate["action"]
     if candidate.get("operation_id") != candidate.get("idempotency_key"):
         raise PhaseError("task_journal.operation_id_mismatch")
-    state = _state(records)
-    if expected_head is None and records:
+    if expected_head is None and record_count:
         raise PhaseError("task_journal.already_open")
-    if action == "open" and records:
+    if action == "open" and record_count:
         raise PhaseError("task_journal.already_open")
     if action in {"event", "close"} and state != "open":
         raise PhaseError("task_journal.not_open")
     if action == "correction" and state == "absent":
         raise PhaseError("task_journal.not_open")
-    sequence = len(records) + 1
+    sequence = record_count + 1
     record: dict[str, Any] = {
         "task_record_version": "1.0",
         "record_type": _WIRE_RECORD_TYPES[action],
@@ -205,25 +278,7 @@ def _event_hash(record: dict[str, Any], previous_length: int) -> str:
 
 
 def _load_records_from_bytes(data: bytes) -> list[dict[str, Any]]:
-    if not data:
-        return []
-    if not data.endswith(b"\n"):
-        raise PhaseError("input.invalid_tail")
-    records = []
-    prefix = b""
-    task_id = None
-    state = "absent"
-    for raw_line in data.splitlines(keepends=True):
-        line = raw_line.rstrip(b"\n")
-        record = parse_json_bytes(line)
-        _validate_record_replay(record, index=len(records) + 1, previous_bytes=prefix, task_id=task_id, state=state)
-        expected_hash = _event_hash(record, len(prefix))
-        if record.get("event_hash") != expected_hash:
-            raise PhaseError("task_journal.hash_mismatch")
-        task_id = record["task_id"]
-        state = _next_state(state, record["action"])
-        records.append(record)
-        prefix += raw_line
+    records, _summary, _matched = _scan_records(BytesIO(data), collect=True)
     return records
 
 
@@ -237,59 +292,76 @@ def validate_candidate(value: dict[str, Any], schema: dict[str, Any]) -> tuple[s
 
 
 def validate_state(value: dict[str, Any], path: Path) -> tuple[str, str, Any, Any, list[str]]:
+    expected = value["expected_head"]
+    if not path.exists():
+        if expected is None:
+            return "pass", "validation.pass", "absent", "absent", []
+        return "fail", "freeze.stale_snapshot", expected, None, ["freeze.stale_snapshot"]
+    target_identity = None
+    if value["action"] == "correction":
+        target_identity = (value["task_id"], value["target_sequence"], value["target_event_hash"])
     try:
-        records = _load_records(path)
+        _records, summary, matched_target = _scan_records(
+            iter_bounded_lines(path),
+            collect=False,
+            target_identity=target_identity,
+        )
     except PhaseError as exc:
         return "fail", exc.code, "valid_stream", "invalid_stream", [exc.code]
-    expected = value["expected_head"]
     if expected is None:
-        if records:
+        if summary.record_count:
             return "fail", "target.same_key_conflict", "absent", "present", ["target.same_key_conflict"]
         return "pass", "validation.pass", "absent", "absent", []
-    try:
-        current = stream_head_token(path.read_bytes())
-    except (OSError, PhaseError) as exc:
-        code = exc.code if isinstance(exc, PhaseError) else "target.unavailable"
-        return "fail", code, expected, None, [code]
+    current = summary.head_token
     if current != expected:
         return "fail", "freeze.stale_snapshot", expected, current, ["freeze.stale_snapshot"]
-    state = _state(records)
+    state = summary.state
     action = value["action"]
     if action in {"event", "close"} and state != "open":
         return "fail", "task_journal.not_open", "open", state, ["task_journal.not_open"]
     if action == "correction" and state == "absent":
         return "fail", "task_journal.not_open", "open_or_closed", state, ["task_journal.not_open"]
-    if action == "correction":
-        expected_target = (value["task_id"], value["target_sequence"], value["target_event_hash"])
-        observed = {
-            (record.get("task_id"), record.get("sequence"), record.get("event_hash"))
-            for record in records
-        }
-        if expected_target not in observed:
-            return "fail", "task_journal.correction_target_mismatch", expected_target, sorted(observed), ["task_journal.correction_target_mismatch"]
+    if action == "correction" and not matched_target:
+        return "fail", "task_journal.correction_target_mismatch", target_identity, "not_found", ["task_journal.correction_target_mismatch"]
     return "pass", "validation.pass", expected, current, []
 
 
 def project_task(path: Path) -> dict[str, Any]:
-    records = _load_records(path)
+    if not path.exists():
+        return {
+            "task_id": None,
+            "status": "absent",
+            "terminal_outcome": None,
+            "sequence": 0,
+            "event_count": 0,
+            "corrections": [],
+        }
+    task_id = None
     terminal_outcome = None
-    for record in records:
+    event_count = 0
+    corrections: list[dict[str, Any]] = []
+
+    def visit(record: dict[str, Any]) -> None:
+        nonlocal task_id, terminal_outcome, event_count
+        task_id = record["task_id"]
         if record["action"] == "close":
             terminal_outcome = record["outcome"]
+        elif record["action"] == "event":
+            event_count += 1
+        elif record["action"] == "correction":
+            corrections.append({
+                "sequence": record["sequence"],
+                "target_sequence": record["target_sequence"],
+                "target_event_hash": record["target_event_hash"],
+                "reason": record["reason"],
+            })
+
+    _records, summary, _matched = _scan_records(iter_bounded_lines(path), collect=False, visitor=visit)
     return {
-        "task_id": records[0]["task_id"] if records else None,
-        "status": _state(records),
+        "task_id": task_id,
+        "status": summary.state,
         "terminal_outcome": terminal_outcome,
-        "sequence": len(records),
-        "event_count": sum(1 for item in records if item["action"] == "event"),
-        "corrections": [
-            {
-                "sequence": item["sequence"],
-                "target_sequence": item["target_sequence"],
-                "target_event_hash": item["target_event_hash"],
-                "reason": item["reason"],
-            }
-            for item in records
-            if item["action"] == "correction"
-        ],
+        "sequence": summary.record_count,
+        "event_count": event_count,
+        "corrections": corrections,
     }

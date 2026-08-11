@@ -102,7 +102,7 @@ def _write_all(descriptor: int, content: bytes, writer: Callable[[int, memoryvie
 
 
 def _read_current(authority: TargetAuthority) -> bytes:
-    return authority.read_bytes()
+    return authority.read_bytes(maximum_bytes=_MAX_CONTENT_BYTES)
 
 
 def _publish_current(
@@ -163,6 +163,8 @@ def execute_archive_then_publish(
 ) -> dict[str, object]:
     active = faults or ArchiveThenPublishFaults()
     if len(content) > _MAX_CONTENT_BYTES:
+        raise PhaseError("mechanism.content_too_large")
+    if int(effect["archive_length"]) > _MAX_CONTENT_BYTES:
         raise PhaseError("mechanism.content_too_large")
     if len(content) != effect["content_length"] or digest_bytes(content) != effect["content_digest"]:
         raise PhaseError("mechanism.content_binding_mismatch")

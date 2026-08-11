@@ -79,14 +79,14 @@ def test_lock_snapshot_normalizes_only_source_filesystem_failures(
     root.mkdir()
     source = root / "state.txt"
     source.write_bytes(b"head\n")
-    original_read_bytes = Path.read_bytes
+    original_open = Path.open
 
-    def unavailable_read(path: Path) -> bytes:
+    def unavailable_open(path: Path, *args: object, **kwargs: object) -> object:
         if path == source:
             raise PermissionError("private host diagnostic")
-        return original_read_bytes(path)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", unavailable_read)
+    monkeypatch.setattr(Path, "open", unavailable_open)
     with pytest.raises(PhaseError) as error:
         lock_snapshot_revalidate("current_state", root, source.name, frozen_at="2026-07-27T00:00:00Z")
 

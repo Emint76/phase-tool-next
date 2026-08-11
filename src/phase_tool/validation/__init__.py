@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import stat
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,14 +10,14 @@ from typing import Any
 from jsonschema import Draft202012Validator, FormatChecker
 
 from ..candidate import CapturedCandidate
-from ..canonical import digest_bytes, parse_json_bytes, profile_digest
+from ..canonical import parse_json_bytes, profile_digest
 from ..errors import PhaseError
 from ..freeze import FrozenInput, revalidate_frozen, revalidate_snapshot
 from ..paths import contained_read_path, inspect_target_path, safe_relative_locator
 from ..registry import RegistrySnapshot, ResolvedContract
 from ..contracts import append_locator, load_contract_hook
 from ..contracts import task_journal_v1
-from ..append_codec import stream_head_token, validate_stream_bytes
+from ..append_codec import StreamObservation, observe_stream
 
 
 class ValidatorRunner:
@@ -113,9 +114,25 @@ class ValidatorRunner:
             raise PhaseError("validation.target_unavailable") from exc
 
     @staticmethod
-    def _read_target(path: Path) -> bytes:
+    def _digest_target(path: Path) -> tuple[str, int]:
         try:
-            return path.read_bytes()
+            digest = hashlib.sha256()
+            length = 0
+            with path.open("rb") as stream:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        return "sha256:" + digest.hexdigest(), length
+                    digest.update(chunk)
+                    length += len(chunk)
+        except OSError as exc:
+            raise PhaseError("validation.target_unavailable") from exc
+
+    @staticmethod
+    def _observe_append_target(path: Path, *, tail_bytes: int = 0) -> StreamObservation:
+        try:
+            with path.open("rb") as stream:
+                return observe_stream(stream, tail_bytes=tail_bytes)
         except OSError as exc:
             raise PhaseError("validation.target_unavailable") from exc
 
@@ -207,7 +224,7 @@ class ValidatorRunner:
                 return "fail", "freeze.stale_snapshot", expected, None, ["freeze.stale_snapshot"]
             if contract.document["operation"]["intent"] == "append":
                 try:
-                    current_head = stream_head_token(self._read_target(target))
+                    current_head = self._observe_append_target(target).head_token
                 except PhaseError as exc:
                     return "fail", exc.code, expected, "invalid_stream", [exc.code]
                 if expected != current_head:
@@ -229,7 +246,7 @@ class ValidatorRunner:
             if not exists or not self._target_is_file(target):
                 return "fail", "input.invalid_tail", True, False, ["input.invalid_tail"]
             try:
-                validate_stream_bytes(self._read_target(target))
+                self._observe_append_target(target)
             except PhaseError as exc:
                 return "fail", exc.code, True, False, [exc.code]
             return "pass", "validation.pass", True, True, []
@@ -246,7 +263,7 @@ class ValidatorRunner:
             for locator in locators:
                 target, exists = self._inspect_target(root, locator)
                 if exists:
-                    if not self._target_is_file(target) or digest_bytes(self._read_target(target)) != frozen.digest:
+                    if not self._target_is_file(target) or self._digest_target(target)[0] != frozen.digest:
                         return "fail", "target.same_key_conflict", frozen.digest, locator, ["target.same_key_conflict"]
                     observed.append("same_digest")
                 else:
@@ -426,16 +443,23 @@ class ValidatorRunner:
                 expected.append({"locator": locator, "digest": effect["content_digest"], "length": effect["content_length"]})
                 try:
                     path = contained_read_path(root, locator)
-                    data = path.read_bytes()
-                    observation = {"locator": locator, "digest": digest_bytes(data), "length": len(data)}
-                    actual.append(observation)
                     if effect["kind"] == "append_record":
                         encoded = effect.get("content_bytes_b64")
                         record = base64.b64decode(encoded.encode("ascii"), validate=True) if isinstance(encoded, str) else b""
-                        if not record or not data.endswith(record):
+                        stream_observation = self._observe_append_target(path, tail_bytes=len(record))
+                        observation = {
+                            "locator": locator,
+                            "digest": stream_observation.digest,
+                            "length": stream_observation.length,
+                        }
+                        if not record or stream_observation.tail != record:
                             blockers.append("verification.result_mismatch")
-                    elif observation["digest"] != effect["content_digest"] or observation["length"] != effect["content_length"]:
-                        blockers.append("verification.result_mismatch")
+                    else:
+                        digest, length = self._digest_target(path)
+                        observation = {"locator": locator, "digest": digest, "length": length}
+                        if observation["digest"] != effect["content_digest"] or observation["length"] != effect["content_length"]:
+                            blockers.append("verification.result_mismatch")
+                    actual.append(observation)
                 except (OSError, PhaseError):
                     actual.append({"locator": locator, "digest": None, "length": None})
                     blockers.append("verification.target_unavailable")

@@ -1432,14 +1432,14 @@
     },
     {
       "artifact": "descriptors/guarantee/phase.posix.authority.v1.json",
-      "artifact_digest": "sha256:1fccd6045511fd1e1a0a3acf598b96c7276300a671aa68e487da5074cc8a8bd3",
+      "artifact_digest": "sha256:0e721cd573a90813de73a8ee1e2b5574d7e67438bbcf03430de355d065bee42f",
       "capability": "mutation_authority",
       "id": "phase.posix.authority.v1",
       "kind": "guarantee_profile",
       "mutable": false,
       "package_artifacts": [
         {
-          "digest": "sha256:1fccd6045511fd1e1a0a3acf598b96c7276300a671aa68e487da5074cc8a8bd3",
+          "digest": "sha256:0e721cd573a90813de73a8ee1e2b5574d7e67438bbcf03430de355d065bee42f",
           "resource": "descriptors/guarantee/phase.posix.authority.v1.json"
         },
         {
@@ -1455,7 +1455,7 @@
           "resource": "schemas/mutation-guarantee-vocabulary.schema.json"
         }
       ],
-      "package_digest": "sha256:ab4ca23bab21d7201569acb9c778c16163af94a9d6cadace059dbd1036f9ae56",
+      "package_digest": "sha256:b7f1f21e8cf133a7c0f6a9b4d1e802c07e305624048a693e4b55807cceb9efd7",
       "trust_root_id": "phase.release.v1",
       "version": "1.0.0"
     },

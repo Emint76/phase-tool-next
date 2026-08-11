@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import errno
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +21,7 @@ from .freeze import FrozenInput, freeze_declared_inputs
 from .inspection import inspect_run
 from .installation import Installation, host_installation
 from .mutation import BrokerFaults, EffectBroker
-from .mutation.broker import ordered_progress_document, validate_broker_faults
+from .mutation.broker import BrokerExecutionInterrupted, ordered_progress_document, validate_broker_faults
 from .mutation.authority import GuaranteeProfileProvider
 from .mutation.guarantees import verify_guarantee_coverage
 from .mutation.implementation import mechanism_authority_usage
@@ -27,6 +29,9 @@ from .mutation.platform import HostAuthorityProvider
 from .planning import build_idempotency_digests, build_static_plan, validate_static_plan
 from .registry import BundledRegistry, RegistrySnapshot, ResolvedContract
 from .validation import ValidatorRunner
+
+_OPERATIONAL_LOCK_TIMEOUT_SECONDS = 5.0
+_OPERATIONAL_LOCK_RETRY_SECONDS = 0.05
 
 CORE_BINDING = {
     "id": "phase.core",
@@ -51,21 +56,47 @@ class _OperationalFileLock:
         else:
             import fcntl
 
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + _OPERATIONAL_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno == errno.EINTR:
+                        if deadline - time.monotonic() <= 0:
+                            self._stream.close()
+                            self._stream = None
+                            raise PhaseError("lock.acquire_timeout", str(self.path)) from exc
+                        continue
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                        self._stream.close()
+                        self._stream = None
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._stream.close()
+                        self._stream = None
+                        raise PhaseError("lock.acquire_timeout", str(self.path)) from exc
+                    time.sleep(min(_OPERATIONAL_LOCK_RETRY_SECONDS, remaining))
         return self
 
     def __exit__(self, *_exc: object) -> None:
         assert self._stream is not None
-        if os.name == "nt":
-            import msvcrt
+        try:
+            if os.name == "nt":
+                import msvcrt
 
-            self._stream.seek(0)
-            msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
+                self._stream.seek(0)
+                msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
 
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
-        self._stream.close()
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            self._stream.close()
+            self._stream = None
 
 
 @dataclass(frozen=True)
@@ -553,6 +584,7 @@ class PhaseCore:
         *,
         finalization_failed: bool,
         required_attachments_present: bool = True,
+        interruption_code: str | None = None,
     ) -> dict[str, Any]:
         result_effect = plan["effects"][-1]
         failed_receipts = [receipt for receipt in effect_receipts if receipt["status"] != "applied_verified"]
@@ -586,7 +618,8 @@ class PhaseCore:
                 terminal, result_state, exit_code, recovery = "failed_no_effect", "verified_no_effect", 20, False
         error = failed_receipts[0].get("error") if failed_receipts else None
         blockers = [] if terminal == "succeeded_verified" else [
-            "evidence.finalization_failed" if finalization_failed else (error["code"] if error else "verification.incomplete")
+            interruption_code
+            or ("evidence.finalization_failed" if finalization_failed else (error["code"] if error else "verification.incomplete"))
         ]
         return self._base_receipt(request, validator_results, timestamp) | {
             "terminal_status": terminal,
@@ -814,6 +847,7 @@ class PhaseCore:
         attachment_digests: list[str] = []
         progress_digest: str | None = None
         latest_progress: dict[str, Any] | None = None
+        interruption_code: str | None = None
         runner = ValidatorRunner(self.registry)
         try:
             reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute)
@@ -917,21 +951,30 @@ class PhaseCore:
 
                 record_progress([])
                 lifecycle.append("broker")
-                broker_result = EffectBroker(
-                    self.registry,
-                    self.installation.authority_provider,
-                    self.installation.authority_profile_binding,
-                ).execute(
-                    plan,
-                    contract,
-                    frozen,
-                    request.root_bindings,
-                    intent_path,
-                    store.operational_lock_root,
-                    evidence_root=evidence_root,
-                    timestamp=timestamp,
-                    faults=active_faults.broker,
-                )
+                try:
+                    broker_result = EffectBroker(
+                        self.registry,
+                        self.installation.authority_provider,
+                        self.installation.authority_profile_binding,
+                    ).execute(
+                        plan,
+                        contract,
+                        frozen,
+                        request.root_bindings,
+                        intent_path,
+                        store.operational_lock_root,
+                        evidence_root=evidence_root,
+                        timestamp=timestamp,
+                        faults=active_faults.broker,
+                    )
+                except BrokerExecutionInterrupted as interrupted:
+                    effect_receipts = list(interrupted.effect_receipts)
+                    if interrupted.progress_digest is not None:
+                        progress_digest = interrupted.progress_digest
+                        latest_progress = self._ordered_progress(plan, effect_receipts)
+                    if isinstance(interrupted.cause, PhaseError):
+                        interruption_code = interrupted.cause.code
+                    raise interrupted.cause from interrupted
                 effect_receipts = list(broker_result.effect_receipts)
                 if broker_result.progress_digest is not None:
                     progress_digest = broker_result.progress_digest
@@ -1009,8 +1052,9 @@ class PhaseCore:
                     intent_digest,
                     attachment_digests,
                     intent["implementation_binding"],
-                    finalization_failed=True,
+                    finalization_failed=interruption_code is None or not required_attachments_present,
                     required_attachments_present=required_attachments_present,
+                    interruption_code=interruption_code,
                 )
                 validate_receipt(receipt, self.registry)
                 if not lifecycle or lifecycle[-1] != "receipt":

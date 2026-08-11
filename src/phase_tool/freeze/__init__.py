@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 from dataclasses import dataclass
@@ -242,11 +243,23 @@ def revalidate_manifest(
         raise PhaseError("freeze.manifest_drift", frozen.binding_id)
 
 
-def _snapshot_token(path: Path, data: bytes) -> str:
+def _stream_digest_length(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    length = 0
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                return "sha256:" + digest.hexdigest(), length
+            digest.update(chunk)
+            length += len(chunk)
+
+
+def _snapshot_token(path: Path, content_digest: str, length: int) -> str:
     stat = path.stat()
     return canonical_digest({
-        "content_digest": digest_bytes(data),
-        "length": len(data),
+        "content_digest": content_digest,
+        "length": length,
         "device": int(stat.st_dev),
         "inode": int(stat.st_ino),
         "modified_ns": int(stat.st_mtime_ns),
@@ -258,8 +271,8 @@ def lock_snapshot_revalidate(binding_id: str, root: Path, relative_locator: str,
         path = contained_read_path(root, relative_locator)
         if not path.is_file():
             raise PhaseError("freeze.not_regular_file", relative_locator)
-        data = path.read_bytes()
-        token = _snapshot_token(path, data)
+        digest, length = _stream_digest_length(path)
+        token = _snapshot_token(path, digest, length)
     except PhaseError:
         raise
     except OSError as exc:
@@ -267,8 +280,8 @@ def lock_snapshot_revalidate(binding_id: str, root: Path, relative_locator: str,
     return FrozenInput(
         binding_id,
         "lock_snapshot_revalidate",
-        digest_bytes(data),
-        len(data),
+        digest,
+        length,
         frozen_at,
         revalidation_token=token,
         relative_locator=safe_relative_locator(relative_locator),
@@ -279,6 +292,6 @@ def revalidate_snapshot(frozen: FrozenInput, root: Path) -> None:
     if frozen.strategy != "lock_snapshot_revalidate" or frozen.relative_locator is None:
         raise PhaseError("freeze.strategy_mismatch", frozen.binding_id)
     path = contained_read_path(root, frozen.relative_locator)
-    data = path.read_bytes()
-    if _snapshot_token(path, data) != frozen.revalidation_token:
+    digest, length = _stream_digest_length(path)
+    if _snapshot_token(path, digest, length) != frozen.revalidation_token:
         raise PhaseError("freeze.stale_snapshot", frozen.binding_id)

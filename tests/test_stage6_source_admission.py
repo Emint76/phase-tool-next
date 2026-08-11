@@ -198,6 +198,96 @@ def test_source_execute_writes_blob_descriptor_progress_and_inspects(tmp_path: P
     assert exact["binding"]["source_content_digest"] == _sha(frozen_payload)
 
 
+def test_second_effect_lock_timeout_preserves_first_effect_and_truthful_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, target, evidence, _source, payload = _request(tmp_path, run_id="source-second-lock-timeout")
+    installation = host_installation()
+    provider = installation.authority_provider
+    original_lock = provider.lock_target_root
+    calls = 0
+
+    class ImmediateTimeout:
+        def __enter__(self) -> object:
+            raise PhaseError("lock.acquire_timeout")
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    def lock_with_second_timeout(root: Path, scope: str) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return ImmediateTimeout()
+        return original_lock(root, scope)
+
+    monkeypatch.setattr(provider, "lock_target_root", lock_with_second_timeout)
+    outcome = PhaseCore(installation=installation).run(request, execute=True)
+
+    assert outcome.receipt["terminal_status"] == "failed_partial"
+    assert outcome.receipt["blockers"] == ["lock.acquire_timeout"]
+    assert outcome.receipt["mutation_attempted"] is True
+    assert outcome.receipt["evidence"]["finalization_status"] == "finalized"
+    assert [item["effect_id"] for item in outcome.receipt["effect_receipts"]] == ["effect.0.blob"]
+    assert (target / _source_locator(payload)).read_bytes() == payload
+    assert not list((target / "sources").rglob("*.json"))
+    progress = parse_json_bytes(
+        (evidence / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json").read_bytes()
+    )
+    assert progress["completed_effect_ids"] == ["effect.0.blob"]
+    assert progress["not_started_effect_ids"] == ["effect.1.descriptor"]
+
+
+def test_unlock_failure_after_second_effect_preserves_all_effect_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, target, evidence, _source, payload = _request(tmp_path, run_id="source-unlock-failure")
+    installation = host_installation()
+    provider = installation.authority_provider
+    original_lock = provider.lock_target_root
+    calls = 0
+
+    class UnlockFailure:
+        def __init__(self, context: object) -> None:
+            self.context = context
+
+        def __enter__(self) -> object:
+            return self.context.__enter__()  # type: ignore[attr-defined]
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+            suppressed = self.context.__exit__(exc_type, exc, traceback)  # type: ignore[attr-defined]
+            assert suppressed is not True
+            raise OSError("injected unlock failure")
+
+    def fail_after_unlock(root: Path, scope: str) -> object:
+        nonlocal calls
+        calls += 1
+        context = original_lock(root, scope)
+        return UnlockFailure(context) if calls == 2 else context
+
+    monkeypatch.setattr(provider, "lock_target_root", fail_after_unlock)
+    outcome = PhaseCore(installation=installation).run(request, execute=True)
+
+    assert (target / _source_locator(payload)).read_bytes() == payload
+    descriptor_locator = outcome.effect_plan["effects"][1]["target"]["relative_locator"]
+    assert (target / descriptor_locator).is_file()
+    assert outcome.receipt["terminal_status"] == "committed_unverified"
+    assert outcome.receipt["result_state"] == "committed_unverified"
+    assert outcome.receipt["mutation_attempted"] is True
+    assert [item["status"] for item in outcome.receipt["effect_receipts"]] == [
+        "applied_verified",
+        "applied_verified",
+    ]
+    assert outcome.receipt["blockers"] == ["evidence.finalization_failed"]
+    progress = parse_json_bytes(
+        (evidence / ".phase" / "runs" / request.run_id / "attachments" / "ordered-effect-progress.json").read_bytes()
+    )
+    assert progress["completed_effect_ids"] == ["effect.0.blob", "effect.1.descriptor"]
+    assert progress["not_started_effect_ids"] == []
+
+
 def test_source_validate_and_plan_do_not_mutate_target(tmp_path: Path) -> None:
     request, target, evidence, _source, payload = _request(tmp_path, run_id="source-plan", payload=b"plan only")
     before = sorted(path.relative_to(target).as_posix() for path in target.rglob("*"))

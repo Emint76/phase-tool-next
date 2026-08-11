@@ -28,8 +28,10 @@ class UnsupportedAuthorityProvider:
         locator: str,
         reparse_detector: Callable[[Path], bool] | None = None,
         expected_root_identity: tuple[int, int] | None = None,
+        *,
+        create_parents: bool = True,
     ) -> UnsupportedTargetAuthority:
-        del root, locator, reparse_detector, expected_root_identity
+        del root, locator, reparse_detector, expected_root_identity, create_parents
         _unsupported()
 
     def lock_target_root(self, root: Path, scope: str) -> AbstractContextManager[object]:

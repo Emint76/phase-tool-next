@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import subprocess
 import sys
+import tracemalloc
 from dataclasses import replace
 from pathlib import Path
 
@@ -119,6 +120,47 @@ def test_append_fixture_create_then_append_exact_bytes_and_no_rewrite(tmp_path: 
     assert second.receipt["effect_receipts"][0]["before"]["length"] == len(before)
     assert second.receipt["effect_receipts"][0]["after"]["length"] == len(before) + len(second_record)
     assert second.receipt["canonical_result"]["state"]["head_token"] != head1
+
+
+def test_append_validation_planning_and_post_verification_do_not_materialize_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    (target / "streams").mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    first_candidate = tmp_path / "first.json"
+    first_record = write_append_candidate(first_candidate, expected_head=None, key="stream-first", value=1)
+    first = PhaseCore().run(
+        _request("fixture_append.v1", first_candidate, evidence, target, "stream-first"),
+        execute=True,
+    )
+    stream = target / "streams" / "alpha.jsonl"
+    head = first.receipt["canonical_result"]["state"]["head_token"]
+    original_read_bytes = Path.read_bytes
+
+    def reject_target_materialization(path: Path) -> bytes:
+        if path == stream:
+            raise AssertionError("append lifecycle materialized the target")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_target_materialization)
+    second_candidate = tmp_path / "second.json"
+    second_record = write_append_candidate(second_candidate, expected_head=head, key="stream-second", value=2)
+    second = PhaseCore().run(
+        _request("fixture_append.v1", second_candidate, evidence, target, "stream-second"),
+        execute=True,
+    )
+
+    assert second.receipt["terminal_status"] == "succeeded_verified"
+    assert original_read_bytes(stream) == first_record + second_record
+
+    def reject_inspection_materialization(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("inspection materialized the append target")
+
+    monkeypatch.setattr(HostTargetAuthority, "read_bytes", reject_inspection_materialization)
+    inspected = inspect_run(evidence, "stream-second", root_bindings={"fixture_result_root": target})
+    assert inspected["target_verified"] is True
 
 
 def test_append_plan_blob_is_durable_and_fault_tampering_is_rejected(tmp_path: Path) -> None:
@@ -241,6 +283,111 @@ def test_append_race_callback_is_rejected_without_mutation(tmp_path: Path) -> No
     assert outcome.receipt["terminal_status"] == "rejected"
     assert outcome.receipt["blockers"] == ["broker.unsafe_fault_callback"]
     assert stream.read_bytes() == original
+
+
+def test_append_revalidates_the_writable_descriptor_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    stream = target / "stream.jsonl"
+    detached = target / "detached.jsonl"
+    original = b'{"value":0}\n'
+    replacement = b'{"value":99}\n'
+    record = b'{"value":1}\n'
+    stream.write_bytes(original)
+    effect = {
+        "effect_id": "effect.append.rebind",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": stream_head_token(original)},
+        "lock_scope": "stream.rebind",
+    }
+    original_open = HostTargetAuthority.open_existing
+    swapped = False
+
+    def swap_before_writable_open(
+        authority: HostTargetAuthority,
+        *,
+        writable: bool = False,
+        deny_write_sharing: bool = False,
+    ) -> int:
+        nonlocal swapped
+        if writable and not swapped:
+            swapped = True
+            stream.rename(detached)
+            stream.write_bytes(replacement)
+        return original_open(authority, writable=writable, deny_write_sharing=deny_write_sharing)
+
+    monkeypatch.setattr(HostTargetAuthority, "open_existing", swap_before_writable_open)
+    descriptor_count = len(os.listdir("/proc/self/fd"))
+    receipt = execute_append_record(
+        effect,
+        target,
+        record,
+        run_id="append-target-rebind",
+        timestamp=NOW,
+        operational_lock_root=_lock_root(tmp_path),
+    )
+
+    assert swapped is True
+    assert receipt["status"] == "failed_no_effect"
+    assert receipt["error"]["code"] == "target.stale_head"
+    assert detached.read_bytes() == original
+    assert stream.read_bytes() == replacement
+    assert len(os.listdir("/proc/self/fd")) == descriptor_count
+
+
+def test_append_readback_rejects_target_rebinding_after_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    stream = target / "stream.jsonl"
+    original = b'{"value":0}\n'
+    record = b'{"value":1}\n'
+    replacement = b'{"foreign":true}\n'
+    stream.write_bytes(original)
+    effect = {
+        "effect_id": "effect.append.001",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": stream_head_token(original)},
+        "lock_scope": "stream.alpha",
+    }
+    original_observe = HostTargetAuthority.observe_record_stream
+    calls = 0
+    detached = target / "detached.jsonl"
+
+    def swap_before_readback(authority: HostTargetAuthority, *args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            stream.rename(detached)
+            stream.write_bytes(replacement)
+        return original_observe(authority, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(HostTargetAuthority, "observe_record_stream", swap_before_readback)
+    receipt = execute_append_record(
+        effect,
+        target,
+        record,
+        run_id="append-readback-rebind",
+        timestamp=NOW,
+        operational_lock_root=_lock_root(tmp_path),
+    )
+
+    assert calls == 2
+    assert receipt["status"] == "indeterminate"
+    assert receipt["error"]["code"] == "verification.readback_failed"
+    assert detached.read_bytes() == original + record
+    assert stream.read_bytes() == replacement
 
 
 def test_append_short_write_loop_and_partial_torn_tail_are_truthful(tmp_path: Path) -> None:
@@ -421,6 +568,121 @@ def test_append_readback_uses_captured_before_bytes_not_observed_override(tmp_pa
 
     assert receipt["status"] == "applied_unverified"
     assert receipt["error"]["code"] == "verification.result_mismatch"
+
+
+def test_append_existing_stream_never_materializes_the_whole_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    record = b'{"value":1}\n'
+    existing = b'{"value":0}\n'
+    stream = target / "stream.jsonl"
+    stream.write_bytes(existing)
+    effect = {
+        "effect_id": "effect.append.streaming",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": stream_head_token(existing)},
+    }
+    original_path_read_bytes = Path.read_bytes
+
+    def reject_target_path_read_bytes(path: Path) -> bytes:
+        if path == stream:
+            raise AssertionError("append materialized the target through Path.read_bytes")
+        return original_path_read_bytes(path)
+
+    def reject_authority_read_bytes(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("append materialized the target through TargetAuthority.read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_target_path_read_bytes)
+    monkeypatch.setattr(HostTargetAuthority, "read_bytes", reject_authority_read_bytes)
+
+    receipt = execute_append_record(
+        effect,
+        target,
+        record,
+        run_id="append-streaming",
+        timestamp=NOW,
+        operational_lock_root=_lock_root(tmp_path),
+    )
+
+    assert receipt["status"] == "applied_verified"
+    assert original_path_read_bytes(stream) == existing + record
+
+
+def test_append_large_existing_stream_has_bounded_peak_memory(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    record = b'{"value":1}\n'
+    large_record = b'{"value":"' + b"x" * (512 * 1024 - 13) + b'"}\n'
+    existing = large_record * 16
+    stream = target / "stream.jsonl"
+    stream.write_bytes(existing)
+    effect = {
+        "effect_id": "effect.append.large-streaming",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": stream_head_token(existing)},
+    }
+
+    tracemalloc.start()
+    try:
+        receipt = execute_append_record(
+            effect,
+            target,
+            record,
+            run_id="append-large-streaming",
+            timestamp=NOW,
+            operational_lock_root=_lock_root(tmp_path),
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert receipt["status"] == "applied_verified"
+    assert peak < 12 * 1024 * 1024
+
+
+def test_append_rejects_oversized_external_record_without_unbounded_buffering(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    record = b'{"value":1}\n'
+    oversized = b'{"value":"' + b"x" * (2 * 1024 * 1024) + b'"}\n'
+    stream = target / "stream.jsonl"
+    stream.write_bytes(oversized)
+    effect = {
+        "effect_id": "effect.append.oversized-existing",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": stream_head_token(oversized)},
+    }
+
+    tracemalloc.start()
+    try:
+        receipt = execute_append_record(
+            effect,
+            target,
+            record,
+            run_id="append-oversized-existing",
+            timestamp=NOW,
+            operational_lock_root=_lock_root(tmp_path),
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert receipt["status"] == "failed_no_effect"
+    assert receipt["error"]["code"] == "target.invalid_existing_tail"
+    assert peak < 8 * 1024 * 1024
+    assert stream.stat().st_size == len(oversized)
 
 
 def test_append_readback_error_and_receipt_finalization_failure_are_unverified(tmp_path: Path) -> None:
@@ -626,6 +888,32 @@ def test_task_journal_minimal_open_event_close_and_correction_projection(tmp_pat
     assert projection["corrections"][0]["target_sequence"] == 2
     assert projection["corrections"][0]["target_event_hash"] == event_record["event_hash"]
     assert all("event_hash" in json.loads(line) for line in stream.read_text(encoding="utf-8").splitlines())
+
+
+def test_task_journal_state_validation_streams_without_collecting_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phase_tool.contracts import task_journal_v1
+
+    target = tmp_path / "target"
+    (target / "tasks").mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    candidate = tmp_path / "task.json"
+    write_task_candidate(candidate, action="open", key="bounded-open", expected_head=None, original_instruction="Do work")
+    opened = PhaseCore().run(_request("task_journal.v1", candidate, evidence, target, "bounded-open"), execute=True)
+    assert opened.exit_code == 0
+    stream = target / "tasks" / "task-1.jsonl"
+    head = stream_head_token(stream.read_bytes())
+    def reject_collection(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("state validation collected the journal")
+
+    monkeypatch.setattr(task_journal_v1, "_load_records", reject_collection)
+    write_task_candidate(candidate, action="event", key="bounded-event", expected_head=head, payload={"step": 1})
+    result = task_journal_v1.validate_state(json.loads(candidate.read_text(encoding="utf-8")), stream)
+
+    assert result[0] == "pass"
+    assert result[1] == "validation.pass"
 
 
 def test_task_journal_rejects_missing_or_mismatched_operation_and_correction_identity(tmp_path: Path) -> None:
@@ -956,6 +1244,143 @@ def test_real_lock_acquisition_oserror_returns_terminal_no_effect_receipt(tmp_pa
     assert receipt["error"]["code"] == "lock.acquire_failed"
     assert receipt["after"]["exists"] is False
     assert not (target / "stream.jsonl").exists()
+
+
+def test_append_cooperative_lock_timeout_is_bounded_and_fail_closed(tmp_path: Path) -> None:
+    import fcntl
+
+    target = tmp_path / "target"
+    target.mkdir()
+    lock_root = _lock_root(tmp_path)
+    record = b'{"value":1}\n'
+    effect = {
+        "effect_id": "effect.append.001",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": None},
+        "lock_scope": "stream.alpha",
+    }
+    root = target.resolve(strict=True)
+    info = root.stat()
+    target_identity = digest_bytes(
+        "\n".join(
+            [
+                os.path.normcase(str(root)),
+                str(int(info.st_dev)),
+                str(int(info.st_ino)),
+                "stream.jsonl",
+            ]
+        ).encode("utf-8")
+    )
+    lock_path = operational_lock_path(lock_root, target_identity)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        receipt = execute_append_record(
+            effect,
+            target,
+            record,
+            run_id="cooperative-timeout",
+            timestamp=NOW,
+            operational_lock_root=lock_root,
+        )
+
+        assert receipt["status"] == "failed_no_effect"
+        assert receipt["error"]["code"] == "lock.acquire_timeout"
+        assert not (target / "stream.jsonl").exists()
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+
+
+def test_append_cooperative_lock_eintr_obeys_deadline_and_closes_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+    import fcntl
+    import phase_tool.mutation.expected_head_append as append_module
+
+    lock_path = tmp_path / "locks" / "eintr.lock"
+    ticks = iter((0.0, 6.0))
+
+    def interrupted(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EINTR, "interrupted")
+
+    monkeypatch.setattr(append_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(fcntl, "flock", interrupted)
+    descriptor_count = len(os.listdir("/proc/self/fd"))
+
+    with pytest.raises(PhaseError, match="lock.acquire_timeout"):
+        append_module._CooperativeFileLock(lock_path).__enter__()
+
+    assert len(os.listdir("/proc/self/fd")) == descriptor_count
+
+
+def test_append_cooperative_lock_eacces_contention_retries_to_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+    import fcntl
+    import phase_tool.mutation.expected_head_append as append_module
+
+    lock_path = tmp_path / "locks" / "eacces.lock"
+    ticks = iter((0.0, 0.0, 6.0))
+
+    def contended(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EACCES, "contended")
+
+    monkeypatch.setattr(append_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(append_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fcntl, "flock", contended)
+    descriptor_count = len(os.listdir("/proc/self/fd"))
+
+    with pytest.raises(PhaseError, match="lock.acquire_timeout"):
+        append_module._CooperativeFileLock(lock_path).__enter__()
+
+    assert len(os.listdir("/proc/self/fd")) == descriptor_count
+
+
+def test_append_unlock_error_closes_fd_and_preserves_completed_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fcntl
+
+    target = tmp_path / "target"
+    target.mkdir()
+    record = b'{"value":1}\n'
+    effect = {
+        "effect_id": "effect.append.001",
+        "kind": "append_record",
+        "target": {"root_binding": "fixture_result_root", "relative_locator": "stream.jsonl"},
+        "content_digest": _sha(record),
+        "content_length": len(record),
+        "preconditions": {"expected_head": None},
+        "lock_scope": "stream.alpha",
+    }
+    original_flock = fcntl.flock
+
+    def fail_unlock(descriptor: int, operation: int) -> None:
+        if operation == fcntl.LOCK_UN:
+            raise OSError("unlock failed")
+        original_flock(descriptor, operation)
+
+    monkeypatch.setattr(fcntl, "flock", fail_unlock)
+    descriptor_count = len(os.listdir("/proc/self/fd"))
+    receipt = execute_append_record(
+        effect,
+        target,
+        record,
+        run_id="unlock-error",
+        timestamp=NOW,
+        operational_lock_root=_lock_root(tmp_path),
+    )
+
+    assert receipt["status"] == "applied_verified"
+    assert (target / "stream.jsonl").read_bytes() == record
+    assert len(os.listdir("/proc/self/fd")) == descriptor_count
 
 
 def test_task_journal_replay_rejects_self_consistent_semantic_chain_corruption(tmp_path: Path) -> None:

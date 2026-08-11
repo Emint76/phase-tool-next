@@ -9,13 +9,20 @@ from jsonschema import Draft202012Validator, FormatChecker
 from ..canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from ..errors import PhaseError
 from ..evidence import evidence_file_exists, iter_run_artifacts, read_evidence_bytes, validate_intent, validate_receipt, validate_run_id
-from ..paths import _platform_path, contained_read_path
+from ..paths import _platform_path
 from ..planning import validate_plan_mechanism_authorization, validate_static_plan
 from ..registry import BundledRegistry, RegistrySnapshot, ResolvedContract
 from ..mutation.guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from ..mutation.implementation import mechanism_authority_usage, mechanism_supports_effect_kind
-from ..append_codec import stream_head_token
+from ..mutation.platform import HostAuthorityProvider
 from ..contracts import load_contract_hook
+
+_MATERIALIZED_TARGET_LIMITS = {
+    "content_addressed_copy": 16 * 1024 * 1024,
+    "mechanism.archive_then_publish_v1": 16 * 1024 * 1024,
+    "mechanism.exclusive_create_v1": 1_048_576,
+    "mechanism.object_store_publish_v2": 512 * 1024,
+}
 
 
 def _read_canonical(path: Path) -> tuple[Any, str]:
@@ -413,14 +420,50 @@ def inspect_run(
             resolved_target_root = target_root.resolve(strict=True)
         except (OSError, ValueError) as exc:
             raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
-        try:
-            target = contained_read_path(resolved_target_root, canonical_result["locator"])
-            with open(_platform_path(target), "rb") as stream:
-                data = stream.read()
-        except (OSError, PhaseError) as exc:
-            raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
         state = canonical_result["state"]
         appended = canonical_result.get("appended_record")
+        data: bytes | None = None
+        append_tail_bytes = 0
+        if appended is not None:
+            append_tail_bytes = appended.get("record_length")
+            if (
+                not isinstance(append_tail_bytes, int)
+                or isinstance(append_tail_bytes, bool)
+                or append_tail_bytes < 1
+                or append_tail_bytes > 1024 * 1024
+            ):
+                raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
+        try:
+            authority = HostAuthorityProvider().open_authority(
+                resolved_target_root,
+                canonical_result["locator"],
+                create_parents=False,
+            )
+            try:
+                if appended is not None:
+                    stream_observation = authority.observe_record_stream(
+                        prefix_length=appended["append_offset"] + append_tail_bytes,
+                        segment_offset=appended["append_offset"],
+                        segment_length=append_tail_bytes,
+                    )
+                else:
+                    maximum_bytes = _MATERIALIZED_TARGET_LIMITS.get(
+                        contract.document["operation"]["mechanism"]["id"]
+                    )
+                    if (
+                        maximum_bytes is None
+                        or not isinstance(state.get("length"), int)
+                        or isinstance(state.get("length"), bool)
+                        or state["length"] < 0
+                        or state["length"] > maximum_bytes
+                    ):
+                        raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
+                    data = authority.read_bytes(maximum_bytes=maximum_bytes)
+                    authority.assert_namespace_binding()
+            finally:
+                authority.close()
+        except (OSError, PhaseError) as exc:
+            raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
         if appended is not None:
             if not receipt["effect_receipts"] or receipt["effect_receipts"][0].get("kind") != "append_record":
                 raise PhaseError("inspection.append_evidence_missing")
@@ -429,16 +472,15 @@ def inspect_run(
                 if effect_receipt.get(key) != appended.get(key):
                     raise PhaseError("inspection.append_evidence_mismatch", key)
             offset = appended["append_offset"]
-            length = appended["record_length"]
+            length = append_tail_bytes
             end = offset + length
-            if len(data) < end or digest_bytes(data[offset:end]) != appended["record_digest"]:
+            if stream_observation.length < end or stream_observation.segment_digest != appended["record_digest"]:
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
-            if stream_head_token(data[:end]) != appended["resulting_head"]:
+            if stream_observation.prefix_head_token != appended["resulting_head"]:
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
-            stream_head_token(data)
         elif receipt["effect_receipts"] and receipt["effect_receipts"][0].get("kind") == "append_record":
             raise PhaseError("inspection.append_evidence_missing")
-        elif state["exists"] is not True or digest_bytes(data) != state["digest"] or len(data) != state["length"]:
+        elif data is None or state["exists"] is not True or digest_bytes(data) != state["digest"] or len(data) != state["length"]:
             raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         if receipt["execution_disposition"] == "reused_existing":
             prior_digest = receipt.get("prior_verified_receipt_digest")
@@ -463,7 +505,26 @@ def inspect_run(
                 setattr(hook, "_registry", registry)
                 hook_roots = _resolved_hook_roots(contract, root_bindings or {})
                 try:
-                    contract_result = hook.inspect_result(data, state["digest"], target_root, receipt_digest, registry, evidence_root=root)
+                    if data is None:
+                        if not hasattr(hook, "inspect_stream_result"):
+                            raise PhaseError("contract.hook_invalid")
+                        contract_result = hook.inspect_stream_result(
+                            stream_observation,
+                            state["digest"],
+                            target_root,
+                            receipt_digest,
+                            registry,
+                            evidence_root=root,
+                        )
+                    else:
+                        contract_result = hook.inspect_result(
+                            data,
+                            state["digest"],
+                            target_root,
+                            receipt_digest,
+                            registry,
+                            evidence_root=root,
+                        )
                     if hasattr(hook, "inspect_receipt_result"):
                         receipt_result = hook.inspect_receipt_result(
                             receipt,

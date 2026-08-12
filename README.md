@@ -51,6 +51,7 @@ MCP publishes only universal tools: `phase_contracts_list`, `phase_contract_desc
 
 - [CLI reference](docs/CLI-REFERENCE.md)
 - [MCP setup](docs/MCP-SETUP.md)
+- [Phase Tool v1 public surface and compatibility](docs/PUBLIC-SURFACE-V1.md)
 - [Source and Knowledge examples](docs/STAGE-8-EXAMPLES.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 

@@ -402,6 +402,7 @@ def test_publication_metadata_documentation_and_linux_ci_are_complete() -> None:
         ROOT / "LICENSE",
         ROOT / "docs" / "CLI-REFERENCE.md",
         ROOT / "docs" / "MCP-SETUP.md",
+        ROOT / "docs" / "PUBLIC-SURFACE-V1.md",
         ROOT / "docs" / "STAGE-8-EXAMPLES.md",
         ROOT / "docs" / "TROUBLESHOOTING.md",
         ROOT / ".github" / "workflows" / "ci.yml",
@@ -466,11 +467,20 @@ def test_wheel_sdist_clean_install_uninstall_reinstall_acceptance() -> None:
     assert summary["installed_outside_checkout"] is True
     assert summary["editable_install"] is False
     assert summary["pythonpath_present"] is False
+    assert summary["import_version"] == "1.0.0"
+    assert summary["help_discovery"] is True
     assert summary["version"] == "phase 1.0.0"
     assert summary["doctor"]["success"] is True
     assert summary["contracts"]["count"] >= 6
-    assert summary["cli_execute_inspect"] is True
-    assert summary["phase_mcp_execute_inspect"] is True
+    assert summary["cli_parse_rejections"] is True
+    assert summary["cli_application_rejection"] is True
+    assert summary["cli_validate_plan_execute_inspect"] is True
+    assert summary["mcp"]["tool_inventory"] is True
+    assert summary["mcp"]["schemas_strict"] is True
+    assert summary["mcp"]["protocol_rejections"] is True
+    assert summary["mcp"]["application_rejection"] is True
+    assert summary["mcp"]["survived_rejections"] is True
+    assert summary["mcp"]["execute_inspect"] is True
     assert summary["uninstall_verified"] is True
     assert summary["reinstall_verified"] is True
 

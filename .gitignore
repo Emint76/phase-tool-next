@@ -9,3 +9,18 @@ htmlcov/
 /.stage6-tmp/
 /.stage7-tmp/
 /.stage8-tmp/
+
+# Local build/runtime material is never a development publication input.
+/dist/
+/build/
+*.egg-info/
+/.ci-venv/
+/.bootstrap-venv/
+/preparation/
+/evidence/
+/artifacts/
+/scratch/
+/archive/
+.env
+.env.*
+*.log

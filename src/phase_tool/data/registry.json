@@ -2496,6 +2496,97 @@
       "package_digest": "sha256:5e6e635e2d6cca27eee273605e862c858e41d5a1c2e5ad75b4b11e458fba42a1",
       "trust_root_id": "phase.release.v1",
       "version": "1.0.0"
+    },
+    {
+      "artifact": "schemas/bundle-create-candidate.schema.json",
+      "artifact_digest": "sha256:a861edb4681fb414d0b0f98c3a56d1b9dd8506d49671cebcc71d924c3c5eb66a",
+      "capability": "schema",
+      "id": "schema.bundle-create-candidate.v1",
+      "kind": "schema",
+      "mutable": false,
+      "package_digest": "sha256:a861edb4681fb414d0b0f98c3a56d1b9dd8506d49671cebcc71d924c3c5eb66a",
+      "schema_ref": "https://phase-tool.local/schemas/bundle-create-candidate.schema.json",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "schemas/bundle-manifest.schema.json",
+      "artifact_digest": "sha256:5a8e792277c089c904283a7e209bdf44451291a334747ab22ba6e2459bfe4136",
+      "capability": "schema",
+      "id": "schema.bundle-manifest.v1",
+      "kind": "schema",
+      "mutable": false,
+      "package_digest": "sha256:5a8e792277c089c904283a7e209bdf44451291a334747ab22ba6e2459bfe4136",
+      "schema_ref": "https://phase-tool.local/schemas/bundle-manifest.schema.json",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "descriptors/mechanism/mechanism.bundle_create_v1.json",
+      "artifact_digest": "sha256:4b6a403f3f9984e2944028398efc2c144e311906ffd9a81d82563935f37fc7d0",
+      "capability": "mutation_mechanism",
+      "id": "mechanism.bundle_create_v1",
+      "kind": "mechanism",
+      "mutable": false,
+      "package_digest": "sha256:4b6a403f3f9984e2944028398efc2c144e311906ffd9a81d82563935f37fc7d0",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "descriptors/validator/bundle.candidate_v1.json",
+      "artifact_digest": "sha256:8c5c31943073758d32c982ea8f0e33be4a6e95ac341a601d4ab24ddb3846b68b",
+      "capability": "validator",
+      "id": "bundle.candidate_v1",
+      "kind": "validator",
+      "mutable": false,
+      "package_digest": "sha256:8c5c31943073758d32c982ea8f0e33be4a6e95ac341a601d4ab24ddb3846b68b",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "descriptors/validator/bundle.result_v1.json",
+      "artifact_digest": "sha256:f36c9e302334b2d7ee4b597697caedd56afd78504131ca4eb07936632d9e3993",
+      "capability": "validator",
+      "id": "bundle.result_v1",
+      "kind": "validator",
+      "mutable": false,
+      "package_digest": "sha256:f36c9e302334b2d7ee4b597697caedd56afd78504131ca4eb07936632d9e3993",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "contracts/bundle_create.v1.json",
+      "artifact_digest": "sha256:e5b42861c9a7fcfd3103b2c0e6d02089a1a2ac882684d524dce39538bb9522cc",
+      "capability": "operation_contract",
+      "current": true,
+      "id": "bundle_create.v1",
+      "kind": "contract",
+      "mutable": false,
+      "package_artifacts": [
+        {
+          "digest": "sha256:e5b42861c9a7fcfd3103b2c0e6d02089a1a2ac882684d524dce39538bb9522cc",
+          "resource": "contracts/bundle_create.v1.json"
+        },
+        {
+          "digest": "sha256:a861edb4681fb414d0b0f98c3a56d1b9dd8506d49671cebcc71d924c3c5eb66a",
+          "resource": "schemas/bundle-create-candidate.schema.json"
+        },
+        {
+          "digest": "sha256:5a8e792277c089c904283a7e209bdf44451291a334747ab22ba6e2459bfe4136",
+          "resource": "schemas/bundle-manifest.schema.json"
+        },
+        {
+          "digest": "sha256:e4e1126d71be6e05049ac57a9acb38ed92540a7b14ac90fb2bf45225e060de0d",
+          "resource": "schemas/phase-receipt.schema.json"
+        },
+        {
+          "digest": "sha256:77db60855aa3e0bd50a57fd9c15af17b40251d6151e6bde96d65208f175cedbe",
+          "resource": "schemas/mutation-implementation-binding.schema.json"
+        }
+      ],
+      "package_digest": "sha256:c24023f54bf7a787e5030d63591ed17a4befa3cf6b4de11ab889d454d5a6846c",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
     }
   ],
   "registry_snapshot_version": "1.0",

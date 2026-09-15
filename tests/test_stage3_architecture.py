@@ -72,6 +72,7 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
         "mutation/exclusive_create.py",
         # Exact added IO boundaries for file_create.v2; no generic module glob.
         "mutation/stream_create.py",
+        "mutation/bundle_create.py",
         "streaming.py",
         "mutation/content_addressed_copy.py",
         "mutation/archive_then_publish.py",

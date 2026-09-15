@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         publish.add_argument("--" + name, required=True)
     publish.add_argument("--expected-digest")
     publish.add_argument("--publication-version", choices=("1.0", "2.0"), default="1.0")
+    bundle = subparsers.add_parser("publish-bundle", allow_abbrev=False)
+    for name in ("source-root", "target-root", "preparation-root", "evidence-root"):
+        bundle.add_argument("--" + name, type=Path, required=True)
+    for name in ("target-locator", "request-id", "run-id"):
+        bundle.add_argument("--" + name, required=True)
+    bundle.add_argument("--member", dest="members", action="append", required=True)
     return parser
 
 
@@ -159,6 +165,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.contracts_command == "list"
             else application.contract_describe(args.contract)
         )
+        _write_json(response.payload)
+        return response.exit_code
+    if args.command == "publish-bundle":
+        response = application.publish_bundle(**{
+            key: value for key, value in vars(args).items() if key != "command"
+        })
         _write_json(response.payload)
         return response.exit_code
     if args.command == "publish-file":

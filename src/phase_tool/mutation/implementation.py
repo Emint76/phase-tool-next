@@ -8,6 +8,7 @@ from ..errors import PhaseError
 AuthorityUsage = Literal["provider_backed", "mechanism_managed"]
 
 _MECHANISM_AUTHORITY_USAGE: dict[tuple[str, str, str], AuthorityUsage] = {
+    ("mechanism.bundle_create_v1", "1.0.0", "sha256:4b6a403f3f9984e2944028398efc2c144e311906ffd9a81d82563935f37fc7d0"): "mechanism_managed",
     ("mechanism.exclusive_create_v2", "1.0.0", "sha256:5e6e635e2d6cca27eee273605e862c858e41d5a1c2e5ad75b4b11e458fba42a1"): "provider_backed",
     (
         "content_addressed_copy",
@@ -37,6 +38,7 @@ _MECHANISM_AUTHORITY_USAGE: dict[tuple[str, str, str], AuthorityUsage] = {
 }
 
 _MECHANISM_EFFECT_KINDS: dict[tuple[str, str, str], frozenset[str]] = {
+    ("mechanism.bundle_create_v1", "1.0.0", "sha256:4b6a403f3f9984e2944028398efc2c144e311906ffd9a81d82563935f37fc7d0"): frozenset({"exclusive_create"}),
     ("mechanism.exclusive_create_v2", "1.0.0", "sha256:5e6e635e2d6cca27eee273605e862c858e41d5a1c2e5ad75b4b11e458fba42a1"): frozenset({"exclusive_create"}),
     ("content_addressed_copy", "1.0.0", "sha256:ea3dd62ad45312315c30da15a8aa53566e554d4e7733ee5f41c67d1c4cf37fa2"): frozenset({"copy_blob"}),
     ("mechanism.archive_then_publish_v1", "1.0.0", "sha256:7b7e5ab183e6ef08e86b9fd0a408def310f325a4eca73dbcddfb18627fdb6cd6"): frozenset({"publish_new_version"}),

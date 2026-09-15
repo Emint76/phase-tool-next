@@ -192,6 +192,17 @@ class PhaseApplication:
             publication_version=publication_version,
         )
 
+    def publish_bundle(
+        self, *, source_root: Path, members: list[str], target_root: Path,
+        target_locator: str, preparation_root: Path, evidence_root: Path,
+        request_id: str, run_id: str,
+    ) -> ApplicationResponse:
+        from .publish_bundle import publish_bundle
+        return publish_bundle(self, source_root=source_root, members=members,
+            target_root=target_root, target_locator=target_locator,
+            preparation_root=preparation_root, evidence_root=evidence_root,
+            request_id=request_id, run_id=run_id)
+
     def inspect(
         self,
         *,

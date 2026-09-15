@@ -468,6 +468,7 @@ def test_actual_mcp_entrypoint_adversarial_long_lived_session(tmp_path: Path) ->
         "phase_execute",
         "phase_inspect",
         "phase_plan",
+        "phase_publish_bundle",
         "phase_publish_file",
         "phase_validate",
     ]

@@ -16,7 +16,7 @@ def execute_stream_create(effect, target_root: Path, blob: Path, *, run_id: str,
         raise PhaseError("mechanism.content_binding_mismatch")
     authority = authority_provider.open_authority(target_root, effect["target"]["relative_locator"])
     before = _unknown()
-    attempted = False
+    attempted = True  # Returned effect receipts describe a mechanism invocation.
     descriptor = None
     written = 0
     after = _unknown()

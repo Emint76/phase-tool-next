@@ -8,6 +8,7 @@ from pydantic import StrictInt
 
 from .application import PhaseApplication
 from .publish_file import PublishFileResult
+from .publish_bundle import PublishBundleResult
 
 _SERVER = FastMCP(
     "Phase Tool",
@@ -138,6 +139,20 @@ def phase_publish_file(
         publication_version=publication_version,
     )
     return PublishFileResult.model_validate(response.payload)
+
+
+@_SERVER.tool(name="phase_publish_bundle")
+def phase_publish_bundle(
+    source_root: str, members: list[str], target_root: str, target_locator: str,
+    preparation_root: str, evidence_root: str, request_id: str, run_id: str,
+) -> PublishBundleResult:
+    """Publish an explicit local file bundle at one atomic directory commit point."""
+    response = _application().publish_bundle(
+        source_root=Path(source_root), members=members, target_root=Path(target_root),
+        target_locator=target_locator, preparation_root=Path(preparation_root),
+        evidence_root=Path(evidence_root), request_id=request_id, run_id=run_id,
+    )
+    return PublishBundleResult.model_validate(response.payload)
 
 
 def _seal_tool_argument_models() -> None:

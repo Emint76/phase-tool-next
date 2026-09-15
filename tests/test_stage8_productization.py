@@ -180,6 +180,7 @@ def test_real_mcp_stdio_discovers_and_executes_fixture_through_universal_tool(tm
         "phase_execute",
         "phase_inspect",
         "phase_plan",
+        "phase_publish_bundle",
         "phase_publish_file",
         "phase_validate",
     ]
@@ -216,6 +217,7 @@ def test_phase_mcp_cli_surface_is_thin_stdio_equivalent() -> None:
         "phase_execute",
         "phase_inspect",
         "phase_plan",
+        "phase_publish_bundle",
         "phase_publish_file",
         "phase_validate",
     ]
@@ -253,6 +255,7 @@ def test_cli_mcp_and_application_are_contract_agnostic_thin_adapters() -> None:
         "phase_plan",
         "phase_execute",
         "phase_inspect",
+        "phase_publish_bundle",
         "phase_publish_file",
     }
 

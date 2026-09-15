@@ -1,37 +1,42 @@
 # Development state
 
-## PHASE-NEXT-RC01 — in progress (not release-ready)
+## PHASE-NEXT-RC01 — F03 checkpoint, not release-ready
 
-- Start/last committed HEAD: `3f8c6898c61c5d7698e3e2b83f18c1486a24ecd2`;
-  branch `feat/unified-file-publication`, private PR #2. No additional published
-  history or foreign changes were present at preflight. Scope: [RC01.md](RC01.md).
-- Stage: F02 local gates PASS; checkpoint publication, then F03. Explicit
-  `publication_version="2.0"` shares the CLI/MCP/application publish-file path;
-  default F01 v1 and its exact contract stay supported.
-- New exact binding: `file_create.v2@1.0.0`, package
-  `sha256:4f9e56531e004281342612b02a868f856a36a6524b51669f24835aa840d9e6fa`.
-- Actual local execution reconciled **631 distinct passing cases**, including
-  **44 F01 / 19 F02**. This is not one uninterrupted 631-case invocation: full
-  run was 627 PASS / 2 packaging FAIL under network denial; the two exact package
-  gates then passed with dependency access; added F02 cases passed separately.
-  All checks used byte-identical runtime source. No safety test was removed.
-- Final real-data gate: 64 MiB / 1 GiB / 2 GiB PASS, each with independent inspect.
-  Isolated Linux peak RSS: 39,989,248 / 40,280,064 / 40,128,512 bytes;
-  64 MiB→1 GiB growth **290,816 bytes <=134,217,728**. Times: 5.38 / 68.95 /
-  136.89 s. Old resource output is superseded, not transferred.
-- Durable report: `ROOT/evidence/RC01/F02-local-report.json`; individual logs,
-  JUnit and source SHA-256 manifests are retained in its named checkpoints.
-  `f02-staged/candidate.json` records the exact literal staging/tree identity.
-- Limits: 1 MiB canonical request, 2 GiB/file and total, one file/operation,
-  one worker/operation and one active high-level operation per target root.
-  FIFO, changing/growing source, short writes, post-effect close failure,
-  injected ENOSPC, corruption and old/new boundaries are covered.
-- Next: commit/push F02 checkpoint; continue F03 bundles, F04 recovery, F05
-  operational interface and F06 exact final prerelease/CI. No whole-RC readiness,
-  independent maintainer approval, merge, release or production change claimed.
-- Initial GOAL_STATUS / BUDGET = NOT_VERIFIED. No state.db access, goal reset,
-  resume, new goal or budget modification. No Kanban task was bound to this
-  direct session; no board work was fabricated.
+- Scope: [RC01.md](RC01.md), private PR #2 / `feat/unified-file-publication`.
+  F03 checkpoint base: `d5b9b55cd97214d4747b412881a4d55f623a7ea8`.
+  Exact staged/published identity belongs in `ROOT/evidence/RC01/f03-staged/`
+  (avoids a self-referential commit hash in this source file).
+- F02 checkpoint is published and verified: CI run `34942917723`, **631 passed
+  on Python 3.11.16 and 3.12.14**; wheel/sdist and clean installed CLI/MCP gates
+  passed. Both downloaded artifacts bind to tree
+  `274d5a0586a26a407d28564e65f8bfcdcb1d1aeb`; 165 package files in each wheel
+  and sdist equal that exact commit. These are not approvals of later changes.
+- F02 resource baseline at that checkpoint: real 64 MiB / 1 GiB / 2 GiB PASS;
+  peak RSS 39,989,248 / 40,280,064 / 40,128,512 bytes; 64 MiB→1 GiB growth
+  290,816 bytes <=134,217,728. Original F01 and all prior evidence preserved.
+- F03 local gates: **140 passed**, including **27 bundle / 20 streaming-file**
+  cases and all 44 F01 cases. Shared CLI/MCP bundle operation and cross-inspect,
+  unsafe/duplicate/prefix paths, missing/corrupt/extra members, FIFO metadata,
+  interrupted staging, racing commit and exact partial-write counts are covered.
+- Final F03 real workload: **256 files / 268,435,456 bytes**, full Phase inspect
+  plus independent target-member hashing PASS; 25.60 s, peak RSS 39,399,424 bytes.
+  Logical operation writes 536,960,401 bytes; retained source/evidence/target
+  805,391,114 bytes. Full metrics and per-file digests are retained externally.
+- F03 also fixes the newly reproduced early-observation receipt flag defect in
+  the streaming-file mechanism. No old receipt schema was weakened. Final F06
+  resource/CI gates must cover the final code; old resource results are scoped.
+- Current evidence: `ROOT/evidence/RC01/f03-final-local/verified-summary.json`;
+  logs/JUnit/source hashes/resource JSON in that directory. F02 evidence:
+  `F02-local-report.json` and `ci-d5b9b55/verified-summary.json` in the same root.
+- Legacy chunks: exact format/sample NOT_VERIFIED. Bounded read-only searches
+  of Phase Next, Phase history and selected Phase Context exports did not expose
+  a versioned reassembly sample; no legacy fields or compatibility were invented.
+- Next: publish F03 checkpoint, verify its exact-head CI, then F04 recovery,
+  F05 status/wait/general integration and F06 installed prerelease candidate.
+  No whole-RC readiness, independent approval, merge/release/deployment claimed.
+- GOAL_STATUS / BUDGET = NOT_VERIFIED from the initial check only. No state.db
+  access, new goal, automatic resume/reset, settings or working-profile changes.
+  No Kanban card was bound to this direct session; no board work was fabricated.
 
 ## PHASE-NEXT-F01
 

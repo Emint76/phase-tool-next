@@ -86,7 +86,7 @@ async def mcp_installed_acceptance(
                 "tool_names": names,
                 "tool_inventory": names == [
                     "phase_contract_describe", "phase_contracts_list", "phase_execute",
-                    "phase_inspect", "phase_plan", "phase_publish_file", "phase_validate",
+                    "phase_inspect", "phase_plan", "phase_publish_bundle", "phase_publish_file", "phase_validate",
                 ],
                 "schemas_strict": schemas_strict,
                 "protocol_rejections": extra.isError is True and boolean_integer.isError is True,

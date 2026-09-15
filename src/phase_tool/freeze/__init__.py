@@ -79,6 +79,12 @@ def freeze_declared_inputs(
                 raise PhaseError("input.required_missing", binding_id)
             continue
         path = Path(supplied)
+        if contract_document["operation"]["mechanism"]["id"] == "mechanism.bundle_create_v1":
+            from ..bundle import freeze_bundle
+            from ..installation import qualify_host_authority_roots
+            qualify_host_authority_roots(root_bindings)
+            frozen[binding_id] = freeze_bundle(binding_id, path, candidate_value["members"], blob_root, frozen_at=frozen_at)
+            continue
         if strategy == "copy_and_hash":
             from ..streaming import MECHANISM_ID, copy_and_hash_stream
             capture = copy_and_hash_stream if contract_document["operation"]["mechanism"]["id"] == MECHANISM_ID else copy_and_hash

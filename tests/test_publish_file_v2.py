@@ -226,3 +226,19 @@ def test_v2_enospc_after_target_creation_retains_honest_partial_state(tmp_path: 
     assert result["mutation_attempted"] is True
     assert result["inspection_required"] is True
     assert not result["success"] and not result["target_verified"]
+
+
+def test_v2_precreate_observation_error_returns_valid_honest_result(tmp_path: Path, monkeypatch) -> None:
+    from .test_publish_file import roots, arguments
+    from phase_tool.mutation import stream_create
+    from phase_tool.errors import PhaseError
+    paths = roots(tmp_path)
+    (paths["source"] / "ready.zip").write_bytes(b"ready")
+    def unavailable(*args, **kwargs):
+        raise PhaseError("stream.limit_exceeded")
+    monkeypatch.setattr(stream_create, "observe_target", unavailable)
+    result = PhaseApplication().publish_file(**arguments(paths), publication_version="2.0").payload
+    assert not result["success"]
+    assert result["inspection_required"]
+    assert result["status"] == "indeterminate", result
+    assert not (paths["target"] / "result.bin").exists()

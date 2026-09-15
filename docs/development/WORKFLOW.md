@@ -1,5 +1,11 @@
 # Development workflow
 
+Active task: **PHASE-NEXT-RC01**, scoped by [RC01.md](RC01.md) and [STATE.md](STATE.md).
+It authorizes ordinary source/test/document, necessary versioned-contract, CI and
+prerelease development in this private checkout. The bootstrap-specific limits
+below are historical; merge, release, public publication and production/profile
+changes remain forbidden.
+
 Use one bounded `/goal` for one verifiable result and one substantive PR, not a
 PR for every small edit. Keep the accepted task text and scope fixed. Changes to
 guarantees, scope or acceptance criteria require a separate decision.

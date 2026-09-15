@@ -78,19 +78,28 @@ def _verify_intent_blobs(run_root: Path, intent: Mapping[str, Any], plan: Mappin
         if digest is None:
             continue
         blob = run_root / "blobs" / digest.split(":", 1)[1]
-        from ..streaming import FILE_LIMIT, MECHANISM_ID, hash_file
-        streamed = plan is not None and plan["mechanism"]["id"] == MECHANISM_ID
-        actual = hash_file(blob, FILE_LIMIT)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
+        from ..streaming import FILE_LIMIT, REQUEST_LIMIT, MECHANISM_ID, hash_file
+        streamed = plan is not None and plan["mechanism"]["id"] in {MECHANISM_ID, "mechanism.bundle_create_v1"}
+        maximum_bytes = REQUEST_LIMIT if plan is not None and plan["mechanism"]["id"] == "mechanism.bundle_create_v1" else FILE_LIMIT
+        actual = hash_file(blob, maximum_bytes)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
         if actual != digest:
             raise PhaseError("inspection.digest_mismatch", blob.name)
     evidence = intent.get("evidence", {})
     for digest in evidence.get("content_blob_digests", []):
         blob = run_root / "blobs" / digest.split(":", 1)[1]
-        from ..streaming import FILE_LIMIT, MECHANISM_ID, hash_file
-        streamed = plan is not None and plan["mechanism"]["id"] == MECHANISM_ID
-        actual = hash_file(blob, FILE_LIMIT)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
+        from ..streaming import FILE_LIMIT, REQUEST_LIMIT, MECHANISM_ID, hash_file
+        streamed = plan is not None and plan["mechanism"]["id"] in {MECHANISM_ID, "mechanism.bundle_create_v1"}
+        maximum_bytes = REQUEST_LIMIT if plan is not None and plan["mechanism"]["id"] == "mechanism.bundle_create_v1" else FILE_LIMIT
+        actual = hash_file(blob, maximum_bytes)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
         if actual != digest:
             raise PhaseError("inspection.digest_mismatch", blob.name)
+    if plan is not None and plan["mechanism"]["id"] == "mechanism.bundle_create_v1":
+        from ..bundle import parse_manifest, read_metadata, verify_frozen_members
+        effect = plan["effects"][0]
+        data = read_metadata(run_root / "blobs" / effect["content_digest"].removeprefix("sha256:"))
+        if len(data) != effect["content_length"] or digest_bytes(data) != effect["content_digest"]:
+            raise PhaseError("bundle.frozen_manifest_mismatch")
+        verify_frozen_members(parse_manifest(data), run_root / "blobs")
     if plan is None or plan.get("operation_intent") != "publish_new_version":
         return
     inputs = {item["binding_id"]: item for item in intent["inputs"]}
@@ -453,6 +462,10 @@ def inspect_run(
                         segment_offset=appended["append_offset"],
                         segment_length=append_tail_bytes,
                     )
+                elif contract.document["operation"]["mechanism"]["id"] == "mechanism.bundle_create_v1":
+                    from ..bundle import verify_bundle
+                    data, _manifest = verify_bundle(authority.target, state["digest"], run_id=run_id, plan_digest=plan_digest)
+                    authority.assert_namespace_binding()
                 elif contract.document["operation"]["mechanism"]["id"] == "mechanism.exclusive_create_v2":
                     from ..streaming import FILE_LIMIT, observe_target
                     streamed_state = observe_target(authority, FILE_LIMIT)

@@ -487,6 +487,7 @@ class EffectBroker:
             supported = {
                 ("mechanism.exclusive_create_v1", "1.0.0"),
                 ("mechanism.exclusive_create_v2", "1.0.0"),
+                ("mechanism.bundle_create_v1", "1.0.0"),
                 ("mechanism.expected_head_append_v1", "1.0.0"),
                 ("content_addressed_copy", "1.0.0"),
                 ("mechanism.archive_then_publish_v1", "1.0.0"),
@@ -574,6 +575,19 @@ class EffectBroker:
             copy_faults = active.content_addressed_copy
             archive_faults = active.archive_then_publish
             object_store_faults = active.object_store_publish
+            if effect.get("mechanism", contract.document["operation"]["mechanism"])["id"] == "mechanism.bundle_create_v1":
+                from ..bundle import read_metadata
+                from .bundle_create import execute_bundle_create
+                source = effect["content_source"]
+                records = [item for item in intent["inputs"] if item["binding_id"] == source["binding_id"]]
+                if len(records) != 1 or records[0]["blob_digest"] != effect["content_digest"] or records[0]["manifest_digest"] != effect["content_digest"]:
+                    raise PhaseError("bundle.frozen_manifest_mismatch")
+                blob_root = intent_path.parent / "blobs"
+                data = read_metadata(blob_root / effect["content_digest"].removeprefix("sha256:"))
+                return execute_bundle_create(effect, target_root, data, blob_root,
+                    run_id=str(intent["run_id"]), timestamp=timestamp,
+                    plan_digest=str(intent["effect_plan_digest"]),
+                    expected_root_identity=root_identities[os.path.normcase(str(target_root.absolute()))])
             if effect.get("mechanism", contract.document["operation"]["mechanism"])["id"] == "mechanism.exclusive_create_v2":
                 from .stream_create import execute_stream_create
                 source = effect["content_source"]

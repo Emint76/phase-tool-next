@@ -33,10 +33,13 @@ def fingerprint(info: os.stat_result) -> tuple[int, int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def transfer(source: int, maximum_bytes: int, destination: int | None = None) -> tuple[str, int]:
+def transfer(source: int, maximum_bytes: int, destination: int | None = None,
+             *, write_counter: list[int] | None = None) -> tuple[str, int]:
     """Hash all consumed bytes, optionally copy them; never write beyond the cap."""
     if type(maximum_bytes) is not int or maximum_bytes < 0:
         raise PhaseError("stream.invalid_limit")
+    if write_counter is not None and (type(write_counter) is not list or len(write_counter) != 1 or type(write_counter[0]) is not int or write_counter[0] < 0):
+        raise PhaseError("stream.invalid_counter")
     before = os.fstat(source)
     if not stat.S_ISREG(before.st_mode):
         raise PhaseError("stream.not_regular_file")
@@ -58,10 +61,38 @@ def transfer(source: int, maximum_bytes: int, destination: int | None = None) ->
                 written = os.write(destination, view)
                 if written <= 0 or written > len(view):
                     raise OSError("stream write made invalid progress")
+                if write_counter is not None:
+                    write_counter[0] += written
                 view = view[written:]
     if fingerprint(before) != fingerprint(os.fstat(source)) or total != before.st_size:
         raise PhaseError("freeze.source_changed_during_capture")
     return "sha256:" + digest.hexdigest(), total
+
+
+def read_bounded_file(path: Path, maximum_bytes: int) -> bytes:
+    if type(maximum_bytes) is not int or maximum_bytes < 0:
+        raise PhaseError("stream.invalid_limit")
+    _reject_existing_links(path)
+    before = path.stat()
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise PhaseError("stream.not_regular_file")
+        if fingerprint(before) != fingerprint(opened):
+            raise PhaseError("freeze.source_changed_during_capture")
+        if opened.st_size > maximum_bytes:
+            raise PhaseError("stream.limit_exceeded")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(maximum_bytes + 1)
+        if len(data) > maximum_bytes:
+            raise PhaseError("stream.limit_exceeded")
+        if fingerprint(opened) != fingerprint(os.fstat(fd)) or fingerprint(opened) != fingerprint(path.stat()):
+            raise PhaseError("freeze.source_changed_during_capture")
+        _reject_existing_links(path)
+        return data
+    finally:
+        os.close(fd)
 
 
 def hash_file(path: Path, maximum_bytes: int) -> tuple[str, int]:

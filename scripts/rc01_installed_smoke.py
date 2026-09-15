@@ -11,8 +11,8 @@ def main():
     import phase_tool
     module=Path(phase_tool.__file__).resolve()
     assert module.is_relative_to(Path(sys.prefix).resolve()),module
-    assert metadata.version('phase-tool')=='1.1.0rc2'
-    assert phase_tool.__version__=='1.1.0-rc.2'
+    assert metadata.version('phase-tool')=='1.1.0rc3'
+    assert phase_tool.__version__=='1.1.0-rc.3'
     direct=json.loads(metadata.distribution('phase-tool').read_text('direct_url.json') or '{}')
     assert not direct.get('dir_info',{}).get('editable',False)
     assert not os.environ.get('PYTHONPATH')

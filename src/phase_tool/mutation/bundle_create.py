@@ -17,18 +17,25 @@ from ..streaming import transfer
 from .exclusive_create import _receipt, _unknown
 
 
-def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
+def _rename_noreplace(parent_fd: int, source: str, destination: str, progress=None) -> None:
     library = ctypes.CDLL(None, use_errno=True)
     rename = getattr(library, "renameat2", None)
     if rename is None:
         raise PhaseError("bundle.atomic_commit_unavailable")
     rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     rename.restype = ctypes.c_int
-    if rename(parent_fd, os.fsencode(source), parent_fd, os.fsencode(destination), 1) != 0:
+    arguments = (parent_fd, os.fsencode(source), parent_fd, os.fsencode(destination), 1)
+    if progress is not None:
+        # No target attempt is claimed for setup, stage checks, or encoding.
+        progress.attempted = True
+        progress.effect_state = 'unknown'
+    if rename(*arguments) != 0:
         code = ctypes.get_errno()
         if code == errno.EEXIST:
             raise FileExistsError(code, "bundle destination exists")
         raise OSError(code, os.strerror(code))
+    if progress is not None:
+        progress.effect_state = 'committed'
 
 
 def stage_name(run_id: str, effect: dict) -> str:
@@ -162,7 +169,7 @@ def execute_bundle_create(effect: dict, target_root: Path, manifest_bytes: bytes
         error_code=error)
 
 
-def commit_prepared_bundle(authority, stage, effect, intent, prepared):
+def commit_prepared_bundle(authority, stage, effect, intent, prepared, *, progress=None):
     """The only remaining mutation; called by the authorized locked broker."""
     descriptor = os.open(stage.name,os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,dir_fd=authority.parent_fd)
     try:
@@ -177,7 +184,7 @@ def commit_prepared_bundle(authority, stage, effect, intent, prepared):
         authority.assert_namespace_binding()
         if authority.target.exists():
             raise PhaseError('recovery.target_conflict')
-        _rename_noreplace(authority.parent_fd,stage.name,authority.name)
+        _rename_noreplace(authority.parent_fd,stage.name,authority.name,progress)
         authority.fsync_parent()
     finally:
         os.close(descriptor)

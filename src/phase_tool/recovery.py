@@ -8,7 +8,9 @@ from pathlib import Path
 import re
 from typing import Literal
 from jsonschema.exceptions import ValidationError
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+from .continuation_progress import (RecoveryProgress, RecoveryRootLock,
+                                    RecoveryErrorDetail, LockFinalization)
 from .canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from .errors import PhaseError
 from .evidence import (_reject_existing_links, _ensure_directory_durable,
@@ -21,7 +23,7 @@ from .streaming import read_bounded_file, REQUEST_LIMIT
 
 class RecoveryResult(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True)
-    recovery_result_version: Literal['1.0']='1.0'
+    recovery_result_version: Literal['1.1']='1.1'
     status: Literal['verified_existing','indeterminate','rejected']='indeterminate'
     success: bool=False
     run_id: str
@@ -32,6 +34,9 @@ class RecoveryResult(BaseModel):
     original_terminal_status: str | None=None
     target_verified: bool=False
     recovery_mutation_attempted: bool=False
+    recovery_effect_state: Literal['not_attempted','unknown','committed']='not_attempted'
+    lock_finalization: LockFinalization | None=None
+    error_details: list[RecoveryErrorDetail]=Field(default_factory=list)
     inspection_required: bool=True
     observation_digest: str | None=None
     observation_path: str | None=None
@@ -104,8 +109,8 @@ def verify_preconditions(application, run: Path, intent: dict, plan: dict) -> st
         schema = application.registry.schema_document('https://phase-tool.local/'+resource)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
         data = read_bounded_file(run/'attachments/pre-validator-results.json', REQUEST_LIMIT)
-        if intent.get('phase_intent_version') == '1.1' and digest_bytes(data) != intent['evidence']['pre_validator_results_digest']:
-            raise ValueError('pre-validator digest binding')
+        from .preconditions import verify_pre_validator_binding
+        verify_pre_validator_binding(intent, digest_bytes(data))
         pre = parse_json_bytes(data)
         declarations = contract.document['validators']
         if not isinstance(pre, list) or len(pre) != len(declarations) or canonical_bytes(pre) != data:
@@ -159,6 +164,10 @@ def verify_without_final_receipt(application, run: Path, target: Path, intent: d
         if not destination.exists():
             raise PhaseError('recovery.unpublished_stage_retained')
         verify_bundle(destination,effect['content_digest'],run_id=intent['run_id'],plan_digest=intent['effect_plan_digest'])
+        from .prepared_binding import verify_bound_bundle_target
+        binding=intent['contract']
+        contract=application.registry.resolve_contract(binding['id'],binding['version'],binding['package_digest'],core_version=intent['core']['version'])
+        verify_bound_bundle_target(application.registry,contract,intent,plan,run,destination)
     else:
         path=run/'attachments/effect-receipts.json'
         _reject_existing_links(path)
@@ -197,8 +206,9 @@ def recover_publication(application, *, evidence_root: Path, run_id: str,
                         target_root: Path, request_id: str, expected_intent_digest: str,
                         mode: str = 'observe'):
     from .application import ApplicationResponse
-    from .mutation.posix.authority import PosixTargetRootLock
     result=RecoveryResult(run_id=run_id,request_id=request_id)
+    progress=RecoveryProgress()
+    run=None
     try:
         if mode not in {'observe','commit_prepared'}:
             raise PhaseError('recovery.unsupported_mode')
@@ -210,34 +220,50 @@ def recover_publication(application, *, evidence_root: Path, run_id: str,
             original=application.inspect(evidence_root=root,run_id=run_id,root_bindings={'phase_result_root':target}).payload
             result.original_receipt_digest=original.get('receipt_digest')
             result.original_terminal_status=original.get('terminal_status')
-            resumed=EffectBroker(application.registry,application.installation.authority_provider,
-                application.installation.authority_profile_binding).resume_prepared_bundle(plan,contract,run/'intent.json',target,expected_intent_digest)
-            result.recovery_mutation_attempted=resumed['attempted']
-            result.status,result.success,result.target_verified,result.exit_code='verified_existing',True,True,0
-            result.inspection_required=False
-            save_observation(run,result)
-            return ApplicationResponse(result.model_dump(),result.exit_code)
-        with PosixTargetRootLock(target,'publication-recovery',timeout_seconds=0):
-            # Re-read after locking; no cached mutable evidence or source inputs.
-            root,target,run,intent,plan,contract=load_context(application,evidence_root,run_id,target_root,request_id,expected_intent_digest)
-            result.intent_digest=expected_intent_digest
-            result.effect_plan_digest=intent['effect_plan_digest']
-            _verify_intent_blobs(run,intent,plan)
-            inspected=application.inspect(evidence_root=root,run_id=run_id,root_bindings={'phase_result_root':target}).payload
-            result.original_receipt_digest=inspected.get('receipt_digest')
-            result.original_terminal_status=inspected.get('terminal_status')
-            if not (inspected['success'] and inspected.get('target_verified') is True
-                    and inspected.get('terminal_status')=='succeeded_verified'):
-                verify_without_final_receipt(application,run,target,intent,plan)
-            result.status,result.success,result.target_verified,result.exit_code='verified_existing',True,True,0
-            result.inspection_required=False
-            save_observation(run,result)
+            EffectBroker(application.registry,application.installation.authority_provider,
+                application.installation.authority_profile_binding).resume_prepared_bundle(
+                    plan,contract,run/'intent.json',target,expected_intent_digest,progress=progress)
+        else:
+            with RecoveryRootLock(target,'publication-recovery',progress):
+                # Re-read after locking; no cached mutable evidence or source inputs.
+                root,target,run,intent,plan,contract=load_context(application,evidence_root,run_id,target_root,request_id,expected_intent_digest)
+                result.intent_digest=expected_intent_digest
+                result.effect_plan_digest=intent['effect_plan_digest']
+                _verify_intent_blobs(run,intent,plan)
+                inspected=application.inspect(evidence_root=root,run_id=run_id,root_bindings={'phase_result_root':target}).payload
+                result.original_receipt_digest=inspected.get('receipt_digest')
+                result.original_terminal_status=inspected.get('terminal_status')
+                if not (inspected['success'] and inspected.get('target_verified') is True
+                        and inspected.get('terminal_status')=='succeeded_verified'):
+                    verify_without_final_receipt(application,run,target,intent,plan)
+                progress.effect_state='committed'
+                progress.target_verified=True
+        result.status,result.success,result.exit_code='verified_existing',True,0
+        result.inspection_required=False
     except (PhaseError,OSError,ValueError,TypeError,KeyError,ValidationError) as exc:
-        result.recovery_mutation_attempted = result.recovery_mutation_attempted or getattr(exc,'mutation_attempted',False)
+        progress.record_error('recovery',exc)
         result.success=False
-        result.target_verified=False
         result.inspection_required=True
         result.error=exc.code if isinstance(exc,PhaseError) else 'recovery.failure'
         result.status='rejected' if result.error in {'recovery.request_conflict','recovery.invalid_expected_digest','recovery.unsupported_contract'} else 'indeterminate'
         result.exit_code=10 if result.status=='rejected' else 40
+    result.recovery_mutation_attempted=progress.attempted
+    result.recovery_effect_state=progress.effect_state
+    result.target_verified=progress.target_verified
+    result.lock_finalization=progress.lock_finalization
+    result.error_details=list(progress.errors)
+    # Publish the observation only after lock finalization: never leave a
+    # successful recovery observation for a call that failed during __exit__.
+    if run is not None:
+        try:
+            save_observation(run,result)
+        except (PhaseError,OSError,ValueError,TypeError,KeyError) as exc:
+            progress.record_error('observation',exc)
+            result.error_details=list(progress.errors)
+            result.success=False
+            result.inspection_required=True
+            result.status='indeterminate'
+            result.exit_code=40
+            if result.error is None:
+                result.error=exc.code if isinstance(exc,PhaseError) else 'recovery.failure'
     return ApplicationResponse(result.model_dump(),result.exit_code)

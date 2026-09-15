@@ -12,6 +12,7 @@ from .errors import PhaseError
 from .evidence import _ensure_directory_durable, _write_bytes_exclusive_atomic
 from .bundle import verify_bundle
 from .mutation.bundle_create import stage_name
+from .continuation_progress import ContinuationInterrupted, RecoveryProgress
 
 
 class PreparedStage(BaseModel):
@@ -45,12 +46,6 @@ class ContinuationIntent(BaseModel):
     inode: int
 
 
-class ContinuationInterrupted(PhaseError):
-    def __init__(self, cause, attempted):
-        super().__init__(cause.code if isinstance(cause,PhaseError) else 'recovery.commit_failed')
-        self.mutation_attempted = attempted
-
-
 def validate_record_schema(registry,contract,resource,value):
     from jsonschema import Draft202012Validator
     refs=[a['digest'] for a in contract.entry['package_artifacts'] if a['resource']==resource]
@@ -75,6 +70,8 @@ def save_prepared(intent, effect, stage, target_root, run):
     value = prepared_value(intent,effect,stage,target_root)
     data = canonical_bytes(value)
     _write_bytes_exclusive_atomic(run/'attachments/prepared-stage.json',data,'prepared-stage')
+    from .prepared_binding import save_preparation_binding
+    save_preparation_binding(intent,effect,value,run)
 
 
 def write_or_verify(path, value):
@@ -88,14 +85,14 @@ def write_or_verify(path, value):
     return digest_bytes(data)
 
 
-def continue_locked(broker, contract, plan, intent, run, target):
+def continue_locked(broker, contract, plan, intent, run, target, *, progress=None):
     from .recovery import read_record, verify_preconditions
     from .application import PhaseApplication
     from .mutation.posix.authority import PosixTargetAuthority
     from .mutation import bundle_create
     from .installation import qualify_host_authority_roots
     from .inspection import _verify_intent_blobs
-    attempted=False
+    progress = progress if progress is not None else RecoveryProgress()
     try:
         if (contract.document['identity']['id'] != 'bundle_create.v2'
             or contract.document['recovery']['policy'] != 'resume_prepared_bundle'
@@ -104,15 +101,12 @@ def continue_locked(broker, contract, plan, intent, run, target):
         qualify_host_authority_roots({'phase_result_root':target})
         _verify_intent_blobs(run,intent,plan)
         app=PhaseApplication(registry=broker.registry)
-        pre_digest=verify_preconditions(app,run,intent,plan)
-        if pre_digest!=intent['evidence']['pre_validator_results_digest']:
-            raise PhaseError('recovery.preconditions_not_proven')
+        verify_preconditions(app,run,intent,plan)
         effect=plan['effects'][0]
         if effect['preconditions'] != {'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}:
             raise PhaseError('recovery.commit_preconditions_unsupported')
-        prepared=read_record(run/'attachments/prepared-stage.json')
-        validate_record_schema(broker.registry,contract,'schemas/prepared-stage.schema.json',prepared)
-        PreparedStage.model_validate(prepared)
+        from .prepared_binding import verify_prepared_binding
+        prepared=verify_prepared_binding(broker.registry,contract,intent,plan,run)
         roots=broker._validate_execution_roots(intent,contract,{'phase_result_root':target})
         identity=roots[os.path.normcase(str(target.absolute()))]
         authority=PosixTargetAuthority(target,effect['target']['relative_locator'],expected_root_identity=identity,create_parents=False)
@@ -142,22 +136,24 @@ def continue_locked(broker, contract, plan, intent, run, target):
                 # proof. A resumed commit additionally retains this exact intent.
                 if continuation_path.exists() and read_record(continuation_path)!=continued:
                     raise PhaseError('recovery.continuation_conflict')
+                progress.effect_state = 'committed'
                 authority.fsync_parent()
             else:
                 write_or_verify(continuation_path,continued)
                 if read_record(continuation_path)!=continued:
                     raise PhaseError('recovery.continuation_conflict')
                 # Mechanism, not the application recovery function, owns rename.
-                attempted=True
-                bundle_create.commit_prepared_bundle(authority,stage,effect,intent,prepared)
+                bundle_create.commit_prepared_bundle(authority,stage,effect,intent,prepared,progress=progress)
             verify_bundle(destination,effect['content_digest'],run_id=intent['run_id'],plan_digest=intent['effect_plan_digest'])
             authority.assert_namespace_binding()
+            progress.target_verified = True
             receipt={'continuation_receipt_version':'1.0','original_intent_digest':profile_digest('intent',intent),
                 'preparation_digest':preparation_digest,'continuation_intent_digest':digest_bytes(canonical_bytes(continued)) if continuation_path.exists() else None,
                 'status':'verified_existing','target_verified':True,'effect_plan_digest':intent['effect_plan_digest']}
             receipt_digest=write_or_verify(directory/'commit-receipt.json',receipt)
-            return {'attempted':attempted,'receipt_digest':receipt_digest,'receipt_path':str(directory/'commit-receipt.json')}
+            return {'attempted':progress.attempted,'receipt_digest':receipt_digest,'receipt_path':str(directory/'commit-receipt.json')}
         finally:
             authority.close()
     except (PhaseError,OSError,ValueError,TypeError,KeyError) as exc:
-        raise ContinuationInterrupted(exc,attempted) from exc
+        progress.record_error('continuation', exc)
+        raise ContinuationInterrupted(exc,progress) from exc

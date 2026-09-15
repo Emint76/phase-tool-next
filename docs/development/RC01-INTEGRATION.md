@@ -70,11 +70,13 @@ unproven effects, changed roots/inputs/evidence, or conflicting keys produce an
 explicit refusal/indeterminate result. Nothing is auto-deleted. Never treat a
 private stage or an exited worker as a complete publication.
 
-## Explicit prepared-stage continuation (rc2)
+## Explicit independently bound prepared-stage continuation (rc3)
 
 Opt in when creating a bundle: `phase publish-bundle --publication-version 2.0`
-with the same explicit members and roots. The new exact `bundle_create.v2@1.0.0`
-contract saves preparation proof before its publication syscall. After a crash:
+with the same explicit members and roots. Exact `bundle_create.v2@1.1.0` saves
+prepared-stage proof and independent `<run>/preparation-binding.json` before its
+publication syscall. Missing/invalid independent binding and older v2@1.0.0 stages
+cannot be upgraded by assumption; they refuse explicit continuation. After a crash:
 
 ```sh
 phase recover-publication --mode commit_prepared \
@@ -92,6 +94,12 @@ the commit; `commit-receipt.json` and digest-addressed observations record conti
 `verified_existing` describes the verified target at observation time. Default mode
 `observe`, inspect and status do not gain target mutations. MCP uses `mode="commit_prepared"`
 and `publication_version="2.0"` with the same semantics.
+
+Late unlock/close failures remain non-success even after a known commit; consult
+the returned effect progress and retained observations, not only the exit code.
+Repeat with the same original bindings after the failed process has exited;
+do not create a new publication merely because finalization failed. Trust limits
+and the verifier-path matrix are in [CORRECTION-02.md](CORRECTION-02.md).
 
 ## MCP and Python mapping
 

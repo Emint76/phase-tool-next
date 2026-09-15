@@ -442,10 +442,11 @@ class EffectBroker:
             raise PhaseError("broker.content_blob_mismatch", blob_digest)
         return content
 
-    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest):
-        from .posix.authority import PosixTargetRootLock
+    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest, *, progress=None):
+        from ..continuation_progress import RecoveryProgress, RecoveryRootLock
         from ..continuation import continue_locked
-        with PosixTargetRootLock(target_root,'publication-resume',timeout_seconds=0):
+        progress = progress if progress is not None else RecoveryProgress()
+        with RecoveryRootLock(target_root, 'publication-resume', progress):
             locked, intent = self._locked_plan_from_evidence(plan,contract,{'phase_result_root':target_root},intent_path)
             if profile_digest('intent',intent) != expected_intent_digest:
                 raise PhaseError('recovery.request_conflict')
@@ -456,7 +457,7 @@ class EffectBroker:
             descriptor=parse_json_bytes(self.registry.resource_bytes(str(entry['artifact'])))
             if descriptor.get('execution_allowed') is not True or descriptor.get('recovery')!='explicit_prepared_commit':
                 raise PhaseError('recovery.commit_not_authorized')
-            return continue_locked(self,contract,locked,intent,intent_path.parent,target_root)
+            return continue_locked(self,contract,locked,intent,intent_path.parent,target_root,progress=progress)
 
     def execute(
         self,
@@ -505,6 +506,7 @@ class EffectBroker:
                 ("mechanism.exclusive_create_v2", "1.0.0"),
                 ("mechanism.bundle_create_v1", "1.0.0"),
                 ("mechanism.bundle_create_v2", "1.0.0"),
+                ("mechanism.bundle_create_v2", "1.1.0"),
                 ("mechanism.expected_head_append_v1", "1.0.0"),
                 ("content_addressed_copy", "1.0.0"),
                 ("mechanism.archive_then_publish_v1", "1.0.0"),

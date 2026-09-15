@@ -1,4 +1,4 @@
-"""Installed rc2 CLI/MCP prepared-stage continuation, no source-tree imports."""
+"""Installed rc3 CLI/MCP prepared-stage continuation, no source-tree imports."""
 import argparse, asyncio, json, os, subprocess, sys
 from pathlib import Path
 from importlib import metadata
@@ -8,7 +8,7 @@ from phase_tool.canonical import profile_digest
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--root',type=Path,required=True); args=p.parse_args()
     root=args.root.absolute(); root.mkdir(parents=True,exist_ok=False)
-    assert metadata.version('phase-tool')=='1.1.0rc2'
+    assert metadata.version('phase-tool')=='1.1.0rc3'
     rows=[]
     for transport in ('cli','mcp'):
         trial=root/transport; trial.mkdir()
@@ -30,6 +30,11 @@ print(PhaseApplication().publish_bundle(**q).payload)
         assert child.returncode==73,(child.stdout,child.stderr)
         run=trial/'evidence/.phase/runs'/transport
         intent=json.loads((run/'intent.json').read_text())
+        from phase_tool.canonical import digest_bytes
+        anchor=json.loads((run/'preparation-binding.json').read_text())
+        assert anchor['original_intent_digest']==profile_digest('intent',intent)
+        assert anchor['preparation_digest']==digest_bytes((run/'attachments/prepared-stage.json').read_bytes())
+        assert anchor['contract']['version']=='1.1.0'
         query={k:request[k] for k in ('evidence_root','target_root','run_id','request_id')}
         query.update(expected_intent_digest=profile_digest('intent',intent),mode='commit_prepared')
         stage=next((trial/'target').glob('phase-stage-*')); inode=stage.stat().st_ino

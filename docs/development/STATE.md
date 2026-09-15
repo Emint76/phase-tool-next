@@ -1,5 +1,24 @@
 # Development state
 
+## PHASE-NEXT-RC01-CORRECTION-02 — rc3 pending exact-head gates
+
+- Start/reviewed HEAD `13d5935a787b02f3bf24056cde89f6f77d3dce25`;
+  full PR base/main `080968f4cd557b9f891a2c2a34268fa8ef11ae98` unchanged.
+- Candidate `1.1.0rc3` / Core `1.1.0-rc.3`; existing private PR #2, no merge.
+- C1: shared exact-version pre-validator intent binding in independent verification.
+- C2: truthful progress across remaining-commit and lock finalization errors.
+- C3: new exact bundle v2 contract/mechanism 1.1.0 and independent preparation
+  record created before original commit. Old unbound stages are not upgraded.
+- Long-path manifest completeness and programmatic capabilities are corrected.
+- Scope/trust/path matrix: [CORRECTION-02.md](CORRECTION-02.md).
+- Exact final gate results and readiness live outside checkout:
+  `ROOT/evidence/RC01-CORRECTION-02/<final-head>/`,
+  `ROOT/artifacts/RC01/1.1.0rc3-<final-head>/`. Prior candidates remain immutable.
+- Full Python 3.11/3.12, installed wheel/CLI/MCP, historical and resource gates
+  must pass on final HEAD before READY_FOR_REVIEW. No reviewer/production changes.
+
+## Historical correction-01 state (superseded where stated above)
+
 ## PHASE-NEXT-RC01-CORRECTION-01 — rc2 pending exact-head gates
 
 - Correction base: `65471fa491d922d5dbdcffca582b801079b068d0`; full PR base:

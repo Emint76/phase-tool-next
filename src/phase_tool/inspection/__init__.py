@@ -11,6 +11,7 @@ from ..errors import PhaseError
 from ..evidence import evidence_file_exists, iter_run_artifacts, read_evidence_bytes, validate_intent, validate_receipt, validate_run_id
 from ..paths import _platform_path
 from ..planning import validate_plan_mechanism_authorization, validate_static_plan
+from ..preconditions import pre_validator_binding_required, verify_pre_validator_binding
 from ..registry import BundledRegistry, RegistrySnapshot, ResolvedContract
 from ..mutation.guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from ..mutation.implementation import mechanism_authority_usage, mechanism_supports_effect_kind
@@ -37,6 +38,17 @@ def _read_canonical(path: Path) -> tuple[Any, str]:
     if canonical_bytes(value) != data:
         raise PhaseError("inspection.digest_mismatch", str(path.name))
     return value, digest_bytes(data)
+
+
+def _verify_bound_pre_validators(run_root: Path, intent: Mapping[str, Any]) -> None:
+    if not pre_validator_binding_required(intent):
+        return
+    # Planning saves the same pre-operation results at the final-results name;
+    # execution saves them separately before handoff. Neither depends on the
+    # presence or truth of a later receipt.
+    name = "pre-validator-results.json" if intent["execution_requested"] else "validator-results.json"
+    _validators, digest = _read_canonical(run_root / "attachments" / name)
+    verify_pre_validator_binding(intent, digest)
 
 
 def _validate_progress(progress: Mapping[str, Any], plan: Mapping[str, Any], effect_receipts: list[dict[str, Any]], registry: RegistrySnapshot) -> None:
@@ -300,6 +312,7 @@ def inspect_run(
             if not isinstance(implementation_binding, Mapping):
                 raise PhaseError("inspection.implementation_binding_mismatch")
             _validate_implementation_binding(implementation_binding, plan, contract, registry)
+        _verify_bound_pre_validators(run_root, intent)
         _verify_intent_blobs(run_root, intent, plan)
         state_classification = None
         hook = load_contract_hook(contract)
@@ -372,6 +385,7 @@ def inspect_run(
             if not isinstance(intent_binding, Mapping):
                 raise PhaseError("inspection.implementation_binding_mismatch")
             _validate_implementation_binding(intent_binding, plan, contract_for_plan, registry)
+        _verify_bound_pre_validators(run_root, intent)
         validators, validators_digest = _read_canonical(run_root / "attachments" / "validator-results.json")
         if validators != receipt["validator_results"]:
             raise PhaseError("inspection.validator_results_mismatch")
@@ -465,6 +479,8 @@ def inspect_run(
                 elif contract.document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
                     from ..bundle import verify_bundle
                     data, _manifest = verify_bundle(authority.target, state["digest"], run_id=run_id, plan_digest=plan_digest)
+                    from ..prepared_binding import verify_bound_bundle_target
+                    verify_bound_bundle_target(registry, contract, intent, plan, run_root, authority.target)
                     authority.assert_namespace_binding()
                 elif contract.document["operation"]["mechanism"]["id"] == "mechanism.exclusive_create_v2":
                     from ..streaming import FILE_LIMIT, observe_target

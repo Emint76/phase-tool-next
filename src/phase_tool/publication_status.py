@@ -83,8 +83,26 @@ def publication_limits():
     from .streaming import limits
     from .bundle import MAX_MEMBERS,MAX_TOTAL_BYTES,MAX_DEPTH
     from .publish_file import MAX_BYTES
+    bundle_limits = limits() | {'total_bytes':MAX_TOTAL_BYTES,'objects':MAX_MEMBERS,'path_depth':MAX_DEPTH}
     return ApplicationResponse({'limits_version':'1.0',
         'file_v1':{'file_bytes':MAX_BYTES,'objects':1},
         'file_v2':limits(),
-        'bundle_v1':limits() | {'total_bytes':MAX_TOTAL_BYTES,'objects':MAX_MEMBERS,'path_depth':MAX_DEPTH},
-        'wait_seconds':60,'recovery':'verified_completion_only_no_target_replay'})
+        'bundle_v1':dict(bundle_limits),
+        'bundle_v2':dict(bundle_limits),
+        'publication_versions':{'file':['1.0','2.0'],'bundle':['1.0','2.0']},
+        'wait_seconds':60,
+        'recovery':'observe_by_default_or_explicit_commit_prepared',
+        'recovery_default_mode':'observe',
+        'recovery_modes':{
+            'observe':{'target_mutation':False},
+            'commit_prepared':{
+                'target_mutation':True,
+                'target_effect':'remaining_directory_commit_only',
+                'contract_bindings':['bundle_create.v2@1.1.0'],
+            },
+        },
+        'status':{
+            'semantics':'historical_metadata_only',
+            'verification_performed':False,'target_verified':False,
+            'target_mutation':False,'process_liveness':'not_checked',
+        }})

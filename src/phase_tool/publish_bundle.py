@@ -53,7 +53,7 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
     try:
         if publication_version not in {'1.0','2.0'}:
             raise PhaseError('bundle.unsupported_version')
-        selected_binding = 'bundle_create.v2@1.0.0' if publication_version == '2.0' else CONTRACT_BINDING
+        selected_binding = 'bundle_create.v2@1.1.0' if publication_version == '2.0' else CONTRACT_BINDING
         result.contract_binding = selected_binding
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:

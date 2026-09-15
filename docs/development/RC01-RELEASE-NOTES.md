@@ -1,16 +1,21 @@
-# Phase Tool 1.1.0rc2 — private RC01 candidate notes
+# Phase Tool 1.1.0rc3 — private RC01 candidate notes
 
 This is a **prerelease candidate for maintainer review**, not a GitHub Release,
 independent approval, merge, public package publication or deployment. Package
-version is PEP 440 `1.1.0rc2`; CLI/Core evidence version is SemVer `1.1.0-rc.2`.
+version is PEP 440 `1.1.0rc3`; CLI/Core evidence version is SemVer `1.1.0-rc.3`.
 The normalized identifiers intentionally differ, and both are tested explicitly.
 
 ## Changes and exact compatibility
 
-Correction base is reviewed rc1 `65471fa491d922d5dbdcffca582b801079b068d0`.
-B1/B2/B3/B5 corrections are documented in [CORRECTION-01.md](CORRECTION-01.md).
-The prior rc1 candidate remains immutable. New opt-in bundle v2 supports only
-remaining-commit continuation of a fully proven stage, not partial-file repair.
+Correction base is reviewed rc2 `13d5935a787b02f3bf24056cde89f6f77d3dce25`.
+C1–C3, trust boundaries and verification paths: [CORRECTION-02.md](CORRECTION-02.md).
+Prior rc1/rc2 candidates remain immutable; B1/B2 regressions remain active.
+Opt-in bundle v2 now selects exact contract/mechanism version 1.1.0, with an
+independent prepared-proof binding created before original commit. Old v2@1.0.0
+stages cannot acquire provenance retrospectively. Successful historical inspection
+retains its exact-format guarantees. Only remaining commit is supported, not repair.
+Pre-validator intent binding is independently checked even with a successful receipt;
+late unlock/close errors retain observed effect progress and remain failed responses.
 
 - Retain F01 `publish-file` default `1.0`, create-only <=1 MiB, its exact contract
   and receipt schemas. Add explicit streaming `2.0` (`file_create.v2@1.0.0`):
@@ -51,14 +56,14 @@ archive inspection is read-only and compared byte-for-byte before/after.
 ## Candidate installation and rollback (separate test environment)
 
 Artifacts are retained outside checkout under
-`ROOT/artifacts/RC01/1.1.0rc2-<full-commit>/` with SHA256SUMS and exact Git/package
+`ROOT/artifacts/RC01/1.1.0rc3-<full-commit>/` with SHA256SUMS and exact Git/package
 binding manifest. Never install a differently hashed wheel merely sharing this
 version label. The candidate is not published to a package index.
 
 ```sh
 sha256sum --check SHA256SUMS
 python3.11 -m venv /path/to/new-private-rc01-venv
-/path/to/new-private-rc01-venv/bin/python -m pip install ./phase_tool-1.1.0rc2-py3-none-any.whl
+/path/to/new-private-rc01-venv/bin/python -m pip install ./phase_tool-1.1.0rc3-py3-none-any.whl
 /path/to/new-private-rc01-venv/bin/phase --version
 /path/to/new-private-rc01-venv/bin/phase doctor
 /path/to/new-private-rc01-venv/bin/phase publication-limits

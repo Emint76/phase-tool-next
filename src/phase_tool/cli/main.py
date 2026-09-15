@@ -28,9 +28,8 @@ def _write_json(value: object) -> None:
 
 
 def _write(value: object) -> None:
-    registry = BundledRegistry.load()
-    schema = registry.schema_document("https://phase-tool.local/schemas/stage3-command-result.schema.json")
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+    from ..command_result import validate_command_result
+    validate_command_result(value, BundledRegistry.load())
     _write_json(value)
 
 

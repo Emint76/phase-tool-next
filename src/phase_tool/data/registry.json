@@ -2785,6 +2785,18 @@
       "schema_ref": "https://phase-tool.local/schemas/recovery-result-1.1.schema.json",
       "trust_root_id": "phase.release.v1",
       "version": "1.0.0"
+    },
+    {
+      "artifact": "schemas/stage3-command-result-1.1.schema.json",
+      "artifact_digest": "sha256:e2120c985b7e5166839a21957093f126d09f3bdf1a369efa5b0f92285b4da2b9",
+      "capability": "schema",
+      "id": "schema.stage3-command-result.v1-1",
+      "kind": "schema",
+      "mutable": false,
+      "package_digest": "sha256:e2120c985b7e5166839a21957093f126d09f3bdf1a369efa5b0f92285b4da2b9",
+      "schema_ref": "https://phase-tool.local/schemas/stage3-command-result-1.1.schema.json",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
     }
   ],
   "registry_snapshot_version": "1.0",

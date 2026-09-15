@@ -5,6 +5,20 @@ not an instruction to change a working Hermes profile or enable its MCP server.
 No LLM, network request, generated helper program or content review is part of a
 publication. CLI and MCP call the same `PhaseApplication` and Phase Core.
 
+## rc4 post-recovery inspection
+
+After supported `commit_prepared` with no original receipt, CLI `inspect` and MCP
+`phase_inspect` return the closed command-result **1.1**, not 1.0. Select the
+schema using `stage3_command_result_version`. Original-run mutation/terminal/
+receipt fields remain null; `inspection_status=recovered_verified` requires
+independent current verification and bound continuation/observation proof.
+`recorded_recovery_mutation_attempted=true` reports a retained recovery attempt;
+per-call outcomes (including failures and non-mutating repeats) remain in
+`recovery_observations`. Indeterminate inspection returns exit 40, not traceback
+or verified-success. Receipt-backed ordinary/V1/F01 inspection retains 1.0.
+See [the exact semantics and migration](CANARY-DEFECT-01.md). This does not
+instruct installing rc4 into production or enabling a working-profile MCP.
+
 ## One request, explicit intent
 
 ```sh

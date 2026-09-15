@@ -324,6 +324,8 @@ def inspect_run(
                 root_bindings or {},
                 registry,
             )
+        from .recovered import inspect_missing_recovery
+        recovery = inspect_missing_recovery(registry, root, run_root, intent, plan, root_bindings or {})
         return {
             "run_id": run_id,
             "terminal_status": None,
@@ -341,6 +343,7 @@ def inspect_run(
             "inspection_required": True,
             "state_classification": state_classification,
             "implementation_binding": implementation_binding,
+            **recovery,
         }
     receipt, _ = _read_canonical(receipt_path)
     receipt_digest = profile_digest("receipt", receipt)

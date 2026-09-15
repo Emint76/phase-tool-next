@@ -1,14 +1,55 @@
-"""Installed rc3 CLI/MCP prepared-stage continuation, no source-tree imports."""
+"""Installed rc4 continuation + post-recovery inspect, no source-tree imports."""
 import argparse, asyncio, json, os, subprocess, sys
 from pathlib import Path
 from importlib import metadata
 from phase_tool.canonical import profile_digest
 
 
+def snapshot(root):
+    import hashlib
+    return {p.relative_to(root).as_posix(): (p.stat().st_ino, p.stat().st_mtime_ns,
+            hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None)
+            for p in sorted(root.rglob('*'))}
+
+
+def inspect_both(query):
+    from phase_tool.command_result import validate_command_result
+    from phase_tool.registry import BundledRegistry
+    request = {k:query[k] for k in ('evidence_root','run_id')}
+    request['root_bindings'] = {'phase_result_root': query['target_root']}
+    child = subprocess.run([str(Path(sys.executable).with_name('phase')), 'inspect',
+        '--evidence-root', query['evidence_root'], '--run-id', query['run_id'],
+        '--root', 'phase_result_root='+query['target_root']], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0 and child.stdout and not child.stderr, (child.returncode,child.stdout,child.stderr)
+    cli = json.loads(child.stdout)
+    async def exchange():
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        params = StdioServerParameters(command=str(Path(sys.executable).with_name('phase')),
+            args=['mcp','serve','--stdio'])
+        async with stdio_client(params) as (reader,writer):
+            async with ClientSession(reader,writer) as session:
+                await session.initialize()
+                result = await session.call_tool('phase_inspect',request)
+                assert not result.isError,result
+                return result.structuredContent
+    mcp = asyncio.run(asyncio.wait_for(exchange(),timeout=45))
+    assert cli == mcp
+    validate_command_result(cli,BundledRegistry.load())
+    assert cli['stage3_command_result_version'] == '1.1'
+    assert cli['success'] and cli['target_verified'] and not cli['inspection_required']
+    assert cli['inspection_status'] == 'recovered_verified'
+    assert cli['mutation_attempted'] is None and cli['receipt_digest'] is None
+    assert cli['terminal_status'] is None and cli['execution_disposition'] is None
+    assert cli['recorded_recovery_mutation_attempted'] is True
+    assert len(cli['recovery_observations']) == 2
+    return {'cli_exit_code':child.returncode,'cli':cli,'mcp':mcp,'schema_valid':True}
+
+
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--root',type=Path,required=True); args=p.parse_args()
     root=args.root.absolute(); root.mkdir(parents=True,exist_ok=False)
-    assert metadata.version('phase-tool')=='1.1.0rc3'
+    assert metadata.version('phase-tool')=='1.1.0rc4'
     rows=[]
     for transport in ('cli','mcp'):
         trial=root/transport; trial.mkdir()
@@ -29,6 +70,8 @@ print(PhaseApplication().publish_bundle(**q).payload)
         child=subprocess.run([sys.executable,'-c',code,json.dumps(request)],capture_output=True,text=True,timeout=30)
         assert child.returncode==73,(child.stdout,child.stderr)
         run=trial/'evidence/.phase/runs'/transport
+        original_files = {p: p.read_bytes() for p in run.rglob('*') if p.is_file()}
+        assert not (run/'receipt.json').exists()
         intent=json.loads((run/'intent.json').read_text())
         from phase_tool.canonical import digest_bytes
         anchor=json.loads((run/'preparation-binding.json').read_text())
@@ -66,7 +109,14 @@ print(PhaseApplication().publish_bundle(**q).payload)
         target=trial/'target/bundle'
         assert target.stat().st_ino==inode and (target/'data.bin').read_bytes()==b'installed original\x00\xff'
         assert (run/'recovery/commit-intent.json').is_file() and (run/'recovery/commit-receipt.json').is_file()
-        rows.append({'transport':transport,'result':result,'repeat':repeat,'same_stage_inode':True,'target_bytes_verified':True})
+        before = snapshot(trial)
+        inspected = inspect_both(query)
+        assert snapshot(trial) == before
+        assert not (run/'receipt.json').exists()
+        assert all(p.read_bytes() == data for p,data in original_files.items())
+        rows.append({'transport':transport,'result':result,'repeat':repeat,'inspect':inspected,
+            'inspect_mutations':0,'original_files_preserved':len(original_files),
+            'original_receipt_absent':True,'same_stage_inode':True,'target_bytes_verified':True})
     report={'success':True,'version':metadata.version('phase-tool'),'python':sys.version,'trials':rows}
     (root/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))

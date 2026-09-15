@@ -227,7 +227,7 @@ class PhaseApplication:
     ) -> ApplicationResponse:
         try:
             inspected = inspect_run(evidence_root, run_id, self.registry, root_bindings=root_bindings)
-            return ApplicationResponse(self._command_payload(
+            payload = self._command_payload(
                 "inspect",
                 success=True,
                 run_id=inspected["run_id"],
@@ -241,7 +241,22 @@ class PhaseApplication:
                 blockers=[],
                 error=None,
                 exit_code=0,
-            ))
+            )
+            if not inspected["receipt_present"]:
+                complete = inspected["inspection_status"] == "recovered_verified"
+                error = inspected["inspection_error"]
+                payload.update(
+                    stage3_command_result_version="1.1", success=complete,
+                    inspection_status=inspected["inspection_status"],
+                    inspection_required=inspected["inspection_required"],
+                    recorded_recovery_mutation_attempted=inspected["recorded_recovery_mutation_attempted"],
+                    recovery_observations=inspected["recovery_observations"],
+                    error=error, blockers=[] if complete else [error],
+                    exit_code=0 if complete else 40,
+                )
+            from .command_result import validate_command_result
+            validate_command_result(payload, self.registry)
+            return ApplicationResponse(payload, payload["exit_code"])
         except (PhaseError, OSError, ValueError) as exc:
             return self._failure("inspect", exc)
 
@@ -253,7 +268,7 @@ class PhaseApplication:
         run_id: str | None,
         terminal_status: str | None,
         execution_disposition: str | None,
-        mutation_attempted: bool,
+        mutation_attempted: bool | None,
         effect_plan_digest: str | None,
         intent_digest: str | None,
         receipt_digest: str | None,

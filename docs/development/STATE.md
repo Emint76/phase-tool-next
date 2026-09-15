@@ -1,3 +1,26 @@
+# Development state
+
+## PHASE-NEXT-F01
+
+Bootstrap is accepted and merged. F01 starts at private main commit
+`080968f4cd557b9f891a2c2a34268fa8ef11ae98`, tree
+`b234a2ef481be76ab75dd2e75dda8ab57aa7987b`.
+Branch: `feat/unified-file-publication`. Scope and interface: [F01.md](F01.md).
+
+New CLI `phase publish-file` and MCP `phase_publish_file` share one application
+path over the unchanged create lifecycle. Binary files are limited to 1 MiB;
+existing targets are not replaced and repeat requests require explicit inspect.
+New result schema is separate from historical evidence schemas.
+
+Required final gate: exact-HEAD Python 3.11/3.12 CI, all regressions plus F01,
+wheel+sdist and clean-wheel CLI/MCP/cross-inspect smoke. Per-head CI artifacts
+are `phase-next-<head-sha>-py<version>`; local execution evidence is under
+`../../evidence/F01/`. No test count or historical PASS is reused as final proof.
+This branch prepares one open PR for independent maintainer review, not merge,
+release or deployment. Main protection remains `PROTECTION_GAP`.
+
+---
+
 # Bootstrap state and evidence
 
 ## Immutable source and scope

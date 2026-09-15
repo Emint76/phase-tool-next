@@ -71,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--evidence-root", type=Path, required=True)
     inspect.add_argument("--run-id", required=True)
     inspect.add_argument("--root", action="append", default=[], type=_binding)
+    publish = subparsers.add_parser("publish-file", allow_abbrev=False)
+    for name in ("source-root", "target-root", "preparation-root", "evidence-root"):
+        publish.add_argument("--" + name, type=Path, required=True)
+    for name in ("source-locator", "target-locator", "request-id", "run-id"):
+        publish.add_argument("--" + name, required=True)
+    publish.add_argument("--expected-digest")
     return parser
 
 
@@ -152,6 +158,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.contracts_command == "list"
             else application.contract_describe(args.contract)
         )
+        _write_json(response.payload)
+        return response.exit_code
+    if args.command == "publish-file":
+        response = application.publish_file(**{
+            key: value for key, value in vars(args).items() if key != "command"
+        })
         _write_json(response.payload)
         return response.exit_code
     if args.command == "mcp":

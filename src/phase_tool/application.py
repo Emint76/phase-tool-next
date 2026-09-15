@@ -168,6 +168,28 @@ class PhaseApplication:
         except (PhaseError, OSError, ValueError) as exc:
             return self._failure(operation, exc)
 
+    def publish_file(
+        self,
+        *,
+        source_root: Path,
+        source_locator: str,
+        target_root: Path,
+        target_locator: str,
+        preparation_root: Path,
+        evidence_root: Path,
+        request_id: str,
+        run_id: str,
+        expected_digest: str | None = None,
+    ) -> ApplicationResponse:
+        from .publish_file import publish_file
+
+        return publish_file(
+            self, source_root=source_root, source_locator=source_locator,
+            target_root=target_root, target_locator=target_locator,
+            preparation_root=preparation_root, evidence_root=evidence_root,
+            request_id=request_id, run_id=run_id, expected_digest=expected_digest,
+        )
+
     def inspect(
         self,
         *,

@@ -116,7 +116,7 @@ def test_public_surface_snapshot_is_concise_and_complete() -> None:
 def test_installed_cli_discovery_and_argparse_failures_are_deterministic() -> None:
     cases = [
         ((), 2, "usage:"),
-        (("--help",), 0, "{doctor,contracts,mcp,validate,plan,execute,inspect}"),
+        (("--help",), 0, "{doctor,contracts,mcp,validate,plan,execute,inspect,publish-file}"),
         (("--version",), 0, "phase 1.0.0"),
         (("unknown-command",), 2, "invalid choice"),
         (("doctor", "--unknown"), 2, "unrecognized arguments"),
@@ -468,6 +468,7 @@ def test_actual_mcp_entrypoint_adversarial_long_lived_session(tmp_path: Path) ->
         "phase_execute",
         "phase_inspect",
         "phase_plan",
+        "phase_publish_file",
         "phase_validate",
     ]
     for schema in valid["schemas"].values():

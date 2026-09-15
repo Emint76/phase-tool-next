@@ -74,11 +74,16 @@ jobs:
           "$VENV/bin/phase" doctor | tee "$EVIDENCE/installed-doctor.json"
           "$VENV/bin/phase" contracts list | tee "$EVIDENCE/installed-contracts.json"
           "$VENV/bin/python" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
+      - name: Installed publish-file CLI/MCP smoke
+        run: |
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/f01_installed_smoke.py" --root "$EVIDENCE/installed-f01" 2>&1 | tee "$EVIDENCE/installed-f01.log"
       - name: Preserve private verification artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bootstrap-${{ github.event.pull_request.head.sha || github.sha }}-py${{ matrix.python }}
+          name: phase-next-${{ github.event.pull_request.head.sha || github.sha }}-py${{ matrix.python }}
           path: ${{ runner.temp }}/phase-next-evidence/
           retention-days: 14
           if-no-files-found: error

@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
 from .application import PhaseApplication
+from .publish_file import PublishFileResult
 
 _SERVER = FastMCP(
     "Phase Tool",
@@ -113,6 +114,28 @@ def phase_inspect(
         run_id=run_id,
         root_bindings={name: Path(value) for name, value in (root_bindings or {}).items()},
     ).payload
+
+
+@_SERVER.tool(name="phase_publish_file")
+def phase_publish_file(
+    source_root: str,
+    source_locator: str,
+    target_root: str,
+    target_locator: str,
+    preparation_root: str,
+    evidence_root: str,
+    request_id: str,
+    run_id: str,
+    expected_digest: str | None = None,
+) -> PublishFileResult:
+    """Publish one small ready file create-only, then independently inspect it."""
+    response = _application().publish_file(
+        source_root=Path(source_root), source_locator=source_locator,
+        target_root=Path(target_root), target_locator=target_locator,
+        preparation_root=Path(preparation_root), evidence_root=Path(evidence_root),
+        request_id=request_id, run_id=run_id, expected_digest=expected_digest,
+    )
+    return PublishFileResult.model_validate(response.payload)
 
 
 def _seal_tool_argument_models() -> None:

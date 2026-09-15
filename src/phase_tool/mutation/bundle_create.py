@@ -61,7 +61,8 @@ def _write_metadata(stage: Path, name: str, data: bytes, identity: tuple[int, in
 
 def execute_bundle_create(effect: dict, target_root: Path, manifest_bytes: bytes,
                           blob_root: Path, *, run_id: str, timestamp: str,
-                          plan_digest: str, expected_root_identity: tuple[int, int]):
+                          plan_digest: str, expected_root_identity: tuple[int, int],
+                          preparation_intent: dict | None = None):
     from .posix.authority import PosixTargetAuthority
 
     qualify_host_authority_roots({"phase_result_root": target_root})
@@ -129,6 +130,9 @@ def execute_bundle_create(effect: dict, target_root: Path, manifest_bytes: bytes
                 os.close(fd)
         authority.assert_namespace_binding()
         # This successful syscall is the sole consumer publication point.
+        if preparation_intent is not None:
+            from ..continuation import save_prepared
+            save_prepared(preparation_intent,effect,stage,target_root,blob_root.parent)
         _rename_noreplace(authority.parent_fd, stage.name, authority.name)
         published = True
         authority.fsync_parent()
@@ -156,3 +160,24 @@ def execute_bundle_create(effect: dict, target_root: Path, manifest_bytes: bytes
         attempted=attempted, before=before, after=after, bytes_written=write_counter[0],
         verification_refs=["bundle.members.byte_verified"] if status == "applied_verified" else [],
         error_code=error)
+
+
+def commit_prepared_bundle(authority, stage, effect, intent, prepared):
+    """The only remaining mutation; called by the authorized locked broker."""
+    descriptor = os.open(stage.name,os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,dir_fd=authority.parent_fd)
+    try:
+        info=os.fstat(descriptor)
+        if (info.st_dev,info.st_ino)!=(prepared['device'],prepared['inode']):
+            raise PhaseError('recovery.stage_identity_mismatch')
+        verify_bundle(stage,effect['content_digest'],run_id=intent['run_id'],plan_digest=intent['effect_plan_digest'])
+        named=os.stat(stage.name,dir_fd=authority.parent_fd,follow_symlinks=False)
+        if (named.st_dev,named.st_ino)!=(info.st_dev,info.st_ino):
+            raise PhaseError('recovery.stage_identity_mismatch')
+        os.fsync(descriptor)
+        authority.assert_namespace_binding()
+        if authority.target.exists():
+            raise PhaseError('recovery.target_conflict')
+        _rename_noreplace(authority.parent_fd,stage.name,authority.name)
+        authority.fsync_parent()
+    finally:
+        os.close(descriptor)

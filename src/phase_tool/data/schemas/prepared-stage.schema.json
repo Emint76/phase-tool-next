@@ -1,0 +1,76 @@
+{
+  "$id": "https://phase-tool.local/schemas/prepared-stage.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content_digest": {
+      "title": "Content Digest",
+      "type": "string"
+    },
+    "contract": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Contract",
+      "type": "object"
+    },
+    "device": {
+      "title": "Device",
+      "type": "integer"
+    },
+    "effect_plan_digest": {
+      "title": "Effect Plan Digest",
+      "type": "string"
+    },
+    "inode": {
+      "title": "Inode",
+      "type": "integer"
+    },
+    "original_intent_digest": {
+      "title": "Original Intent Digest",
+      "type": "string"
+    },
+    "pre_validator_results_digest": {
+      "title": "Pre Validator Results Digest",
+      "type": "string"
+    },
+    "prepared_stage_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Prepared Stage Version",
+      "type": "string"
+    },
+    "request_digest": {
+      "title": "Request Digest",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "stage_locator": {
+      "title": "Stage Locator",
+      "type": "string"
+    }
+  },
+  "required": [
+    "prepared_stage_version",
+    "run_id",
+    "request_id",
+    "request_digest",
+    "original_intent_digest",
+    "effect_plan_digest",
+    "contract",
+    "stage_locator",
+    "device",
+    "inode",
+    "content_digest",
+    "pre_validator_results_digest"
+  ],
+  "title": "PreparedStage",
+  "type": "object"
+}

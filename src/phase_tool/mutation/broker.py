@@ -442,6 +442,22 @@ class EffectBroker:
             raise PhaseError("broker.content_blob_mismatch", blob_digest)
         return content
 
+    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest):
+        from .posix.authority import PosixTargetRootLock
+        from ..continuation import continue_locked
+        with PosixTargetRootLock(target_root,'publication-resume',timeout_seconds=0):
+            locked, intent = self._locked_plan_from_evidence(plan,contract,{'phase_result_root':target_root},intent_path)
+            if profile_digest('intent',intent) != expected_intent_digest:
+                raise PhaseError('recovery.request_conflict')
+            self._validate_execution_roots(intent,contract,{'phase_result_root':target_root})
+            if intent.get('execution_requested') is not True:
+                raise PhaseError('broker.execution_not_requested')
+            entry=self.registry.resolve_mechanism(locked['mechanism'])
+            descriptor=parse_json_bytes(self.registry.resource_bytes(str(entry['artifact'])))
+            if descriptor.get('execution_allowed') is not True or descriptor.get('recovery')!='explicit_prepared_commit':
+                raise PhaseError('recovery.commit_not_authorized')
+            return continue_locked(self,contract,locked,intent,intent_path.parent,target_root)
+
     def execute(
         self,
         plan: dict[str, object],
@@ -488,6 +504,7 @@ class EffectBroker:
                 ("mechanism.exclusive_create_v1", "1.0.0"),
                 ("mechanism.exclusive_create_v2", "1.0.0"),
                 ("mechanism.bundle_create_v1", "1.0.0"),
+                ("mechanism.bundle_create_v2", "1.0.0"),
                 ("mechanism.expected_head_append_v1", "1.0.0"),
                 ("content_addressed_copy", "1.0.0"),
                 ("mechanism.archive_then_publish_v1", "1.0.0"),
@@ -575,7 +592,7 @@ class EffectBroker:
             copy_faults = active.content_addressed_copy
             archive_faults = active.archive_then_publish
             object_store_faults = active.object_store_publish
-            if effect.get("mechanism", contract.document["operation"]["mechanism"])["id"] == "mechanism.bundle_create_v1":
+            if effect.get("mechanism", contract.document["operation"]["mechanism"])["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
                 from ..bundle import read_metadata
                 from .bundle_create import execute_bundle_create
                 source = effect["content_source"]
@@ -587,6 +604,7 @@ class EffectBroker:
                 return execute_bundle_create(effect, target_root, data, blob_root,
                     run_id=str(intent["run_id"]), timestamp=timestamp,
                     plan_digest=str(intent["effect_plan_digest"]),
+                    preparation_intent=intent if contract.document["identity"]["id"] == "bundle_create.v2" else None,
                     expected_root_identity=root_identities[os.path.normcase(str(target_root.absolute()))])
             if effect.get("mechanism", contract.document["operation"]["mechanism"])["id"] == "mechanism.exclusive_create_v2":
                 from .stream_create import execute_stream_create

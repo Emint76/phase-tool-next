@@ -1,0 +1,830 @@
+{
+  "$defs": {
+    "contractHookBinding": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/registeredBinding"
+        },
+        {
+          "properties": {
+            "capability": {
+              "const": "contract_hook"
+            }
+          }
+        }
+      ]
+    },
+    "contractIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "core_compatibility": {
+          "additionalProperties": false,
+          "properties": {
+            "maximum_exclusive": {
+              "$ref": "#/$defs/semver"
+            },
+            "minimum": {
+              "$ref": "#/$defs/semver"
+            }
+          },
+          "required": [
+            "minimum",
+            "maximum_exclusive"
+          ],
+          "type": "object"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "core_compatibility"
+      ],
+      "type": "object"
+    },
+    "declarativeConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "parameters": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": [
+                  "number",
+                  "integer",
+                  "boolean",
+                  "null"
+                ]
+              },
+              {
+                "$ref": "#/$defs/identifier"
+              },
+              {
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": [
+                        "number",
+                        "integer",
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    {
+                      "$ref": "#/$defs/identifier"
+                    }
+                  ]
+                },
+                "maxItems": 256,
+                "type": "array"
+              }
+            ]
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "policy_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "type": "object"
+    },
+    "digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "exactContractRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "package_digest"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "inputBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "freeze_strategy": {
+          "enum": [
+            "copy_and_hash",
+            "manifest_and_hash",
+            "lock_snapshot_revalidate",
+            "value_snapshot"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "mutable_upstream_after_freeze": {
+          "enum": [
+            "forbidden",
+            "allowed_with_revalidation",
+            "not_applicable"
+          ]
+        },
+        "provenance_required": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "schema_ref": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "format": "uri-reference",
+              "minLength": 1,
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "required",
+        "schema_ref",
+        "schema_digest",
+        "freeze_strategy",
+        "provenance_required",
+        "mutable_upstream_after_freeze"
+      ],
+      "type": "object"
+    },
+    "pathPolicyBinding": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/registeredBinding"
+        },
+        {
+          "properties": {
+            "capability": {
+              "const": "path_policy"
+            }
+          }
+        }
+      ]
+    },
+    "registeredBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "capability": {
+          "enum": [
+            "validator",
+            "mutation_mechanism",
+            "path_policy",
+            "contract_hook"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "package_digest",
+        "capability"
+      ],
+      "type": "object"
+    },
+    "relativeLocator": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "not": {
+        "pattern": "(?:^|/)(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\\.[A-Za-z0-9_{}.-]+)?(?:/|$)"
+      },
+      "pattern": "^[A-Za-z0-9_{}](?:[A-Za-z0-9_{}.-]*[A-Za-z0-9_{}])?(?:/[A-Za-z0-9_{}](?:[A-Za-z0-9_{}.-]*[A-Za-z0-9_{}])?)*$",
+      "type": "string"
+    },
+    "semver": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+      "type": "string"
+    },
+    "validatorBinding": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/registeredBinding"
+        },
+        {
+          "properties": {
+            "capability": {
+              "const": "validator"
+            }
+          }
+        }
+      ]
+    },
+    "validatorDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/validatorBinding"
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "config": {
+          "$ref": "#/$defs/declarativeConfig"
+        },
+        "phase": {
+          "enum": [
+            "contract",
+            "candidate",
+            "input",
+            "policy",
+            "pre_operation",
+            "post_operation",
+            "evidence"
+          ]
+        }
+      },
+      "required": [
+        "phase",
+        "binding",
+        "blocking",
+        "config"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://phase-tool.local/schemas/phase-contract-1.1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalization": {
+          "enum": [
+            "canonical_json_v1",
+            "admission_canonical_json_v1",
+            "raw_bytes",
+            "strict_utf8_v1"
+          ]
+        },
+        "input_mode": {
+          "enum": [
+            "structured_json",
+            "utf8_bytes",
+            "binary_bundle"
+          ]
+        },
+        "privacy_policy_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "schema_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "schema_ref": {
+          "format": "uri-reference",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_ref",
+        "schema_digest",
+        "input_mode",
+        "canonicalization",
+        "privacy_policy_id"
+      ],
+      "type": "object"
+    },
+    "canonical_result": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_rule": {
+          "$ref": "#/$defs/identifier"
+        },
+        "locator_template": {
+          "$ref": "#/$defs/relativeLocator"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "result_reference_schema_ref": {
+          "const": "https://phase-tool.local/schemas/phase-result-reference.schema.json"
+        },
+        "result_schema_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "result_schema_ref": {
+          "format": "uri-reference",
+          "minLength": 1,
+          "type": "string"
+        },
+        "root_binding": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "required": [
+        "owner_id",
+        "root_binding",
+        "locator_template",
+        "result_schema_ref",
+        "result_schema_digest",
+        "authority_rule",
+        "result_reference_schema_ref"
+      ],
+      "type": "object"
+    },
+    "contract_hook": {
+      "$ref": "#/$defs/contractHookBinding"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "receipt_schema_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "receipt_schema_ref": {
+          "const": "https://phase-tool.local/schemas/phase-receipt.schema.json"
+        },
+        "redaction_policy_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "required_attachment_kinds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "retention_policy_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "required": [
+        "receipt_schema_ref",
+        "receipt_schema_digest",
+        "required_attachment_kinds",
+        "retention_policy_id",
+        "redaction_policy_id"
+      ],
+      "type": "object"
+    },
+    "idempotency": {
+      "additionalProperties": false,
+      "properties": {
+        "incomplete_previous_execution": {
+          "const": "inspect_before_retry"
+        },
+        "key_required": {
+          "type": "boolean"
+        },
+        "request_digest_policy_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "same_key_different_digest": {
+          "const": "conflict"
+        },
+        "same_key_same_digest": {
+          "const": "return_existing_verified"
+        },
+        "scope_fields": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "success_lookup": {
+          "enum": [
+            "canonical_result",
+            "phase_receipt",
+            "canonical_result_then_receipt"
+          ]
+        }
+      },
+      "required": [
+        "key_required",
+        "scope_fields",
+        "request_digest_policy_id",
+        "success_lookup",
+        "same_key_same_digest",
+        "same_key_different_digest",
+        "incomplete_previous_execution"
+      ],
+      "type": "object"
+    },
+    "identity": {
+      "$ref": "#/$defs/contractIdentity"
+    },
+    "input_bindings": {
+      "items": {
+        "$ref": "#/$defs/inputBinding"
+      },
+      "type": "array"
+    },
+    "operation": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_effects": {
+          "items": {
+            "enum": [
+              "exclusive_create",
+              "append_record",
+              "copy_blob",
+              "publish_new_version"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "atomicity_claim": {
+          "enum": [
+            "none",
+            "single_effect",
+            "per_effect"
+          ]
+        },
+        "effect_mechanisms": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "availability": {
+                "enum": [
+                  "bundled_v1",
+                  "deferred"
+                ]
+              },
+              "capability": {
+                "const": "mutation_mechanism"
+              },
+              "id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "package_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "version": {
+                "$ref": "#/$defs/semver"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "package_digest",
+              "capability",
+              "availability"
+            ],
+            "type": "object"
+          },
+          "maxItems": 1024,
+          "minItems": 1,
+          "type": "array"
+        },
+        "effect_order": {
+          "const": "static_predeclared"
+        },
+        "intent": {
+          "enum": [
+            "create",
+            "append",
+            "copy",
+            "correction",
+            "publish_new_version"
+          ]
+        },
+        "maximum_effects": {
+          "maximum": 1024,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "mechanism": {
+          "additionalProperties": false,
+          "properties": {
+            "availability": {
+              "enum": [
+                "bundled_v1",
+                "deferred"
+              ]
+            },
+            "capability": {
+              "const": "mutation_mechanism"
+            },
+            "id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "package_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "version": {
+              "$ref": "#/$defs/semver"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "package_digest",
+            "capability",
+            "availability"
+          ],
+          "type": "object"
+        },
+        "required_guarantees": {
+          "additionalProperties": false,
+          "properties": {
+            "mechanisms": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "all_of": {
+                    "items": {
+                      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "mechanism": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "$ref": "#/$defs/identifier"
+                      },
+                      "package_digest": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "version": {
+                        "$ref": "#/$defs/semver"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "version",
+                      "package_digest"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "mechanism",
+                  "all_of"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "vocabulary": {
+              "additionalProperties": false,
+              "properties": {
+                "descriptor_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "id": {
+                  "const": "phase.mutation-guarantees"
+                },
+                "version": {
+                  "$ref": "#/$defs/semver"
+                }
+              },
+              "required": [
+                "id",
+                "version",
+                "descriptor_digest"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "vocabulary",
+            "mechanisms"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "intent",
+        "mechanism",
+        "allowed_effects",
+        "effect_order",
+        "atomicity_claim",
+        "maximum_effects"
+      ],
+      "type": "object"
+    },
+    "outcomes": {
+      "additionalProperties": false,
+      "properties": {
+        "committed_unverified": {
+          "const": "committed_unverified"
+        },
+        "known_no_effect": {
+          "const": "failed_no_effect"
+        },
+        "known_partial": {
+          "const": "failed_partial"
+        },
+        "pre_mutation_rejection": {
+          "const": "rejected"
+        },
+        "success": {
+          "const": "succeeded_verified"
+        },
+        "unknown_result": {
+          "const": "indeterminate"
+        }
+      },
+      "required": [
+        "success",
+        "pre_mutation_rejection",
+        "known_no_effect",
+        "known_partial",
+        "committed_unverified",
+        "unknown_result"
+      ],
+      "type": "object"
+    },
+    "phase_contract_version": {
+      "const": "1.1"
+    },
+    "recovery": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic": {
+          "const": false
+        },
+        "policy": {
+          "enum": [
+            "none",
+            "append_correction",
+            "resume_prepared_bundle"
+          ]
+        },
+        "requires_exact_before_state": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "policy",
+        "automatic",
+        "requires_exact_before_state"
+      ],
+      "type": "object"
+    },
+    "validators": {
+      "items": {
+        "$ref": "#/$defs/validatorDeclaration"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "verification": {
+      "additionalProperties": false,
+      "properties": {
+        "observation_scope": {
+          "enum": [
+            "result_only",
+            "current_external",
+            "managed_snapshot",
+            "historical_observation"
+          ]
+        },
+        "required_predicates": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "validators": {
+          "items": {
+            "$ref": "#/$defs/validatorBinding"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "validators",
+        "required_predicates",
+        "observation_scope"
+      ],
+      "type": "object"
+    },
+    "write_scope": {
+      "additionalProperties": false,
+      "properties": {
+        "default_path_policy": {
+          "$ref": "#/$defs/pathPolicyBinding"
+        },
+        "forbidden_root_bindings": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "roots": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "access": {
+                "const": "write"
+              },
+              "binding_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "path_policy": {
+                "$ref": "#/$defs/pathPolicyBinding"
+              },
+              "reparse_policy": {
+                "enum": [
+                  "reject",
+                  "bounded_no_follow"
+                ]
+              },
+              "symlink_policy": {
+                "enum": [
+                  "reject",
+                  "bounded_no_follow"
+                ]
+              }
+            },
+            "required": [
+              "binding_id",
+              "access",
+              "path_policy",
+              "symlink_policy",
+              "reparse_policy"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "roots",
+        "forbidden_root_bindings",
+        "default_path_policy"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "phase_contract_version",
+    "identity",
+    "candidate",
+    "input_bindings",
+    "validators",
+    "write_scope",
+    "operation",
+    "canonical_result",
+    "verification",
+    "evidence",
+    "outcomes",
+    "idempotency",
+    "recovery"
+  ],
+  "title": "Phase Operation Contract v1",
+  "type": "object"
+}

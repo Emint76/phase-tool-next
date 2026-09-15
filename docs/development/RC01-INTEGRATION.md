@@ -70,6 +70,29 @@ unproven effects, changed roots/inputs/evidence, or conflicting keys produce an
 explicit refusal/indeterminate result. Nothing is auto-deleted. Never treat a
 private stage or an exited worker as a complete publication.
 
+## Explicit prepared-stage continuation (rc2)
+
+Opt in when creating a bundle: `phase publish-bundle --publication-version 2.0`
+with the same explicit members and roots. The new exact `bundle_create.v2@1.0.0`
+contract saves preparation proof before its publication syscall. After a crash:
+
+```sh
+phase recover-publication --mode commit_prepared \
+  --evidence-root /data/evidence --run-id dataset-01 \
+  --target-root /data/published --request-id dataset-01 \
+  --expected-intent-digest sha256:<original-exact-intent-digest>
+```
+
+This mode may mutate target, only by committing the fully verified original stage.
+It does not regenerate members or reread current source; it rejects damaged stages,
+missing preparation proof, conflicting target and old `recovery.policy=none` packages.
+The original receipt stays unchanged. `recovery/commit-intent.json` is durable before
+the commit; `commit-receipt.json` and digest-addressed observations record continuation.
+`recovery_mutation_attempted` distinguishes this invocation from an idempotent repeat;
+`verified_existing` describes the verified target at observation time. Default mode
+`observe`, inspect and status do not gain target mutations. MCP uses `mode="commit_prepared"`
+and `publication_version="2.0"` with the same semantics.
+
 ## MCP and Python mapping
 
 Use a separate test process `phase mcp serve --stdio` with the installed MCP

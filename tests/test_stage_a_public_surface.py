@@ -117,7 +117,7 @@ def test_installed_cli_discovery_and_argparse_failures_are_deterministic() -> No
     cases = [
         ((), 2, "usage:"),
         (("--help",), 0, "{doctor,contracts,mcp,validate,plan,execute,inspect,publish-file,publish-bundle,publication-limits,publication-status,recover-publication}"),
-        (("--version",), 0, "phase 1.1.0-rc.1"),
+        (("--version",), 0, "phase 1.1.0-rc.2"),
         (("unknown-command",), 2, "invalid choice"),
         (("doctor", "--unknown"), 2, "unrecognized arguments"),
         (("contracts",), 2, "required"),

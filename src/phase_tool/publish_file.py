@@ -166,6 +166,7 @@ def publish_file(
                 contract_digest=binding["package_digest"], candidate_path=candidate_path,
                 evidence_root=evidence_root, run_id=run_id,
                 input_paths={"payload": frozen.blob_path},
+                expected_inputs={"payload": (frozen.digest, frozen.length)},
                 root_bindings={TARGET_ROOT_BINDING: target_root},
             )
             # Preserve the returned execution evidence before fallible cleanup.

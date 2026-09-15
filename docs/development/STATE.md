@@ -1,5 +1,29 @@
 # Development state
 
+## PHASE-NEXT-RC01-CORRECTION-01 — rc2 pending exact-head gates
+
+- Correction base: `65471fa491d922d5dbdcffca582b801079b068d0`; full PR base:
+  `080968f4cd557b9f891a2c2a34268fa8ef11ae98`. Existing private PR #2 and branch.
+- Candidate `1.1.0rc2` / Core `1.1.0-rc.2`; rc1 artifacts/evidence are historical
+  and preserved, never replaced. Exact final hashes and verdict are external.
+- B1: caller capture identity checked against Core freeze before intent; streaming
+  mechanism consumes an anonymous disk-backed verified snapshot before target open.
+- B2: streaming target opens nonblocking/descriptor-relative; opened regular type,
+  identity and namespace checked. No historical provider digest redefinition.
+- B3: complete saved validator structures, exact declarations, run/input bindings
+  and fixed emitted claims verified; opt-in bundle v2 intent also binds attachment digest.
+- B5: `publish-bundle --publication-version 2.0` and explicit recovery
+  `--mode commit_prepared`. Prepared stage proofs, separate durable continuation
+  intent/receipt, broker root-lock, mechanism-only remaining commit, no member recreation.
+  Old default observation and `recovery.policy=none` never gain target-write authority.
+- Targeted reproductions and command logs: `ROOT/evidence/RC01-CORRECTION-01/`.
+  Final evidence: `<final-head>/`; packages: `ROOT/artifacts/RC01/1.1.0rc2-<final-head>/`.
+  Final full matrix/build/install/resource/historical gates must pass before READY_FOR_REVIEW.
+- Legacy NOT_VERIFIED; goal/budget telemetry NOT_VERIFIED. No review subagent,
+  merge/release/deployment, history rewrite, profile/skill/working installation change.
+
+## Historical rc1 state (superseded recovery scope below)
+
 ## PHASE-NEXT-RC01 — F06 candidate sealed for final gates
 
 - Private `Emint76/phase-tool-next`, branch `feat/unified-file-publication`, PR #2.

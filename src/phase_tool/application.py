@@ -113,6 +113,7 @@ class PhaseApplication:
         timestamp: str | None = None,
         maximum_candidate_bytes: int = 1_048_576,
         contract_digest: str | None = None,
+        expected_inputs: Mapping[str, tuple[str, int]] | None = None,
     ) -> ApplicationResponse:
         try:
             if (candidate_path is None) == (candidate is None):
@@ -139,6 +140,7 @@ class PhaseApplication:
                         timestamp=timestamp,
                         maximum_candidate_bytes=maximum_candidate_bytes,
                         contract_digest=contract_digest,
+                        expected_inputs=expected_inputs,
                     )
             assert candidate_path is not None
             binding = self._binding(contract_binding)
@@ -155,6 +157,7 @@ class PhaseApplication:
                 root_bindings={name: Path(value) for name, value in root_bindings.items()},
                 timestamp=timestamp,
                 maximum_candidate_bytes=maximum_candidate_bytes,
+                expected_inputs=expected_inputs,
             )
             outcome = PhaseCore(self.registry, self.installation).run(
                 request,
@@ -207,13 +210,13 @@ class PhaseApplication:
     def publish_bundle(
         self, *, source_root: Path, members: list[str], target_root: Path,
         target_locator: str, preparation_root: Path, evidence_root: Path,
-        request_id: str, run_id: str,
+        request_id: str, run_id: str, publication_version: str = '1.0',
     ) -> ApplicationResponse:
         from .publish_bundle import publish_bundle
         return publish_bundle(self, source_root=source_root, members=members,
             target_root=target_root, target_locator=target_locator,
             preparation_root=preparation_root, evidence_root=evidence_root,
-            request_id=request_id, run_id=run_id)
+            request_id=request_id, run_id=run_id, publication_version=publication_version)
 
     def inspect(
         self,

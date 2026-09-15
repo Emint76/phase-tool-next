@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
@@ -147,12 +147,14 @@ def phase_publish_file(
 def phase_publish_bundle(
     source_root: str, members: list[str], target_root: str, target_locator: str,
     preparation_root: str, evidence_root: str, request_id: str, run_id: str,
+    publication_version: Literal["1.0", "2.0"] = "1.0",
 ) -> PublishBundleResult:
     """Publish an explicit local file bundle at one atomic directory commit point."""
     response = _application().publish_bundle(
         source_root=Path(source_root), members=members, target_root=Path(target_root),
         target_locator=target_locator, preparation_root=Path(preparation_root),
         evidence_root=Path(evidence_root), request_id=request_id, run_id=run_id,
+        publication_version=publication_version,
     )
     return PublishBundleResult.model_validate(response.payload)
 
@@ -172,10 +174,11 @@ def phase_publication_status(evidence_root: str, run_id: str, wait_seconds: Stri
 
 @_SERVER.tool(name="phase_recover_publication")
 def phase_recover_publication(evidence_root: str, run_id: str, target_root: str,
-                              request_id: str, expected_intent_digest: str) -> RecoveryResult:
-    """Reconcile proven completion; never replay target effects or recapture source."""
+                              request_id: str, expected_intent_digest: str,
+                              mode: Literal["observe", "commit_prepared"] = "observe") -> RecoveryResult:
+    """Observe completion by default; explicit commit_prepared resumes bundle v2 only."""
     response = _application().recover_publication(evidence_root=Path(evidence_root),run_id=run_id,
-        target_root=Path(target_root),request_id=request_id,expected_intent_digest=expected_intent_digest)
+        target_root=Path(target_root),request_id=request_id,expected_intent_digest=expected_intent_digest,mode=mode)
     return RecoveryResult.model_validate(response.payload)
 
 

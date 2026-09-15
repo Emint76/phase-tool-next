@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from tempfile import TemporaryFile
 
 from ..errors import PhaseError
-from ..streaming import FILE_LIMIT, hash_file, observe_target, transfer
+from ..streaming import FILE_LIMIT, hash_file, observe_target, open_regular_target, transfer
 from .exclusive_create import _receipt, _unknown
 
 
@@ -14,6 +15,24 @@ def execute_stream_create(effect, target_root: Path, blob: Path, *, run_id: str,
     expected = (effect["content_digest"], effect["content_length"])
     if hash_file(blob, FILE_LIMIT) != expected:
         raise PhaseError("mechanism.content_binding_mismatch")
+    # An anonymous private file, not the re-openable evidence pathname, is the
+    # mechanism input. Verify the bytes copied into it BEFORE creating target.
+    # It is disk-backed and consumed by the same descriptor (bounded RSS).
+    with TemporaryFile(dir=blob.parent) as snapshot:
+        source = os.open(blob,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            captured = transfer(source,FILE_LIMIT,snapshot.fileno())
+        finally:
+            os.close(source)
+        if captured != expected:
+            raise PhaseError("mechanism.content_binding_mismatch")
+        os.lseek(snapshot.fileno(),0,os.SEEK_SET)
+        return _execute_snapshot(effect,target_root,snapshot.fileno(),run_id=run_id,
+                                 timestamp=timestamp,authority_provider=authority_provider)
+
+
+def _execute_snapshot(effect,target_root,source,*,run_id,timestamp,authority_provider):
+    expected = (effect["content_digest"], effect["content_length"])
     authority = authority_provider.open_authority(target_root, effect["target"]["relative_locator"])
     before = _unknown()
     attempted = True  # Returned effect receipts describe a mechanism invocation.
@@ -27,12 +46,8 @@ def execute_stream_create(effect, target_root: Path, blob: Path, *, run_id: str,
         authority.assert_namespace_binding()
         attempted = True
         descriptor = authority.open_exclusive()
-        source = os.open(blob, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            actual = transfer(source, FILE_LIMIT, descriptor)
-            written = actual[1]
-        finally:
-            os.close(source)
+        actual = transfer(source, FILE_LIMIT, descriptor)
+        written = actual[1]
         if actual != expected:
             raise PhaseError("mechanism.content_binding_mismatch")
         os.fsync(descriptor)
@@ -41,7 +56,7 @@ def execute_stream_create(effect, target_root: Path, blob: Path, *, run_id: str,
         if after["digest"] != expected[0] or after["length"] != expected[1]:
             raise PhaseError("verification.result_mismatch")
         # Verify the named target is the actual object this mechanism created.
-        current = authority.open_existing()
+        current = open_regular_target(authority)
         try:
             a, b = os.fstat(descriptor), os.fstat(current)
             if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):

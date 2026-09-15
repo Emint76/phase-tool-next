@@ -1,0 +1,385 @@
+{
+  "$defs": {
+    "digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "exactBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "package_digest"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "rootIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "device": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inode": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resolved_path": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding_id",
+        "resolved_path",
+        "device",
+        "inode"
+      ],
+      "type": "object"
+    },
+    "runId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "semver": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+      "type": "string"
+    }
+  },
+  "$id": "https://phase-tool.local/schemas/phase-intent-1.1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "input_mode": {
+          "enum": [
+            "structured_json",
+            "utf8_bytes",
+            "binary_bundle"
+          ]
+        },
+        "length": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "storage": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "mode": {
+                    "const": "attachment"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "attachment_digest": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "mode": {
+                    "const": "inline"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "attachment_digest": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "attachment_digest": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "mode": {
+              "enum": [
+                "inline",
+                "attachment"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "mode",
+            "value",
+            "attachment_digest"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "input_mode",
+        "digest",
+        "length",
+        "storage"
+      ],
+      "type": "object"
+    },
+    "contract": {
+      "$ref": "#/$defs/exactBinding"
+    },
+    "core": {
+      "$ref": "#/$defs/exactBinding"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "effect_plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "content_blob_digests": {
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "effect_plan_attachment_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "pre_validator_results_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "required": [
+        "effect_plan_attachment_digest",
+        "content_blob_digests",
+        "pre_validator_results_digest"
+      ],
+      "type": "object"
+    },
+    "execution_requested": {
+      "type": "boolean"
+    },
+    "idempotency": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          ]
+        },
+        "request_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "root_identities": {
+          "items": {
+            "$ref": "#/$defs/rootIdentity"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "root_identity_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "scope_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "required": [
+        "key",
+        "scope_digest",
+        "request_digest",
+        "root_identity_digest"
+      ],
+      "type": "object"
+    },
+    "implementation_binding": {
+      "$ref": "https://phase-tool.local/schemas/mutation-implementation-binding.schema.json"
+    },
+    "inputs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "blob_digest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "freeze_strategy": {
+            "enum": [
+              "copy_and_hash",
+              "manifest_and_hash",
+              "lock_snapshot_revalidate",
+              "value_snapshot"
+            ]
+          },
+          "frozen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "provenance_ref": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            ]
+          },
+          "revalidation_token": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "binding_id",
+          "freeze_strategy",
+          "digest",
+          "manifest_digest",
+          "blob_digest",
+          "provenance_ref",
+          "frozen_at",
+          "revalidation_token"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "operation": {
+      "additionalProperties": false,
+      "properties": {
+        "intent": {
+          "enum": [
+            "create",
+            "append",
+            "copy",
+            "correction",
+            "publish_new_version"
+          ]
+        },
+        "mechanism": {
+          "$ref": "#/$defs/exactBinding"
+        }
+      },
+      "required": [
+        "intent",
+        "mechanism"
+      ],
+      "type": "object"
+    },
+    "phase_intent_version": {
+      "const": "1.1"
+    },
+    "registry_snapshot_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "run_id": {
+      "$ref": "#/$defs/runId"
+    },
+    "status": {
+      "const": "intent_recorded"
+    },
+    "write_scope_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "required": [
+    "phase_intent_version",
+    "run_id",
+    "created_at",
+    "core",
+    "registry_snapshot_digest",
+    "contract",
+    "candidate",
+    "inputs",
+    "write_scope_digest",
+    "operation",
+    "idempotency",
+    "effect_plan_digest",
+    "execution_requested",
+    "evidence",
+    "status"
+  ],
+  "title": "Phase Intent v1",
+  "type": "object"
+}

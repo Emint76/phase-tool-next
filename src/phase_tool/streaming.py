@@ -155,14 +155,30 @@ def copy_and_hash_stream(binding_id: str, input_root: Path, relative_locator: st
             temporary.unlink(missing_ok=True)
 
 
+def open_regular_target(authority) -> int:
+    """Descriptor-relative nonblocking open for the qualified POSIX route."""
+    authority.assert_namespace_binding()
+    descriptor = os.open(authority.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                         dir_fd=authority.parent_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise PhaseError("path.not_regular_file")
+        authority._assert_target_descriptor_binding(descriptor)
+        authority.assert_namespace_binding()
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def observe_target(authority, maximum_bytes: int) -> dict[str, object]:
     try:
-        descriptor = authority.open_existing()
+        descriptor = open_regular_target(authority)
     except FileNotFoundError:
         return {"known": True, "exists": False, "digest": None, "length": None, "head_token": None}
     try:
         digest, length = transfer(descriptor, maximum_bytes)
-        current = authority.open_existing()
+        current = open_regular_target(authority)
         try:
             if fingerprint(os.fstat(descriptor)) != fingerprint(os.fstat(current)):
                 raise PhaseError("path.target_identity_changed")

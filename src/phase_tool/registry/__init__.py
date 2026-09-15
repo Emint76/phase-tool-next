@@ -302,6 +302,12 @@ class RegistrySnapshot:
             raise PhaseError("contract.core_incompatible", core_version)
 
         contract_schema = self.schema_document("https://phase-tool.local/schemas/phase-contract.schema.json")
+        if contract.get("phase_contract_version") == "1.1":
+            resource = "schemas/phase-contract-1.1.schema.json"
+            matches = [a["digest"] for a in entry["package_artifacts"] if a["resource"] == resource]
+            if len(matches) != 1:
+                raise PhaseError("contract.schema_unbound")
+            contract_schema = self.schema_document("https://phase-tool.local/" + resource, matches[0])
         Draft202012Validator.check_schema(contract_schema)
         errors = sorted(Draft202012Validator(contract_schema, format_checker=FormatChecker()).iter_errors(contract), key=lambda item: list(item.path))
         if errors:

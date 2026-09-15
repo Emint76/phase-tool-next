@@ -43,7 +43,7 @@ class PublishBundleResult(BaseModel):
 
 def publish_bundle(application, *, source_root: Path, members: list[str], target_root: Path,
                    target_locator: str, preparation_root: Path, evidence_root: Path,
-                   request_id: str, run_id: str):
+                   request_id: str, run_id: str, publication_version: str = '1.0'):
     from .application import ApplicationResponse
 
     result = PublishBundleResult(request_id=request_id, run_id=run_id,
@@ -51,6 +51,10 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
     handed_off = False
     lock = None
     try:
+        if publication_version not in {'1.0','2.0'}:
+            raise PhaseError('bundle.unsupported_version')
+        selected_binding = 'bundle_create.v2@1.0.0' if publication_version == '2.0' else CONTRACT_BINDING
+        result.contract_binding = selected_binding
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:
             raise PhaseError("bundle.invalid_request_id")
@@ -80,7 +84,7 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
             raise PhaseError("evidence.run_exists")
         if destination.exists():
             raise PhaseError("bundle.target_exists_inspection_required")
-        binding = application._binding(CONTRACT_BINDING)
+        binding = application._binding(selected_binding)
         result.contract_digest = binding["package_digest"]
         candidate = {"operation_id":request_id,"idempotency_key":request_id,
                      "input_binding":"payload","target_locator":target_locator,"members":members}
@@ -91,7 +95,7 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
                 output.write(encode_structured_input(candidate))
                 candidate_path = Path(output.name)
             handed_off = True
-            executed = application.run("execute",contract_binding=CONTRACT_BINDING,
+            executed = application.run("execute",contract_binding=selected_binding,
                 contract_digest=binding["package_digest"],candidate_path=candidate_path,
                 evidence_root=evidence_root,run_id=run_id,input_paths={"payload":source_root},
                 root_bindings={"phase_result_root":target_root}).payload

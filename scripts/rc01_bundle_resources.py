@@ -39,7 +39,7 @@ def main():
         app=PhaseApplication()
         result=app.publish_bundle(source_root=root/"source",members=list(expected),
             target_root=root/"target",target_locator="dataset",preparation_root=root/"prep",
-            evidence_root=root/"evidence",request_id="bundle-resource",run_id="bundle-resource").payload
+            evidence_root=root/"evidence",request_id="bundle-resource",run_id="bundle-resource",publication_version="2.0").payload
         assert result["success"],result
         inspected=app.inspect(evidence_root=root/"evidence",run_id="bundle-resource",
             root_bindings={"phase_result_root":root/"target"}).payload

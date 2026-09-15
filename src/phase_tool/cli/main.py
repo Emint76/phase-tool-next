@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("target-locator", "request-id", "run-id"):
         bundle.add_argument("--" + name, required=True)
     bundle.add_argument("--member", dest="members", action="append", required=True)
+    bundle.add_argument("--publication-version", choices=("1.0", "2.0"), default="1.0")
     subparsers.add_parser("publication-limits")
     for name in ("publication-status", "recover-publication"):
         query = subparsers.add_parser(name, allow_abbrev=False)
@@ -95,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
             query.add_argument("--target-root", type=Path, required=True)
             query.add_argument("--request-id", required=True)
             query.add_argument("--expected-intent-digest", required=True)
+            query.add_argument("--mode", choices=("observe", "commit_prepared"), default="observe")
     return parser
 
 

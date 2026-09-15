@@ -79,7 +79,7 @@ def freeze_declared_inputs(
                 raise PhaseError("input.required_missing", binding_id)
             continue
         path = Path(supplied)
-        if contract_document["operation"]["mechanism"]["id"] == "mechanism.bundle_create_v1":
+        if contract_document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
             from ..bundle import freeze_bundle
             from ..installation import qualify_host_authority_roots
             qualify_host_authority_roots(root_bindings)

@@ -1,0 +1,21 @@
+{
+  "authority_usage": "mechanism_managed",
+  "capability": "mutation_mechanism",
+  "continuation_intent_version": "1.0",
+  "descriptor_version": "1.0",
+  "execution_allowed": true,
+  "id": "mechanism.bundle_create_v2",
+  "implementation": "effect_broker_builtin",
+  "limits": {
+    "file_bytes": 2147483648,
+    "members": 1024,
+    "path_depth": 32,
+    "request_bytes": 1048576,
+    "total_bytes": 4294967296
+  },
+  "preparation_record_version": "1.0",
+  "publication_point": "linux_renameat2_noreplace",
+  "recovery": "explicit_prepared_commit",
+  "representation": "phase_bundle_v1",
+  "version": "1.0.0"
+}

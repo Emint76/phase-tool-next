@@ -85,5 +85,7 @@ jobs:
         with:
           name: phase-next-${{ github.event.pull_request.head.sha || github.sha }}-py${{ matrix.python }}
           path: ${{ runner.temp }}/phase-next-evidence/
+          # This isolated test-evidence root contains the required .phase bundles.
+          include-hidden-files: true
           retention-days: 14
           if-no-files-found: error

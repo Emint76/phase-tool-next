@@ -486,6 +486,7 @@ class EffectBroker:
                 raise PhaseError("broker.mechanism_execution_unavailable", str(mechanism["id"]))
             supported = {
                 ("mechanism.exclusive_create_v1", "1.0.0"),
+                ("mechanism.exclusive_create_v2", "1.0.0"),
                 ("mechanism.expected_head_append_v1", "1.0.0"),
                 ("content_addressed_copy", "1.0.0"),
                 ("mechanism.archive_then_publish_v1", "1.0.0"),
@@ -573,6 +574,15 @@ class EffectBroker:
             copy_faults = active.content_addressed_copy
             archive_faults = active.archive_then_publish
             object_store_faults = active.object_store_publish
+            if effect.get("mechanism", contract.document["operation"]["mechanism"])["id"] == "mechanism.exclusive_create_v2":
+                from .stream_create import execute_stream_create
+                source = effect["content_source"]
+                records = [item for item in intent["inputs"] if item["binding_id"] == source["binding_id"]]
+                if len(records) != 1 or records[0]["blob_digest"] != effect["content_digest"] or records[0]["digest"] != effect["content_digest"]:
+                    raise PhaseError("broker.content_blob_mismatch")
+                blob = intent_path.parent / "blobs" / effect["content_digest"].removeprefix("sha256:")
+                return execute_stream_create(effect, target_root, blob, run_id=str(intent["run_id"]),
+                                             timestamp=timestamp, authority_provider=bound_authority_provider)
             if effect.get("content_blob_digest") is not None:
                 content = self._attached_blob_content(effect, intent_path, intent)
             elif effect["kind"] == "copy_blob":

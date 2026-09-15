@@ -1,5 +1,38 @@
 # Development state
 
+## PHASE-NEXT-RC01 — in progress (not release-ready)
+
+- Start/last committed HEAD: `3f8c6898c61c5d7698e3e2b83f18c1486a24ecd2`;
+  branch `feat/unified-file-publication`, private PR #2. No additional published
+  history or foreign changes were present at preflight. Scope: [RC01.md](RC01.md).
+- Stage: F02 local gates PASS; checkpoint publication, then F03. Explicit
+  `publication_version="2.0"` shares the CLI/MCP/application publish-file path;
+  default F01 v1 and its exact contract stay supported.
+- New exact binding: `file_create.v2@1.0.0`, package
+  `sha256:4f9e56531e004281342612b02a868f856a36a6524b51669f24835aa840d9e6fa`.
+- Actual local execution reconciled **631 distinct passing cases**, including
+  **44 F01 / 19 F02**. This is not one uninterrupted 631-case invocation: full
+  run was 627 PASS / 2 packaging FAIL under network denial; the two exact package
+  gates then passed with dependency access; added F02 cases passed separately.
+  All checks used byte-identical runtime source. No safety test was removed.
+- Final real-data gate: 64 MiB / 1 GiB / 2 GiB PASS, each with independent inspect.
+  Isolated Linux peak RSS: 39,989,248 / 40,280,064 / 40,128,512 bytes;
+  64 MiB→1 GiB growth **290,816 bytes <=134,217,728**. Times: 5.38 / 68.95 /
+  136.89 s. Old resource output is superseded, not transferred.
+- Durable report: `ROOT/evidence/RC01/F02-local-report.json`; individual logs,
+  JUnit and source SHA-256 manifests are retained in its named checkpoints.
+  `f02-staged/candidate.json` records the exact literal staging/tree identity.
+- Limits: 1 MiB canonical request, 2 GiB/file and total, one file/operation,
+  one worker/operation and one active high-level operation per target root.
+  FIFO, changing/growing source, short writes, post-effect close failure,
+  injected ENOSPC, corruption and old/new boundaries are covered.
+- Next: commit/push F02 checkpoint; continue F03 bundles, F04 recovery, F05
+  operational interface and F06 exact final prerelease/CI. No whole-RC readiness,
+  independent maintainer approval, merge, release or production change claimed.
+- Initial GOAL_STATUS / BUDGET = NOT_VERIFIED. No state.db access, goal reset,
+  resume, new goal or budget modification. No Kanban task was bound to this
+  direct session; no board work was fabricated.
+
 ## PHASE-NEXT-F01
 
 Bootstrap is accepted and merged. F01 starts at private main commit

@@ -2451,6 +2451,51 @@
       "package_digest": "sha256:2c41a18f0daf88a0b70d9cbf137fd02f7614a6158edf0e07df1b2c4f2e81e05d",
       "trust_root_id": "phase.release.v1",
       "version": "1.0.0"
+    },
+    {
+      "artifact": "contracts/file_create.v2.json",
+      "artifact_digest": "sha256:4164fbc5b6120cd864fb2463ede48d415f3de544bb31d44e4f33fcebb427f2d5",
+      "capability": "operation_contract",
+      "current": true,
+      "id": "file_create.v2",
+      "kind": "contract",
+      "mutable": false,
+      "package_artifacts": [
+        {
+          "digest": "sha256:4164fbc5b6120cd864fb2463ede48d415f3de544bb31d44e4f33fcebb427f2d5",
+          "resource": "contracts/file_create.v2.json"
+        },
+        {
+          "digest": "sha256:f94b322391f430e72a741ff49ba670447ae08e59f0063c2e59bb18ef753f5c16",
+          "resource": "schemas/file-create-candidate.schema.json"
+        },
+        {
+          "digest": "sha256:6c290d7d81ba589b4bac4e59ff0fce81caa2ef1dc04a29832b925da929e1393b",
+          "resource": "schemas/file-create-result.schema.json"
+        },
+        {
+          "digest": "sha256:e4e1126d71be6e05049ac57a9acb38ed92540a7b14ac90fb2bf45225e060de0d",
+          "resource": "schemas/phase-receipt.schema.json"
+        },
+        {
+          "digest": "sha256:77db60855aa3e0bd50a57fd9c15af17b40251d6151e6bde96d65208f175cedbe",
+          "resource": "schemas/mutation-implementation-binding.schema.json"
+        }
+      ],
+      "package_digest": "sha256:4f9e56531e004281342612b02a868f856a36a6524b51669f24835aa840d9e6fa",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "descriptors/mechanism/mechanism.exclusive_create_v2.json",
+      "artifact_digest": "sha256:5e6e635e2d6cca27eee273605e862c858e41d5a1c2e5ad75b4b11e458fba42a1",
+      "capability": "mutation_mechanism",
+      "id": "mechanism.exclusive_create_v2",
+      "kind": "mechanism",
+      "mutable": false,
+      "package_digest": "sha256:5e6e635e2d6cca27eee273605e862c858e41d5a1c2e5ad75b4b11e458fba42a1",
+      "trust_root_id": "phase.release.v1",
+      "version": "1.0.0"
     }
   ],
   "registry_snapshot_version": "1.0",

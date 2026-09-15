@@ -127,13 +127,15 @@ def phase_publish_file(
     request_id: str,
     run_id: str,
     expected_digest: str | None = None,
+    publication_version: str = "1.0",
 ) -> PublishFileResult:
-    """Publish one small ready file create-only, then independently inspect it."""
+    """Create-only and inspect: v1 <=1 MiB; explicit v2 streams <=2 GiB."""
     response = _application().publish_file(
         source_root=Path(source_root), source_locator=source_locator,
         target_root=Path(target_root), target_locator=target_locator,
         preparation_root=Path(preparation_root), evidence_root=Path(evidence_root),
         request_id=request_id, run_id=run_id, expected_digest=expected_digest,
+        publication_version=publication_version,
     )
     return PublishFileResult.model_validate(response.payload)
 

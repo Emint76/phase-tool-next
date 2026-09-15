@@ -74,6 +74,7 @@ def publish_file(
     request_id: str,
     run_id: str,
     expected_digest: str | None = None,
+    publication_version: str = "1.0",
 ) -> ApplicationResponse:
     from .application import ApplicationResponse
 
@@ -82,7 +83,25 @@ def publish_file(
         evidence_root=str(evidence_root), target_locator=target_locator,
     )
     handed_off = False
+    publication_lock = None
     try:
+        if publication_version not in {"1.0", "2.0"}:
+            raise PhaseError("publish_file.unsupported_version")
+        from .streaming import CONTRACT_BINDING as STREAM_BINDING, FILE_LIMIT, REQUEST_LIMIT, copy_and_hash_stream
+        if publication_version == "2.0":
+            request_bytes = encode_structured_input({
+                "source_root": str(source_root), "source_locator": source_locator,
+                "target_root": str(target_root), "target_locator": target_locator,
+                "preparation_root": str(preparation_root), "evidence_root": str(evidence_root),
+                "request_id": request_id, "run_id": run_id,
+                "expected_digest": expected_digest, "publication_version": publication_version,
+            })
+            if len(request_bytes) > REQUEST_LIMIT:
+                raise PhaseError("publish_file.request_too_large")
+        contract_binding = STREAM_BINDING if publication_version == "2.0" else CONTRACT_BINDING
+        capture = copy_and_hash_stream if publication_version == "2.0" else copy_and_hash
+        maximum_bytes = FILE_LIMIT if publication_version == "2.0" else MAX_BYTES
+        result.contract_binding = contract_binding
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:
             raise PhaseError("publish_file.invalid_request_id")
@@ -98,6 +117,12 @@ def publish_file(
                 if left.is_relative_to(right) or right.is_relative_to(left):
                     raise PhaseError("publish_file.overlapping_roots")
         result.evidence_root = str(evidence_root)
+        if publication_version == "2.0":
+            from .installation import qualify_host_authority_roots
+            qualify_host_authority_roots({TARGET_ROOT_BINDING: target_root})
+            from .mutation.posix.authority import PosixTargetRootLock
+            publication_lock = PosixTargetRootLock(target_root, "publish-file-v2", timeout_seconds=0)
+            publication_lock.__enter__()
         source_locator = safe_relative_locator(source_locator)
         target_locator = safe_relative_locator(target_locator)
         contained_read_path(source_root, source_locator)
@@ -110,7 +135,7 @@ def publish_file(
         if destination.exists():
             result.inspection_required = True
             raise PhaseError("publish_file.target_exists_inspection_required")
-        binding = application._binding(CONTRACT_BINDING)
+        binding = application._binding(contract_binding)
         result.contract_digest = binding["package_digest"]
         candidate = {
             "operation_id": request_id, "idempotency_key": request_id,
@@ -121,10 +146,10 @@ def publish_file(
             raise PhaseError("candidate.too_large")
         # Explicit isolated scratch: callers supply roots, never candidates/blobs.
         with TemporaryDirectory(prefix="phase-publish-", dir=preparation_root) as scratch:
-            frozen = copy_and_hash(
+            frozen = capture(
                 "payload", source_root, source_locator, Path(scratch),
                 frozen_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                maximum_bytes=MAX_BYTES,
+                maximum_bytes=maximum_bytes,
             )
             result.content_digest = frozen.digest
             result.content_length = frozen.length
@@ -137,7 +162,7 @@ def publish_file(
                 candidate_path = Path(temporary.name)
             handed_off = True
             executed = application.run(
-                "execute", contract_binding=CONTRACT_BINDING,
+                "execute", contract_binding=contract_binding,
                 contract_digest=binding["package_digest"], candidate_path=candidate_path,
                 evidence_root=evidence_root, run_id=run_id,
                 input_paths={"payload": frozen.blob_path},
@@ -212,4 +237,14 @@ def publish_file(
             result.exit_code = 40
         if result.status in {"committed_unverified", "indeterminate"} or result.error.startswith("idempotency."):
             result.inspection_required = True
+    finally:
+        if publication_lock is not None:
+            try:
+                publication_lock.__exit__(None, None, None)
+            except OSError:
+                result.success = False
+                result.status = "indeterminate"
+                result.inspection_required = True
+                result.error = "publish_file.lock_finalization_failed"
+                result.exit_code = 40
     return ApplicationResponse(result.model_dump(), result.exit_code)

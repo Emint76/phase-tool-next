@@ -180,6 +180,7 @@ class PhaseApplication:
         request_id: str,
         run_id: str,
         expected_digest: str | None = None,
+        publication_version: str = "1.0",
     ) -> ApplicationResponse:
         from .publish_file import publish_file
 
@@ -188,6 +189,7 @@ class PhaseApplication:
             target_root=target_root, target_locator=target_locator,
             preparation_root=preparation_root, evidence_root=evidence_root,
             request_id=request_id, run_id=run_id, expected_digest=expected_digest,
+            publication_version=publication_version,
         )
 
     def inspect(

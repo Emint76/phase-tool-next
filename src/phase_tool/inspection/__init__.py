@@ -78,12 +78,18 @@ def _verify_intent_blobs(run_root: Path, intent: Mapping[str, Any], plan: Mappin
         if digest is None:
             continue
         blob = run_root / "blobs" / digest.split(":", 1)[1]
-        if not evidence_file_exists(blob) or digest_bytes(read_evidence_bytes(blob)) != digest:
+        from ..streaming import FILE_LIMIT, MECHANISM_ID, hash_file
+        streamed = plan is not None and plan["mechanism"]["id"] == MECHANISM_ID
+        actual = hash_file(blob, FILE_LIMIT)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
+        if actual != digest:
             raise PhaseError("inspection.digest_mismatch", blob.name)
     evidence = intent.get("evidence", {})
     for digest in evidence.get("content_blob_digests", []):
         blob = run_root / "blobs" / digest.split(":", 1)[1]
-        if not evidence_file_exists(blob) or digest_bytes(read_evidence_bytes(blob)) != digest:
+        from ..streaming import FILE_LIMIT, MECHANISM_ID, hash_file
+        streamed = plan is not None and plan["mechanism"]["id"] == MECHANISM_ID
+        actual = hash_file(blob, FILE_LIMIT)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
+        if actual != digest:
             raise PhaseError("inspection.digest_mismatch", blob.name)
     if plan is None or plan.get("operation_intent") != "publish_new_version":
         return
@@ -423,6 +429,7 @@ def inspect_run(
         state = canonical_result["state"]
         appended = canonical_result.get("appended_record")
         data: bytes | None = None
+        streamed_state = None
         append_tail_bytes = 0
         if appended is not None:
             append_tail_bytes = appended.get("record_length")
@@ -446,6 +453,9 @@ def inspect_run(
                         segment_offset=appended["append_offset"],
                         segment_length=append_tail_bytes,
                     )
+                elif contract.document["operation"]["mechanism"]["id"] == "mechanism.exclusive_create_v2":
+                    from ..streaming import FILE_LIMIT, observe_target
+                    streamed_state = observe_target(authority, FILE_LIMIT)
                 else:
                     maximum_bytes = _MATERIALIZED_TARGET_LIMITS.get(
                         contract.document["operation"]["mechanism"]["id"]
@@ -480,6 +490,9 @@ def inspect_run(
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         elif receipt["effect_receipts"] and receipt["effect_receipts"][0].get("kind") == "append_record":
             raise PhaseError("inspection.append_evidence_missing")
+        elif streamed_state is not None:
+            if any(streamed_state[key] != state[key] for key in ("exists", "digest", "length")):
+                raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         elif data is None or state["exists"] is not True or digest_bytes(data) != state["digest"] or len(data) != state["length"]:
             raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         if receipt["execution_disposition"] == "reused_existing":

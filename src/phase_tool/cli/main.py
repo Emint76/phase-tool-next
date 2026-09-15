@@ -77,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("source-locator", "target-locator", "request-id", "run-id"):
         publish.add_argument("--" + name, required=True)
     publish.add_argument("--expected-digest")
+    publish.add_argument("--publication-version", choices=("1.0", "2.0"), default="1.0")
     return parser
 
 

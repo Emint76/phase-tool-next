@@ -70,6 +70,9 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
     allowed_write_modules = {
         "mutation/expected_head_append.py",
         "mutation/exclusive_create.py",
+        # Exact added IO boundaries for file_create.v2; no generic module glob.
+        "mutation/stream_create.py",
+        "streaming.py",
         "mutation/content_addressed_copy.py",
         "mutation/archive_then_publish.py",
         "mutation/object_store_publish.py",
@@ -78,7 +81,7 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
         "evidence/__init__.py",
         "freeze/__init__.py",
     }
-    forbidden_calls = {"os.open", "os.replace", "shutil.move", "write_bytes", "write_text", "unlink", "rename"}
+    forbidden_calls = {"os.open", "os.write", "os.link", "os.replace", "shutil.move", "write_bytes", "write_text", "unlink", "rename"}
     hits: list[tuple[str, int, str]] = []
     for path in sorted(PACKAGE.rglob("*.py")):
         relative = path.relative_to(PACKAGE).as_posix()
@@ -87,7 +90,7 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                 continue
             name = _call_name(node)
             terminal = name.rsplit(".", 1)[-1]
-            if name == "os.open" or terminal in forbidden_calls:
+            if name in forbidden_calls or terminal in forbidden_calls:
                 if relative not in allowed_write_modules:
                     hits.append((relative, node.lineno, name))
             if terminal == "open" and relative not in allowed_write_modules:

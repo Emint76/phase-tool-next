@@ -111,6 +111,7 @@ class PhaseRequest:
     root_bindings: Mapping[str, Path]
     timestamp: str | None = None
     maximum_candidate_bytes: int = 1_048_576
+    expected_inputs: Mapping[str, tuple[str, int]] | None = None
 
 
 @dataclass(frozen=True)
@@ -714,6 +715,12 @@ class PhaseCore:
                 frozen_at=timestamp,
                 maximum_structured_bytes=request.maximum_candidate_bytes,
             )
+            # Bind the caller's captured identity to Core's actual frozen input,
+            # not to the mutable pathname handed across the application seam.
+            for binding_id, expected in (request.expected_inputs or {}).items():
+                item = frozen.get(binding_id)
+                if item is None or (item.digest, item.length) != expected:
+                    raise PhaseError("freeze.expected_content_mismatch", binding_id)
             scope_digest, request_digest, key, root_identity_digest, root_identities = build_idempotency_digests(
                 contract,
                 candidate,
@@ -926,6 +933,9 @@ class PhaseCore:
                 content_blob_digests,
                 execute,
             )
+            if contract.document["identity"]["id"] == "bundle_create.v2":
+                intent["phase_intent_version"] = "1.1"
+                intent["evidence"]["pre_validator_results_digest"] = validators_digest
             validate_intent(intent, self.registry)
             lifecycle.append("intent")
             intent_path, _ = store.write_canonical("intent.json", intent)

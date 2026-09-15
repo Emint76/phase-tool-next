@@ -86,7 +86,7 @@ async def mcp_installed_acceptance(
                 "tool_names": names,
                 "tool_inventory": names == [
                     "phase_contract_describe", "phase_contracts_list", "phase_execute",
-                    "phase_inspect", "phase_plan", "phase_validate",
+                    "phase_inspect", "phase_plan", "phase_publication_limits", "phase_publication_status", "phase_publish_bundle", "phase_publish_file", "phase_recover_publication", "phase_validate",
                 ],
                 "schemas_strict": schemas_strict,
                 "protocol_rejections": extra.isError is True and boolean_integer.isError is True,
@@ -209,7 +209,7 @@ def main() -> int:
         absent = run([str(python), "-c", "import phase_tool"], cwd=external, check=False)
         uninstall_verified = absent.returncode != 0
         run([str(python), "-m", "pip", "install", str(wheel)], cwd=external)
-        reinstall_verified = run([str(phase), "--version"], cwd=external).stdout.strip() == "phase 1.0.0"
+        reinstall_verified = run([str(phase), "--version"], cwd=external).stdout.strip() == "phase 1.1.0-rc.3"
 
         summary = {
             "success": True,
@@ -233,7 +233,7 @@ def main() -> int:
         }
         summary["success"] = all([
             summary["installed_outside_checkout"], not summary["editable_install"], not summary["pythonpath_present"],
-            imported == "1.0.0", summary["help_discovery"], doctor["success"], summary["cli_parse_rejections"],
+            imported == "1.1.0-rc.3", summary["help_discovery"], doctor["success"], summary["cli_parse_rejections"],
             summary["cli_application_rejection"], summary["cli_validate_plan_execute_inspect"], all(mcp_acceptance.values()),
             uninstall_verified, reinstall_verified,
         ])

@@ -28,6 +28,8 @@ class FrozenInput:
     manifest: tuple[dict[str, Any], ...] = ()
     revalidation_token: str | None = None
     relative_locator: str | None = None
+    # Internal implementation choice, not a new historical intent field.
+    streamed: bool = False
 
     def intent_record(self) -> dict[str, Any]:
         return {
@@ -77,8 +79,16 @@ def freeze_declared_inputs(
                 raise PhaseError("input.required_missing", binding_id)
             continue
         path = Path(supplied)
+        if contract_document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
+            from ..bundle import freeze_bundle
+            from ..installation import qualify_host_authority_roots
+            qualify_host_authority_roots(root_bindings)
+            frozen[binding_id] = freeze_bundle(binding_id, path, candidate_value["members"], blob_root, frozen_at=frozen_at)
+            continue
         if strategy == "copy_and_hash":
-            frozen[binding_id] = copy_and_hash(binding_id, path.parent, path.name, blob_root, frozen_at=frozen_at)
+            from ..streaming import MECHANISM_ID, copy_and_hash_stream
+            capture = copy_and_hash_stream if contract_document["operation"]["mechanism"]["id"] == MECHANISM_ID else copy_and_hash
+            frozen[binding_id] = capture(binding_id, path.parent, path.name, blob_root, frozen_at=frozen_at)
         elif strategy == "manifest_and_hash":
             frozen[binding_id] = manifest_and_hash(binding_id, path, frozen_at=frozen_at)
         elif strategy == "lock_snapshot_revalidate":
@@ -174,10 +184,17 @@ def revalidate_frozen(frozen: FrozenInput) -> None:
     if not stat.S_ISREG(info.st_mode):
         raise PhaseError("freeze.blob_missing", frozen.binding_id)
     try:
-        data = _read_file_stable(frozen.blob_path, frozen.length)
+        if frozen.streamed:
+            from ..streaming import hash_file
+            digest, length = hash_file(frozen.blob_path, frozen.length)
+        else:
+            data = _read_file_stable(frozen.blob_path, frozen.length)
+            digest, length = digest_bytes(data), len(data)
     except OSError as exc:
         raise PhaseError("freeze.blob_unavailable", frozen.binding_id) from exc
-    if digest_bytes(data) != frozen.blob_digest or len(data) != frozen.length:
+    except PhaseError as exc:
+        raise PhaseError("freeze.blob_tampered", frozen.binding_id) from exc
+    if digest != frozen.blob_digest or length != frozen.length:
         raise PhaseError("freeze.blob_tampered", frozen.binding_id)
 
 

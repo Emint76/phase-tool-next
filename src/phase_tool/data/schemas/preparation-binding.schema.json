@@ -1,0 +1,69 @@
+{
+  "$id": "https://phase-tool.local/schemas/preparation-binding.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Contract",
+      "type": "object"
+    },
+    "effect_plan_digest": {
+      "title": "Effect Plan Digest",
+      "type": "string"
+    },
+    "original_intent_digest": {
+      "title": "Original Intent Digest",
+      "type": "string"
+    },
+    "pre_validator_results_digest": {
+      "title": "Pre Validator Results Digest",
+      "type": "string"
+    },
+    "preparation_binding_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Preparation Binding Version",
+      "type": "string"
+    },
+    "preparation_digest": {
+      "title": "Preparation Digest",
+      "type": "string"
+    },
+    "request_digest": {
+      "title": "Request Digest",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "target": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Target",
+      "type": "object"
+    }
+  },
+  "required": [
+    "preparation_binding_version",
+    "original_intent_digest",
+    "preparation_digest",
+    "run_id",
+    "request_id",
+    "request_digest",
+    "effect_plan_digest",
+    "contract",
+    "target",
+    "pre_validator_results_digest"
+  ],
+  "title": "PreparationBinding",
+  "type": "object"
+}

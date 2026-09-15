@@ -1,5 +1,11 @@
 # Phase Next — Private Development
 
+Active task: **PHASE-NEXT-RC01**, scoped by [RC01.md](RC01.md) and [STATE.md](STATE.md).
+It authorizes ordinary source/test/document, necessary versioned-contract, CI and
+prerelease development in this private checkout. The bootstrap-specific limits
+below are historical; merge, release, public publication and production/profile
+changes remain forbidden.
+
 Phase Next is the standalone private continuation at `Emint76/phase-tool-next`,
 not a GitHub fork. The public source is `Emint76/phase-tool-codex`, release/tag
 `v1.0.0`, commit `c4d8285479f90678904f22e5f95927eb46daba01`.

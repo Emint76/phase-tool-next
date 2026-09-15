@@ -69,16 +69,91 @@ jobs:
           "$VENV/bin/python" -m pip install "$EVIDENCE"/dist/*.whl 2>&1 | tee "$EVIDENCE/install-wheel.log"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.0.0"; print(p)' | tee "$EVIDENCE/installed-location.txt"
+          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.1.0rc3"; print(p)' | tee "$EVIDENCE/installed-location.txt"
           "$VENV/bin/phase" --version | tee "$EVIDENCE/installed-version.txt"
           "$VENV/bin/phase" doctor | tee "$EVIDENCE/installed-doctor.json"
           "$VENV/bin/phase" contracts list | tee "$EVIDENCE/installed-contracts.json"
           "$VENV/bin/python" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
+      - name: Installed publish-file CLI/MCP smoke
+        run: |
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/f01_installed_smoke.py" --root "$EVIDENCE/installed-f01" 2>&1 | tee "$EVIDENCE/installed-f01.log"
+      - name: Installed RC01 file bundle status recovery smoke
+        run: |
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/rc01_installed_smoke.py" --root "$EVIDENCE/installed-rc01" 2>&1 | tee "$EVIDENCE/installed-rc01.log"
+      - name: Installed correction prepared-stage CLI MCP recovery
+        run: |
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/correction_installed_smoke.py" --root "$EVIDENCE/installed-correction" 2>&1 | tee "$EVIDENCE/installed-correction.log"
       - name: Preserve private verification artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bootstrap-${{ github.event.pull_request.head.sha || github.sha }}-py${{ matrix.python }}
+          name: phase-next-${{ github.event.pull_request.head.sha || github.sha }}-py${{ matrix.python }}
           path: ${{ runner.temp }}/phase-next-evidence/
+          # This isolated test-evidence root contains the required .phase bundles.
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: error
+
+  publication-resources:
+    name: publication-resources (installed py3.11 wheel)
+    needs: posix-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: phase-next-${{ github.event.pull_request.head.sha || github.sha }}-py3.11
+          path: ${{ runner.temp }}/phase-resource-candidate
+      - name: Install exact tested candidate wheel
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/phase-resource-evidence"
+          mkdir -p "$EVIDENCE"
+          printf 'EVIDENCE=%s\n' "$EVIDENCE" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD HEAD^{tree} > "$EVIDENCE/git-identity.txt"
+          diff "$EVIDENCE/git-identity.txt" "$RUNNER_TEMP/phase-resource-candidate/git-identity.txt"
+          python -m venv "$RUNNER_TEMP/phase-resource-venv"
+          PYTHON="$RUNNER_TEMP/phase-resource-venv/bin/python"
+          printf 'RESOURCE_PYTHON=%s\n' "$PYTHON" >> "$GITHUB_ENV"
+          "$PYTHON" -m pip install "$RUNNER_TEMP"/phase-resource-candidate/dist/*.whl
+          (cd "$RUNNER_TEMP/phase-resource-candidate/dist" && sha256sum --binary ./*) > "$EVIDENCE/build-SHA256SUMS"
+          diff "$EVIDENCE/build-SHA256SUMS" "$RUNNER_TEMP/phase-resource-candidate/build-SHA256SUMS"
+          "$PYTHON" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == "1.1.0rc3"; print(p)' > "$EVIDENCE/installed-location.txt"
+      - name: Real 64 MiB 1 GiB 2 GiB streaming and RSS gate
+        run: |
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$RESOURCE_PYTHON" "$GITHUB_WORKSPACE/scripts/rc01_resources.py" --output "$EVIDENCE/resources.json" 2>&1 | tee "$EVIDENCE/resources.log"
+      - name: Real 256 file 256 MiB bundle gate
+        run: |
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$RESOURCE_PYTHON" "$GITHUB_WORKSPACE/scripts/rc01_bundle_resources.py" --output "$EVIDENCE/bundle-resources.json" 2>&1 | tee "$EVIDENCE/bundle-resources.log"
+      - name: Preserve exact-candidate resource evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-resources-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/phase-resource-evidence/
+          include-hidden-files: true
           retention-days: 14
           if-no-files-found: error

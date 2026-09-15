@@ -1,0 +1,7 @@
+{
+  "capability": "validator",
+  "descriptor_version": "1.0",
+  "id": "bundle.candidate_v1",
+  "implementation": "fixed_builtin",
+  "version": "1.0.0"
+}

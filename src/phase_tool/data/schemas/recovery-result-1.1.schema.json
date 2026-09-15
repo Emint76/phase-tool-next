@@ -1,0 +1,259 @@
+{
+  "$defs": {
+    "LockFinalization": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "default": "not_attempted",
+          "enum": [
+            "not_attempted",
+            "succeeded",
+            "unknown"
+          ],
+          "title": "Close",
+          "type": "string"
+        },
+        "unlock": {
+          "default": "not_attempted",
+          "enum": [
+            "not_attempted",
+            "succeeded",
+            "failed"
+          ],
+          "title": "Unlock",
+          "type": "string"
+        }
+      },
+      "title": "LockFinalization",
+      "type": "object"
+    },
+    "RecoveryErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "errno": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Errno"
+        },
+        "exception_type": {
+          "title": "Exception Type",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "phase": {
+          "title": "Phase",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase",
+        "code",
+        "exception_type",
+        "message"
+      ],
+      "title": "RecoveryErrorDetail",
+      "type": "object"
+    }
+  },
+  "$id": "https://phase-tool.local/schemas/recovery-result-1.1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "effect_plan_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effect Plan Digest"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    },
+    "error_details": {
+      "items": {
+        "$ref": "#/$defs/RecoveryErrorDetail"
+      },
+      "title": "Error Details",
+      "type": "array"
+    },
+    "exit_code": {
+      "default": 40,
+      "title": "Exit Code",
+      "type": "integer"
+    },
+    "inspection_required": {
+      "default": true,
+      "title": "Inspection Required",
+      "type": "boolean"
+    },
+    "intent_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Intent Digest"
+    },
+    "lock_finalization": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LockFinalization"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "observation_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observation Digest"
+    },
+    "observation_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observation Path"
+    },
+    "original_receipt_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Original Receipt Digest"
+    },
+    "original_terminal_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Original Terminal Status"
+    },
+    "recovery_effect_state": {
+      "default": "not_attempted",
+      "enum": [
+        "not_attempted",
+        "unknown",
+        "committed"
+      ],
+      "title": "Recovery Effect State",
+      "type": "string"
+    },
+    "recovery_mutation_attempted": {
+      "default": false,
+      "title": "Recovery Mutation Attempted",
+      "type": "boolean"
+    },
+    "recovery_result_version": {
+      "const": "1.1",
+      "default": "1.1",
+      "title": "Recovery Result Version",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "default": "indeterminate",
+      "enum": [
+        "verified_existing",
+        "indeterminate",
+        "rejected"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "success": {
+      "default": false,
+      "title": "Success",
+      "type": "boolean"
+    },
+    "target_verified": {
+      "default": false,
+      "title": "Target Verified",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "recovery_result_version",
+    "status",
+    "success",
+    "run_id",
+    "request_id",
+    "intent_digest",
+    "effect_plan_digest",
+    "original_receipt_digest",
+    "original_terminal_status",
+    "target_verified",
+    "recovery_mutation_attempted",
+    "recovery_effect_state",
+    "lock_finalization",
+    "error_details",
+    "inspection_required",
+    "error",
+    "exit_code"
+  ],
+  "title": "RecoveryResult",
+  "type": "object"
+}

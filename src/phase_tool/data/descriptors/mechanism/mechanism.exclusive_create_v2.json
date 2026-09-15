@@ -1,0 +1,14 @@
+{
+  "capability": "mutation_mechanism",
+  "descriptor_version": "1.0",
+  "execution_allowed": true,
+  "id": "mechanism.exclusive_create_v2",
+  "implementation": "effect_broker_builtin",
+  "limits": {
+    "file_bytes": 2147483648,
+    "objects": 1,
+    "request_bytes": 1048576,
+    "workers_per_operation": 1
+  },
+  "version": "1.0.0"
+}

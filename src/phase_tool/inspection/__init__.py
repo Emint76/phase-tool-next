@@ -11,6 +11,7 @@ from ..errors import PhaseError
 from ..evidence import evidence_file_exists, iter_run_artifacts, read_evidence_bytes, validate_intent, validate_receipt, validate_run_id
 from ..paths import _platform_path
 from ..planning import validate_plan_mechanism_authorization, validate_static_plan
+from ..preconditions import pre_validator_binding_required, verify_pre_validator_binding
 from ..registry import BundledRegistry, RegistrySnapshot, ResolvedContract
 from ..mutation.guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from ..mutation.implementation import mechanism_authority_usage, mechanism_supports_effect_kind
@@ -37,6 +38,17 @@ def _read_canonical(path: Path) -> tuple[Any, str]:
     if canonical_bytes(value) != data:
         raise PhaseError("inspection.digest_mismatch", str(path.name))
     return value, digest_bytes(data)
+
+
+def _verify_bound_pre_validators(run_root: Path, intent: Mapping[str, Any]) -> None:
+    if not pre_validator_binding_required(intent):
+        return
+    # Planning saves the same pre-operation results at the final-results name;
+    # execution saves them separately before handoff. Neither depends on the
+    # presence or truth of a later receipt.
+    name = "pre-validator-results.json" if intent["execution_requested"] else "validator-results.json"
+    _validators, digest = _read_canonical(run_root / "attachments" / name)
+    verify_pre_validator_binding(intent, digest)
 
 
 def _validate_progress(progress: Mapping[str, Any], plan: Mapping[str, Any], effect_receipts: list[dict[str, Any]], registry: RegistrySnapshot) -> None:
@@ -78,13 +90,28 @@ def _verify_intent_blobs(run_root: Path, intent: Mapping[str, Any], plan: Mappin
         if digest is None:
             continue
         blob = run_root / "blobs" / digest.split(":", 1)[1]
-        if not evidence_file_exists(blob) or digest_bytes(read_evidence_bytes(blob)) != digest:
+        from ..streaming import FILE_LIMIT, REQUEST_LIMIT, MECHANISM_ID, hash_file
+        streamed = plan is not None and plan["mechanism"]["id"] in {MECHANISM_ID, "mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}
+        maximum_bytes = REQUEST_LIMIT if plan is not None and plan["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"} else FILE_LIMIT
+        actual = hash_file(blob, maximum_bytes)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
+        if actual != digest:
             raise PhaseError("inspection.digest_mismatch", blob.name)
     evidence = intent.get("evidence", {})
     for digest in evidence.get("content_blob_digests", []):
         blob = run_root / "blobs" / digest.split(":", 1)[1]
-        if not evidence_file_exists(blob) or digest_bytes(read_evidence_bytes(blob)) != digest:
+        from ..streaming import FILE_LIMIT, REQUEST_LIMIT, MECHANISM_ID, hash_file
+        streamed = plan is not None and plan["mechanism"]["id"] in {MECHANISM_ID, "mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}
+        maximum_bytes = REQUEST_LIMIT if plan is not None and plan["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"} else FILE_LIMIT
+        actual = hash_file(blob, maximum_bytes)[0] if streamed and evidence_file_exists(blob) else (digest_bytes(read_evidence_bytes(blob)) if evidence_file_exists(blob) else None)
+        if actual != digest:
             raise PhaseError("inspection.digest_mismatch", blob.name)
+    if plan is not None and plan["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
+        from ..bundle import parse_manifest, read_metadata, verify_frozen_members
+        effect = plan["effects"][0]
+        data = read_metadata(run_root / "blobs" / effect["content_digest"].removeprefix("sha256:"))
+        if len(data) != effect["content_length"] or digest_bytes(data) != effect["content_digest"]:
+            raise PhaseError("bundle.frozen_manifest_mismatch")
+        verify_frozen_members(parse_manifest(data), run_root / "blobs")
     if plan is None or plan.get("operation_intent") != "publish_new_version":
         return
     inputs = {item["binding_id"]: item for item in intent["inputs"]}
@@ -285,6 +312,7 @@ def inspect_run(
             if not isinstance(implementation_binding, Mapping):
                 raise PhaseError("inspection.implementation_binding_mismatch")
             _validate_implementation_binding(implementation_binding, plan, contract, registry)
+        _verify_bound_pre_validators(run_root, intent)
         _verify_intent_blobs(run_root, intent, plan)
         state_classification = None
         hook = load_contract_hook(contract)
@@ -357,6 +385,7 @@ def inspect_run(
             if not isinstance(intent_binding, Mapping):
                 raise PhaseError("inspection.implementation_binding_mismatch")
             _validate_implementation_binding(intent_binding, plan, contract_for_plan, registry)
+        _verify_bound_pre_validators(run_root, intent)
         validators, validators_digest = _read_canonical(run_root / "attachments" / "validator-results.json")
         if validators != receipt["validator_results"]:
             raise PhaseError("inspection.validator_results_mismatch")
@@ -423,6 +452,7 @@ def inspect_run(
         state = canonical_result["state"]
         appended = canonical_result.get("appended_record")
         data: bytes | None = None
+        streamed_state = None
         append_tail_bytes = 0
         if appended is not None:
             append_tail_bytes = appended.get("record_length")
@@ -446,6 +476,15 @@ def inspect_run(
                         segment_offset=appended["append_offset"],
                         segment_length=append_tail_bytes,
                     )
+                elif contract.document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
+                    from ..bundle import verify_bundle
+                    data, _manifest = verify_bundle(authority.target, state["digest"], run_id=run_id, plan_digest=plan_digest)
+                    from ..prepared_binding import verify_bound_bundle_target
+                    verify_bound_bundle_target(registry, contract, intent, plan, run_root, authority.target)
+                    authority.assert_namespace_binding()
+                elif contract.document["operation"]["mechanism"]["id"] == "mechanism.exclusive_create_v2":
+                    from ..streaming import FILE_LIMIT, observe_target
+                    streamed_state = observe_target(authority, FILE_LIMIT)
                 else:
                     maximum_bytes = _MATERIALIZED_TARGET_LIMITS.get(
                         contract.document["operation"]["mechanism"]["id"]
@@ -480,6 +519,9 @@ def inspect_run(
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         elif receipt["effect_receipts"] and receipt["effect_receipts"][0].get("kind") == "append_record":
             raise PhaseError("inspection.append_evidence_missing")
+        elif streamed_state is not None:
+            if any(streamed_state[key] != state[key] for key in ("exists", "digest", "length")):
+                raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         elif data is None or state["exists"] is not True or digest_bytes(data) != state["digest"] or len(data) != state["length"]:
             raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         if receipt["execution_disposition"] == "reused_existing":

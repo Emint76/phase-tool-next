@@ -1,5 +1,7 @@
 # Phase Tool
 
+Private prerelease **1.1.0rc1** (RC01): [candidate notes](docs/development/RC01-RELEASE-NOTES.md) and [file/bundle integration](docs/development/RC01-INTEGRATION.md). Not a published release or production deployment.
+
 Phase Tool is a local, registry-driven execution product. Its CLI and MCP adapters are thin transports over one `PhaseApplication`, which resolves an exact contract binding and calls the existing `PhaseCore.run` lifecycle.
 
 ## Supported platform
@@ -22,7 +24,7 @@ See:
 Install a built wheel in a normal virtual environment:
 
 ```console
-python -m pip install phase_tool-1.0.0-py3-none-any.whl
+python -m pip install phase_tool-1.1.0rc1-py3-none-any.whl
 phase --version
 phase doctor
 phase contracts list
@@ -45,7 +47,7 @@ phase mcp serve --stdio
 phase-mcp
 ```
 
-MCP publishes only universal tools: `phase_contracts_list`, `phase_contract_describe`, `phase_validate`, `phase_plan`, `phase_execute`, and `phase_inspect`.
+MCP retains `phase_contracts_list`, `phase_contract_describe`, `phase_validate`, `phase_plan`, `phase_execute`, and `phase_inspect`. Shared high-level tools add `phase_publish_file`, `phase_publish_bundle`, `phase_publication_limits`, `phase_publication_status`, and `phase_recover_publication`; see the RC01 integration guide for limits and explicit recovery boundaries.
 
 ## Documentation
 

@@ -1,0 +1,8 @@
+{
+  "capability": "validator",
+  "descriptor_version": "1.0",
+  "execution_allowed": true,
+  "id": "bundle.result_v1",
+  "implementation": "phase_core_builtin",
+  "version": "1.0.0"
+}

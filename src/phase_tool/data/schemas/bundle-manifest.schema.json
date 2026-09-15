@@ -1,0 +1,56 @@
+{
+  "$id": "https://phase-tool.local/schemas/bundle-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bundle_version": {
+      "const": "1.0"
+    },
+    "members": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "length": {
+            "maximum": 2147483648,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "not": {
+              "pattern": "(?:^|/)(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\\.[A-Za-z0-9_.-]+)?(?:/|$)"
+            },
+            "pattern": "^[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?(?:/[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?)*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "digest",
+          "length"
+        ],
+        "type": "object"
+      },
+      "maxItems": 1024,
+      "minItems": 1,
+      "type": "array"
+    },
+    "total_length": {
+      "maximum": 4294967296,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "bundle_version",
+    "members",
+    "total_length"
+  ],
+  "title": "Phase Bundle Manifest v1",
+  "type": "object"
+}

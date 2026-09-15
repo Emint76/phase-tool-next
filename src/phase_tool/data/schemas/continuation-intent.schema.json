@@ -1,0 +1,76 @@
+{
+  "$id": "https://phase-tool.local/schemas/continuation-intent.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "const": "commit_prepared_bundle",
+      "default": "commit_prepared_bundle",
+      "title": "Action",
+      "type": "string"
+    },
+    "continuation_intent_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Continuation Intent Version",
+      "type": "string"
+    },
+    "contract": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Contract",
+      "type": "object"
+    },
+    "device": {
+      "title": "Device",
+      "type": "integer"
+    },
+    "effect_plan_digest": {
+      "title": "Effect Plan Digest",
+      "type": "string"
+    },
+    "inode": {
+      "title": "Inode",
+      "type": "integer"
+    },
+    "original_intent_digest": {
+      "title": "Original Intent Digest",
+      "type": "string"
+    },
+    "preparation_digest": {
+      "title": "Preparation Digest",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "target": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Target",
+      "type": "object"
+    }
+  },
+  "required": [
+    "continuation_intent_version",
+    "action",
+    "original_intent_digest",
+    "preparation_digest",
+    "run_id",
+    "request_id",
+    "effect_plan_digest",
+    "contract",
+    "target",
+    "device",
+    "inode"
+  ],
+  "title": "ContinuationIntent",
+  "type": "object"
+}

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
 from .application import PhaseApplication
+from .publish_file import PublishFileResult
+from .publish_bundle import PublishBundleResult
+from .recovery import RecoveryResult
+from .publication_status import PublicationStatus
 
 _SERVER = FastMCP(
     "Phase Tool",
@@ -113,6 +117,69 @@ def phase_inspect(
         run_id=run_id,
         root_bindings={name: Path(value) for name, value in (root_bindings or {}).items()},
     ).payload
+
+
+@_SERVER.tool(name="phase_publish_file")
+def phase_publish_file(
+    source_root: str,
+    source_locator: str,
+    target_root: str,
+    target_locator: str,
+    preparation_root: str,
+    evidence_root: str,
+    request_id: str,
+    run_id: str,
+    expected_digest: str | None = None,
+    publication_version: str = "1.0",
+) -> PublishFileResult:
+    """Create-only and inspect: v1 <=1 MiB; explicit v2 streams <=2 GiB."""
+    response = _application().publish_file(
+        source_root=Path(source_root), source_locator=source_locator,
+        target_root=Path(target_root), target_locator=target_locator,
+        preparation_root=Path(preparation_root), evidence_root=Path(evidence_root),
+        request_id=request_id, run_id=run_id, expected_digest=expected_digest,
+        publication_version=publication_version,
+    )
+    return PublishFileResult.model_validate(response.payload)
+
+
+@_SERVER.tool(name="phase_publish_bundle")
+def phase_publish_bundle(
+    source_root: str, members: list[str], target_root: str, target_locator: str,
+    preparation_root: str, evidence_root: str, request_id: str, run_id: str,
+    publication_version: Literal["1.0", "2.0"] = "1.0",
+) -> PublishBundleResult:
+    """Publish an explicit local file bundle at one atomic directory commit point."""
+    response = _application().publish_bundle(
+        source_root=Path(source_root), members=members, target_root=Path(target_root),
+        target_locator=target_locator, preparation_root=Path(preparation_root),
+        evidence_root=Path(evidence_root), request_id=request_id, run_id=run_id,
+        publication_version=publication_version,
+    )
+    return PublishBundleResult.model_validate(response.payload)
+
+
+@_SERVER.tool(name="phase_publication_limits")
+def phase_publication_limits() -> dict[str, Any]:
+    """Return executable publication bounds, without reading source or target."""
+    return _application().publication_limits().payload
+
+
+@_SERVER.tool(name="phase_publication_status")
+def phase_publication_status(evidence_root: str, run_id: str, wait_seconds: StrictInt = 0) -> PublicationStatus:
+    """Bounded wait for saved state only; NOT current content verification."""
+    response = _application().publication_status(evidence_root=Path(evidence_root),run_id=run_id,wait_seconds=wait_seconds)
+    return PublicationStatus.model_validate(response.payload)
+
+
+@_SERVER.tool(name="phase_recover_publication")
+def phase_recover_publication(evidence_root: str, run_id: str, target_root: str,
+                              request_id: str, expected_intent_digest: str,
+                              mode: Literal["observe", "commit_prepared"] = "observe") -> RecoveryResult:
+    """Observe completion by default; explicit commit_prepared resumes bundle v2 only."""
+    response = _application().recover_publication(evidence_root=Path(evidence_root),run_id=run_id,
+        target_root=Path(target_root),request_id=request_id,expected_intent_digest=expected_intent_digest,mode=mode)
+    return RecoveryResult.model_validate(response.payload)
 
 
 def _seal_tool_argument_models() -> None:

@@ -42,6 +42,18 @@ class PhaseApplication:
         except KeyError as exc:
             raise PhaseError("application.contract_binding_not_found", exact_binding) from exc
 
+    def publication_status(self, **kwargs) -> ApplicationResponse:
+        from .publication_status import publication_status
+        return publication_status(self, **kwargs)
+
+    def publication_limits(self) -> ApplicationResponse:
+        from .publication_status import publication_limits
+        return publication_limits()
+
+    def recover_publication(self, **kwargs) -> ApplicationResponse:
+        from .recovery import recover_publication
+        return recover_publication(self, **kwargs)
+
     def contracts_list(self) -> ApplicationResponse:
         contracts = []
         for exact_binding, binding in sorted(self.registry.contract_bindings().items()):
@@ -101,6 +113,7 @@ class PhaseApplication:
         timestamp: str | None = None,
         maximum_candidate_bytes: int = 1_048_576,
         contract_digest: str | None = None,
+        expected_inputs: Mapping[str, tuple[str, int]] | None = None,
     ) -> ApplicationResponse:
         try:
             if (candidate_path is None) == (candidate is None):
@@ -127,6 +140,7 @@ class PhaseApplication:
                         timestamp=timestamp,
                         maximum_candidate_bytes=maximum_candidate_bytes,
                         contract_digest=contract_digest,
+                        expected_inputs=expected_inputs,
                     )
             assert candidate_path is not None
             binding = self._binding(contract_binding)
@@ -143,6 +157,7 @@ class PhaseApplication:
                 root_bindings={name: Path(value) for name, value in root_bindings.items()},
                 timestamp=timestamp,
                 maximum_candidate_bytes=maximum_candidate_bytes,
+                expected_inputs=expected_inputs,
             )
             outcome = PhaseCore(self.registry, self.installation).run(
                 request,
@@ -167,6 +182,41 @@ class PhaseApplication:
             return ApplicationResponse(payload, outcome.exit_code)
         except (PhaseError, OSError, ValueError) as exc:
             return self._failure(operation, exc)
+
+    def publish_file(
+        self,
+        *,
+        source_root: Path,
+        source_locator: str,
+        target_root: Path,
+        target_locator: str,
+        preparation_root: Path,
+        evidence_root: Path,
+        request_id: str,
+        run_id: str,
+        expected_digest: str | None = None,
+        publication_version: str = "1.0",
+    ) -> ApplicationResponse:
+        from .publish_file import publish_file
+
+        return publish_file(
+            self, source_root=source_root, source_locator=source_locator,
+            target_root=target_root, target_locator=target_locator,
+            preparation_root=preparation_root, evidence_root=evidence_root,
+            request_id=request_id, run_id=run_id, expected_digest=expected_digest,
+            publication_version=publication_version,
+        )
+
+    def publish_bundle(
+        self, *, source_root: Path, members: list[str], target_root: Path,
+        target_locator: str, preparation_root: Path, evidence_root: Path,
+        request_id: str, run_id: str, publication_version: str = '1.0',
+    ) -> ApplicationResponse:
+        from .publish_bundle import publish_bundle
+        return publish_bundle(self, source_root=source_root, members=members,
+            target_root=target_root, target_locator=target_locator,
+            preparation_root=preparation_root, evidence_root=evidence_root,
+            request_id=request_id, run_id=run_id, publication_version=publication_version)
 
     def inspect(
         self,

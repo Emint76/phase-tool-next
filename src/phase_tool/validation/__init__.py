@@ -174,6 +174,12 @@ class ValidatorRunner:
                 return handled
         if identifier == "phase.ordered_effect_plan_progress_v1":
             return "not_reached", "validation.not_reached", "post_operation", None, []
+        if identifier == "bundle.candidate_v1":
+            from ..bundle import validate_members
+            outcome = self._candidate_validation(contract, candidate)
+            if outcome[0] == "pass":
+                validate_members(value["members"])
+            return outcome
         if identifier in {"fixture.append.candidate_v1", "fixture.copy.candidate_v1", "fixture.create.candidate_v1"}:
             outcome = self._candidate_validation(contract, candidate)
             if outcome[0] != "pass" or identifier != "fixture.copy.candidate_v1":
@@ -428,6 +434,19 @@ class ValidatorRunner:
                         blockers=blockers,
                     )
                     continue
+            if identifier == "bundle.result_v1":
+                from ..bundle import verify_bundle
+                effect = effect_plan["effects"][0]
+                expected = effect["content_digest"]
+                try:
+                    target = Path(root_bindings[effect["target"]["root_binding"]]) / effect["target"]["relative_locator"]
+                    verify_bundle(target, expected, run_id=run_id, plan_digest=profile_digest("effect-plan", effect_plan))
+                    status, code, actual, blockers = "pass", "validation.pass", expected, []
+                except (OSError, PhaseError):
+                    status, code, actual, blockers = "fail", "bundle.verification_failed", None, ["bundle.verification_failed"]
+                completed[index] = self._result(declaration, run_id=run_id, timestamp=timestamp,
+                    status=status, code=code, expected=expected, actual=actual, blockers=blockers)
+                continue
             if identifier != "validator.result_digest_v1":
                 raise PhaseError("validator.unavailable", identifier)
             expected: list[dict[str, Any]] = []

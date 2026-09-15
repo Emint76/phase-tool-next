@@ -1,70 +1,43 @@
 # Development state
 
-## PHASE-NEXT-RC01 — F05 checkpoint, not release-ready
+## PHASE-NEXT-RC01 — F06 candidate sealed for final gates
 
-- F05 base: `679fde3c6fb3fc2c7074679506eabe7dbcbd7f02`; exact staged identity
-  is external in `ROOT/evidence/RC01/f05-staged/candidate.json`.
-- F05 `f05-local-gates`: **125 passed**. New **8 status/integration** cases
-  include real MCP timeout→status→recovery without republish and file/bundle
-  execution with network connections and subprocess creation forbidden.
-- F04 exact-head CI `34955858020`: both Python 3.11/3.12 cells GREEN; full suite,
-  build, clean installed entrypoints and F01 CLI/MCP smoke steps all succeeded.
-  Downloaded artifacts: `ROOT/evidence/RC01/ci-679fde3` (not later-code evidence).
-- NEXT: F06 prerelease version, final exact-head matrix plus mandatory resource
-  job, old evidence inspection, retained candidate artifacts and maintainer handoff.
-
-### Prior checkpoints (scoped evidence, not final-code approvals)
-
-- F04 candidate is above F03 `ff183871b3c8b585a5c7430f517dbc44143a8648`.
-  Local `f04-local-gates`: **114 passed**, including **14 recovery** cases,
-  F01/F02/F03 and the corrected CLI help inventory. Real subprocess exits before
-  intent/before commit/after commit, lost final receipts (file and bundle), source
-  drift, evidence/target corruption, conflicting key and observation ENOSPC tested.
-- Recovery is explicit completion reconciliation, not target replay: see RC01.md.
-  Original statuses are preserved; unpublished stages/partial files stay retained
-  with non-success rather than receiving unsafe automatic repair.
-- F03 full CI `34954133259` had one CLI help-inventory failure in each Python
-  cell (new command missing from exact expected list); other test results are in
-  `ROOT/evidence/RC01/ci-ff18387`. Corrected expectation passed locally. This
-  failed CI is not represented as GREEN; final RC01 exact-head CI remains required.
-- Next checkpoint: F05 bounded status/wait, CLI/MCP recovery, integration example;
-  then F06 final candidate packaging, historical verification and resource CI.
-
-- Scope: [RC01.md](RC01.md), private PR #2 / `feat/unified-file-publication`.
-  F03 checkpoint base: `d5b9b55cd97214d4747b412881a4d55f623a7ea8`.
-  Exact staged/published identity belongs in `ROOT/evidence/RC01/f03-staged/`
-  (avoids a self-referential commit hash in this source file).
-- F02 checkpoint is published and verified: CI run `34942917723`, **631 passed
-  on Python 3.11.16 and 3.12.14**; wheel/sdist and clean installed CLI/MCP gates
-  passed. Both downloaded artifacts bind to tree
-  `274d5a0586a26a407d28564e65f8bfcdcb1d1aeb`; 165 package files in each wheel
-  and sdist equal that exact commit. These are not approvals of later changes.
-- F02 resource baseline at that checkpoint: real 64 MiB / 1 GiB / 2 GiB PASS;
-  peak RSS 39,989,248 / 40,280,064 / 40,128,512 bytes; 64 MiB→1 GiB growth
-  290,816 bytes <=134,217,728. Original F01 and all prior evidence preserved.
-- F03 local gates: **140 passed**, including **27 bundle / 20 streaming-file**
-  cases and all 44 F01 cases. Shared CLI/MCP bundle operation and cross-inspect,
-  unsafe/duplicate/prefix paths, missing/corrupt/extra members, FIFO metadata,
-  interrupted staging, racing commit and exact partial-write counts are covered.
-- Final F03 real workload: **256 files / 268,435,456 bytes**, full Phase inspect
-  plus independent target-member hashing PASS; 25.60 s, peak RSS 39,399,424 bytes.
-  Logical operation writes 536,960,401 bytes; retained source/evidence/target
-  805,391,114 bytes. Full metrics and per-file digests are retained externally.
-- F03 also fixes the newly reproduced early-observation receipt flag defect in
-  the streaming-file mechanism. No old receipt schema was weakened. Final F06
-  resource/CI gates must cover the final code; old resource results are scoped.
-- Current evidence: `ROOT/evidence/RC01/f03-final-local/verified-summary.json`;
-  logs/JUnit/source hashes/resource JSON in that directory. F02 evidence:
-  `F02-local-report.json` and `ci-d5b9b55/verified-summary.json` in the same root.
-- Legacy chunks: exact format/sample NOT_VERIFIED. Bounded read-only searches
-  of Phase Next, Phase history and selected Phase Context exports did not expose
-  a versioned reassembly sample; no legacy fields or compatibility were invented.
-- Next: publish F03 checkpoint, verify its exact-head CI, then F04 recovery,
-  F05 status/wait/general integration and F06 installed prerelease candidate.
-  No whole-RC readiness, independent approval, merge/release/deployment claimed.
-- GOAL_STATUS / BUDGET = NOT_VERIFIED from the initial check only. No state.db
-  access, new goal, automatic resume/reset, settings or working-profile changes.
-  No Kanban card was bound to this direct session; no board work was fabricated.
+- Private `Emint76/phase-tool-next`, branch `feat/unified-file-publication`, PR #2.
+  F06 base `ef8f3d217b69f59d940e0b2ea7c90ac18b638124`; version **1.1.0rc1**
+  (Core/CLI SemVer **1.1.0-rc.1**). F01 remains in history and is not rerun as a task.
+- Source scope/guarantees: [RC01.md](RC01.md). Usage: [RC01-INTEGRATION.md](RC01-INTEGRATION.md).
+  Candidate/rollback/limitations: [RC01-RELEASE-NOTES.md](RC01-RELEASE-NOTES.md).
+- F02 explicit streaming <=2 GiB; final candidate resource gate must execute real
+  64 MiB/1 GiB/2 GiB with independent inspect and <=128 MiB RSS growth.
+- F03 explicit bundle <=1024 files/4 GiB; final gate is >=256 files/256 MiB,
+  complete member verification, non-overwriting Linux directory visibility point.
+- F04 verified-completion reconciliation; no target replay/repair or automatic
+  deletion. Real crashes, missing receipts, conflicts and changed evidence tested.
+  Unpublished stages and unproven partial effects retain exact non-success state.
+- F05 shared CLI/MCP status/wait/recovery and programmatic limits. **125 local
+  passed**; real MCP timeout→status→recovery without republish; network/Popen
+  forbidden inside file and bundle publication tests. This is not an LLM audit claim
+  inferred only from AST. No working profiles/MCP/skills/settings changed.
+- Last pre-candidate CI: `34957299839` at the F06 base, **681 passed on each of
+  Python 3.11/3.12**, build and installed gates GREEN. Scope is that exact base,
+  not an automatic approval of the prerelease changes.
+- F06 local installed/version/package gates passed; `f06-package-local` includes
+  wheel/sdist integrity and clean install/uninstall/reinstall. Original F01 **4/4
+  archived runs** inspect with the candidate runtime, archive mounted read-only,
+  before/after file hashes identical (`f06-historical/historical-inspect.json`).
+- Final source-staging record: `ROOT/evidence/RC01/f06-staged/candidate.json`.
+  Final exact-head full matrix, clean installed smoke and mandatory resource job
+  are required before READY. Final verdict, actual commit/tree, artifact hashes
+  and measurement totals live in `ROOT/artifacts/RC01/1.1.0rc1-<full-commit>/`
+  and `ROOT/evidence/RC01/final-<full-commit>/`, avoiding self-referential commits.
+- Legacy chunks/reassembly exact sample/spec unavailable in bounded local searches:
+  **NOT_VERIFIED**; no fields/protocol invented. `MAIN_PROTECTION=PROTECTION_GAP`.
+- GOAL_STATUS / BUDGET = **NOT_VERIFIED** from initial standard-interface check;
+  no state.db inspection, new/reset/resumed goal or budget changes. No Kanban task
+  is bound to this direct session. No independent maintainer approval claimed.
+- FINAL ACTIONS: verify final CI/downloaded bytes, install exact retained candidate,
+  preserve handoff, stop. No merge, auto-merge, release/tag, registry upload,
+  production/working V1 changes or follow-on roadmap outside RC01.
 
 ## PHASE-NEXT-F01
 

@@ -1,6 +1,21 @@
 # Development state
 
-## PHASE-NEXT-RC01 — F03 checkpoint, not release-ready
+## PHASE-NEXT-RC01 — F04 checkpoint, not release-ready
+
+- F04 candidate is above F03 `ff183871b3c8b585a5c7430f517dbc44143a8648`.
+  Local `f04-local-gates`: **114 passed**, including **14 recovery** cases,
+  F01/F02/F03 and the corrected CLI help inventory. Real subprocess exits before
+  intent/before commit/after commit, lost final receipts (file and bundle), source
+  drift, evidence/target corruption, conflicting key and observation ENOSPC tested.
+- Recovery is explicit completion reconciliation, not target replay: see RC01.md.
+  Original statuses are preserved; unpublished stages/partial files stay retained
+  with non-success rather than receiving unsafe automatic repair.
+- F03 full CI `34954133259` had one CLI help-inventory failure in each Python
+  cell (new command missing from exact expected list); other test results are in
+  `ROOT/evidence/RC01/ci-ff18387`. Corrected expectation passed locally. This
+  failed CI is not represented as GREEN; final RC01 exact-head CI remains required.
+- Next checkpoint: F05 bounded status/wait, CLI/MCP recovery, integration example;
+  then F06 final candidate packaging, historical verification and resource CI.
 
 - Scope: [RC01.md](RC01.md), private PR #2 / `feat/unified-file-publication`.
   F03 checkpoint base: `d5b9b55cd97214d4747b412881a4d55f623a7ea8`.

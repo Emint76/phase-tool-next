@@ -42,6 +42,10 @@ class PhaseApplication:
         except KeyError as exc:
             raise PhaseError("application.contract_binding_not_found", exact_binding) from exc
 
+    def recover_publication(self, **kwargs) -> ApplicationResponse:
+        from .recovery import recover_publication
+        return recover_publication(self, **kwargs)
+
     def contracts_list(self) -> ApplicationResponse:
         contracts = []
         for exact_binding, binding in sorted(self.registry.contract_bindings().items()):

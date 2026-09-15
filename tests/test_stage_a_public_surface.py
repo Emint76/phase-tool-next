@@ -116,7 +116,7 @@ def test_public_surface_snapshot_is_concise_and_complete() -> None:
 def test_installed_cli_discovery_and_argparse_failures_are_deterministic() -> None:
     cases = [
         ((), 2, "usage:"),
-        (("--help",), 0, "{doctor,contracts,mcp,validate,plan,execute,inspect,publish-file}"),
+        (("--help",), 0, "{doctor,contracts,mcp,validate,plan,execute,inspect,publish-file,publish-bundle}"),
         (("--version",), 0, "phase 1.0.0"),
         (("unknown-command",), 2, "invalid choice"),
         (("doctor", "--unknown"), 2, "unrecognized arguments"),

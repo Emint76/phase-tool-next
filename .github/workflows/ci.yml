@@ -2,10 +2,25 @@ name: phase-tool-ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   posix-production:
+    name: posix-production (${{ matrix.python }})
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -13,21 +28,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+      - name: Capture exact candidate and Linux runtime
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVIDENCE: ${{ runner.temp }}/phase-next-evidence
+        run: |
+          mkdir -p "$EVIDENCE"
+          printf 'EVIDENCE=%s\n' "$EVIDENCE" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD HEAD^{tree} | tee "$EVIDENCE/git-identity.txt"
+          python --version | tee "$EVIDENCE/python-version.txt"
+          uname -a | tee "$EVIDENCE/kernel.txt"
+          stat -f -c '%T' . "$RUNNER_TEMP" | tee "$EVIDENCE/filesystems.txt"
+      - name: Bootstrap scope check
+        if: github.head_ref == 'chore/private-bootstrap'
+        run: python scripts/private_bootstrap_check.py | tee "$EVIDENCE/bootstrap-check.json"
       - name: Install test dependencies
-        run: python -m pip install ".[test]"
+        run: |
+          python -m pip install ".[test]" 2>&1 | tee "$EVIDENCE/install-test-deps.log"
+          python -m pip freeze > "$EVIDENCE/test-dependencies.txt"
       - name: Full test suite
-        run: python -m pytest -W error -ra
+        run: python -m pytest -W error -ra --junitxml="$EVIDENCE/pytest.xml" 2>&1 | tee "$EVIDENCE/pytest.log"
       - name: Build wheel and sdist
-        run: python -m build
+        run: |
+          python -m build --outdir "$EVIDENCE/dist" 2>&1 | tee "$EVIDENCE/build.log"
+          (cd "$EVIDENCE/dist" && sha256sum --binary ./*) > "$EVIDENCE/build-SHA256SUMS"
       - name: Installed entrypoint smoke
         shell: bash
         run: |
-          python -m venv .ci-venv
-          .ci-venv/bin/python -m pip install dist/*.whl
-          .ci-venv/bin/phase --version
-          .ci-venv/bin/phase doctor
-          .ci-venv/bin/phase contracts list
+          python -m venv "$RUNNER_TEMP/phase-next-wheel-venv"
+          VENV="$RUNNER_TEMP/phase-next-wheel-venv"
+          "$VENV/bin/python" -m pip install "$EVIDENCE"/dist/*.whl 2>&1 | tee "$EVIDENCE/install-wheel.log"
+          unset PYTHONPATH
+          cd "$RUNNER_TEMP"
+          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.0.0"; print(p)' | tee "$EVIDENCE/installed-location.txt"
+          "$VENV/bin/phase" --version | tee "$EVIDENCE/installed-version.txt"
+          "$VENV/bin/phase" doctor | tee "$EVIDENCE/installed-doctor.json"
+          "$VENV/bin/phase" contracts list | tee "$EVIDENCE/installed-contracts.json"
+          "$VENV/bin/python" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
+      - name: Preserve private verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ github.event.pull_request.head.sha || github.sha }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/phase-next-evidence/
+          retention-days: 14
+          if-no-files-found: error

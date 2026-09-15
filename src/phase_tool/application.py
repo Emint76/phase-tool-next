@@ -42,6 +42,14 @@ class PhaseApplication:
         except KeyError as exc:
             raise PhaseError("application.contract_binding_not_found", exact_binding) from exc
 
+    def publication_status(self, **kwargs) -> ApplicationResponse:
+        from .publication_status import publication_status
+        return publication_status(self, **kwargs)
+
+    def publication_limits(self) -> ApplicationResponse:
+        from .publication_status import publication_limits
+        return publication_limits()
+
     def recover_publication(self, **kwargs) -> ApplicationResponse:
         from .recovery import recover_publication
         return recover_publication(self, **kwargs)

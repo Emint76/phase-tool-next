@@ -84,6 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("target-locator", "request-id", "run-id"):
         bundle.add_argument("--" + name, required=True)
     bundle.add_argument("--member", dest="members", action="append", required=True)
+    subparsers.add_parser("publication-limits")
+    for name in ("publication-status", "recover-publication"):
+        query = subparsers.add_parser(name, allow_abbrev=False)
+        query.add_argument("--evidence-root", type=Path, required=True)
+        query.add_argument("--run-id", required=True)
+        if name == "publication-status":
+            query.add_argument("--wait-seconds", type=int, default=0)
+        else:
+            query.add_argument("--target-root", type=Path, required=True)
+            query.add_argument("--request-id", required=True)
+            query.add_argument("--expected-intent-digest", required=True)
     return parser
 
 
@@ -165,6 +176,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.contracts_command == "list"
             else application.contract_describe(args.contract)
         )
+        _write_json(response.payload)
+        return response.exit_code
+    if args.command in {"publication-limits", "publication-status", "recover-publication"}:
+        method = {"publication-limits": application.publication_limits,
+                  "publication-status": application.publication_status,
+                  "recover-publication": application.recover_publication}[args.command]
+        response = method(**{key: value for key, value in vars(args).items() if key != "command"})
         _write_json(response.payload)
         return response.exit_code
     if args.command == "publish-bundle":

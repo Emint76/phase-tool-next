@@ -9,6 +9,8 @@ from pydantic import StrictInt
 from .application import PhaseApplication
 from .publish_file import PublishFileResult
 from .publish_bundle import PublishBundleResult
+from .recovery import RecoveryResult
+from .publication_status import PublicationStatus
 
 _SERVER = FastMCP(
     "Phase Tool",
@@ -153,6 +155,28 @@ def phase_publish_bundle(
         evidence_root=Path(evidence_root), request_id=request_id, run_id=run_id,
     )
     return PublishBundleResult.model_validate(response.payload)
+
+
+@_SERVER.tool(name="phase_publication_limits")
+def phase_publication_limits() -> dict[str, Any]:
+    """Return executable publication bounds, without reading source or target."""
+    return _application().publication_limits().payload
+
+
+@_SERVER.tool(name="phase_publication_status")
+def phase_publication_status(evidence_root: str, run_id: str, wait_seconds: StrictInt = 0) -> PublicationStatus:
+    """Bounded wait for saved state only; NOT current content verification."""
+    response = _application().publication_status(evidence_root=Path(evidence_root),run_id=run_id,wait_seconds=wait_seconds)
+    return PublicationStatus.model_validate(response.payload)
+
+
+@_SERVER.tool(name="phase_recover_publication")
+def phase_recover_publication(evidence_root: str, run_id: str, target_root: str,
+                              request_id: str, expected_intent_digest: str) -> RecoveryResult:
+    """Reconcile proven completion; never replay target effects or recapture source."""
+    response = _application().recover_publication(evidence_root=Path(evidence_root),run_id=run_id,
+        target_root=Path(target_root),request_id=request_id,expected_intent_digest=expected_intent_digest)
+    return RecoveryResult.model_validate(response.payload)
 
 
 def _seal_tool_argument_models() -> None:

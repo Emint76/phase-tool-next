@@ -180,8 +180,11 @@ def test_real_mcp_stdio_discovers_and_executes_fixture_through_universal_tool(tm
         "phase_execute",
         "phase_inspect",
         "phase_plan",
+        "phase_publication_limits",
+        "phase_publication_status",
         "phase_publish_bundle",
         "phase_publish_file",
+        "phase_recover_publication",
         "phase_validate",
     ]
     assert "phase_source_admit" not in names
@@ -217,8 +220,11 @@ def test_phase_mcp_cli_surface_is_thin_stdio_equivalent() -> None:
         "phase_execute",
         "phase_inspect",
         "phase_plan",
+        "phase_publication_limits",
+        "phase_publication_status",
         "phase_publish_bundle",
         "phase_publish_file",
+        "phase_recover_publication",
         "phase_validate",
     ]
 
@@ -255,8 +261,11 @@ def test_cli_mcp_and_application_are_contract_agnostic_thin_adapters() -> None:
         "phase_plan",
         "phase_execute",
         "phase_inspect",
+        "phase_publication_limits",
+        "phase_publication_status",
         "phase_publish_bundle",
         "phase_publish_file",
+        "phase_recover_publication",
     }
 
 

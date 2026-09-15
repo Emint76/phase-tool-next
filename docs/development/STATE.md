@@ -1,6 +1,19 @@
 # Development state
 
-## PHASE-NEXT-RC01 — F04 checkpoint, not release-ready
+## PHASE-NEXT-RC01 — F05 checkpoint, not release-ready
+
+- F05 base: `679fde3c6fb3fc2c7074679506eabe7dbcbd7f02`; exact staged identity
+  is external in `ROOT/evidence/RC01/f05-staged/candidate.json`.
+- F05 `f05-local-gates`: **125 passed**. New **8 status/integration** cases
+  include real MCP timeout→status→recovery without republish and file/bundle
+  execution with network connections and subprocess creation forbidden.
+- F04 exact-head CI `34955858020`: both Python 3.11/3.12 cells GREEN; full suite,
+  build, clean installed entrypoints and F01 CLI/MCP smoke steps all succeeded.
+  Downloaded artifacts: `ROOT/evidence/RC01/ci-679fde3` (not later-code evidence).
+- NEXT: F06 prerelease version, final exact-head matrix plus mandatory resource
+  job, old evidence inspection, retained candidate artifacts and maintainer handoff.
+
+### Prior checkpoints (scoped evidence, not final-code approvals)
 
 - F04 candidate is above F03 `ff183871b3c8b585a5c7430f517dbc44143a8648`.
   Local `f04-local-gates`: **114 passed**, including **14 recovery** cases,

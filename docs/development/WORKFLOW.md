@@ -1,10 +1,12 @@
 # Development workflow
 
-Active task: **PHASE-NEXT-RC01**, scoped by [RC01.md](RC01.md) and [STATE.md](STATE.md).
-It authorizes ordinary source/test/document, necessary versioned-contract, CI and
-prerelease development in this private checkout. The bootstrap-specific limits
-below are historical; merge, release, public publication and production/profile
-changes remain forbidden.
+The repository is **PUBLIC**; the current verified prerelease is
+[v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5).
+Stable **v1.1.0 has not been released**. See [STATE.md](STATE.md) for provenance.
+The **PHASE-NEXT-PUBLIC-RELEASE-CLEANUP** task allows only current documentation,
+repository description and rc5 release-body cleanup, followed by a normal merge
+commit for a clean PR with green CI. Runtime, schemas/contracts, package/version,
+release assets, tags, prerelease flag, production and profiles remain out of scope.
 
 Use one bounded `/goal` for one verifiable result and one substantive PR, not a
 PR for every small edit. Keep the accepted task text and scope fixed. Changes to
@@ -26,13 +28,14 @@ deployment require their own authority and explicit approval.
 
 Never stage logs, credentials, environments or research data. Use a literal file
 allowlist and verify staged paths, diff, base commit and remote before committing.
-The bootstrap branch is `chore/private-bootstrap`, targeting private `main`.
+The cleanup branch is `docs/public-release-cleanup`, targeting `main`.
+Historically, bootstrap used `chore/private-bootstrap` while the repository was private.
 After original import, no new commits go directly to `main`.
 
 `origin` must be `https://github.com/Emint76/phase-tool-next.git`, with
-`remote.pushDefault=origin` and `push.default=simple`. The bootstrap checkout has
-no public upstream and a local pre-push hook allowing only that exact private URL.
-The hook is tested directly against public-URL arguments without a public push.
+`remote.pushDefault=origin` and `push.default=simple`. The bootstrap established
+a local pre-push hook allowing only that exact URL, then private and now public.
+It was tested against other public-URL arguments without pushing to those repositories.
 It is local safety, not server-rights revocation: `--no-verify`, changing config,
 or another checkout can bypass it. New checkouts need their own local guard.
 
@@ -56,9 +59,12 @@ A checkout's editable install is not wheel evidence. Windows bind mounts do not
 prove Linux mutation guarantees. Do not repeat the full local matrix unnecessarily.
 
 CI runs on PR changes and main pushes, not feature-branch pushes; it has read-only
-contents permission, a timeout and per-branch cancellation. Artifacts stay in the
-private repository. No publish/deploy/release job or billing change is authorized.
+contents permission, a timeout and per-branch cancellation. Verification artifacts
+are attached to Actions runs in this public repository. Normal CI builds are test
+outputs, not replacements for the frozen rc5 release assets. No publish/deploy/release
+job or billing change is authorized.
 Require available main protection (PR plus both checks; no force-push/deletion).
 Record an explicit protection gap if the account plan cannot enforce it; do not
 buy a plan or invent a second reviewer. Maintainer review is independent and is
-not an automated approval or a waiting loop within this bootstrap.
+not an automated approval. Historical bootstrap approval limits do not describe
+the current cleanup task's explicit conditional merge authorization.

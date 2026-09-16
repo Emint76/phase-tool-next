@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-tool"
-version = "1.1.0rc3"
+version = "1.1.0rc5"
 description = "Universal local Phase Tool with CLI and MCP interfaces"
 readme = "README.md"
 license = {file = "LICENSE"}

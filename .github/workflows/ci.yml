@@ -26,12 +26,36 @@ jobs:
       matrix:
         python: ["3.11", "3.12"]
     runs-on: ubuntu-latest
+    outputs:
+      resource_paths_changed: ${{ steps.resource-scope.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Check streaming resource path scope
+        id: resource-scope
+        env:
+          RESOURCE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # Inspect-only corrections do not rerun the heavy 1/2 GiB benchmarks.
+          # Missing baseline is conservatively treated as a resource change.
+          changed=true
+          if git cat-file -e "$RESOURCE_BASE^{commit}" 2>/dev/null; then
+            if git diff --quiet "$RESOURCE_BASE" HEAD -- \
+              src/phase_tool/mutation src/phase_tool/contracts \
+              src/phase_tool/data/contracts src/phase_tool/data/descriptors \
+              src/phase_tool/core.py src/phase_tool/streaming.py \
+              src/phase_tool/bundle.py src/phase_tool/publish_file.py \
+              src/phase_tool/publish_bundle.py src/phase_tool/preparation.py \
+              src/phase_tool/continuation.py src/phase_tool/continuation_progress.py \
+              src/phase_tool/prepared_binding.py src/phase_tool/recovery.py \
+              scripts/rc01_resources.py scripts/rc01_bundle_resources.py; then
+              changed=false
+            fi
+          fi
+          printf 'changed=%s\n' "$changed" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -69,7 +93,7 @@ jobs:
           "$VENV/bin/python" -m pip install "$EVIDENCE"/dist/*.whl 2>&1 | tee "$EVIDENCE/install-wheel.log"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.1.0rc3"; print(p)' | tee "$EVIDENCE/installed-location.txt"
+          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.1.0rc5"; print(p)' | tee "$EVIDENCE/installed-location.txt"
           "$VENV/bin/phase" --version | tee "$EVIDENCE/installed-version.txt"
           "$VENV/bin/phase" doctor | tee "$EVIDENCE/installed-doctor.json"
           "$VENV/bin/phase" contracts list | tee "$EVIDENCE/installed-contracts.json"
@@ -103,6 +127,7 @@ jobs:
   publication-resources:
     name: publication-resources (installed py3.11 wheel)
     needs: posix-production
+    if: needs.posix-production.outputs.resource_paths_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -137,7 +162,7 @@ jobs:
           "$PYTHON" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == "1.1.0rc3"; print(p)' > "$EVIDENCE/installed-location.txt"
+          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == "1.1.0rc5"; print(p)' > "$EVIDENCE/installed-location.txt"
       - name: Real 64 MiB 1 GiB 2 GiB streaming and RSS gate
         run: |
           unset PYTHONPATH

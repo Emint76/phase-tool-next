@@ -1,5 +1,27 @@
 # Development state
 
+## PHASE-NEXT-RC4-SCHEMA-CORRECTION — rc5 R1 candidate
+
+- Start HEAD: `fefa76e11313b270e8189fb1a39aaf5c6739d6d4`; same PR #3/branch.
+- `1.1.0rc5` / Core `1.1.0-rc.5`: require known run/intent/plan identifiers
+  in both command-result 1.1 schema copies; no inspect/recovery runtime change.
+- Schema 1.0 and valid null original-receipt facts remain unchanged.
+- [Narrow scope, regression and evidence](RC4-SCHEMA-CORRECTION.md).
+- Exact-head matrix/build/installed canary gates precede readiness; no merge,
+  release, production/profile/skill change. rc3/rc4 artifacts are preserved.
+- Prior state below is historical; next phase-review covers only the R1 diff.
+
+## PHASE-NEXT-CANARY-DEFECT-01 — rc4 correction candidate
+
+- Exact correction base: `12f01c83d56d281e4696c42495491aea97a556f0` (merged PR #2 / rc3).
+- New branch: `fix/canary-post-recovery-inspect`; no merge or release in this task.
+- `1.1.0rc4` / `1.1.0-rc.4`: additive inspect-only command-result 1.1 for missing
+  original receipt; original mutation remains unknown, recovery proof is separate.
+- [Semantics, proof boundary, regression and evidence](CANARY-DEFECT-01.md).
+- Final readiness requires exact-head Python 3.11/3.12 CI/build/installed CLI/MCP
+  and historical gates; results are retained under `ROOT/evidence/CANARY-DEFECT-01/`.
+- Prior state below is historical. Published rc3 and CANARY01 evidence are preserved.
+
 ## PHASE-NEXT-RC01-CORRECTION-02 — rc3 pending exact-head gates
 
 - Start/reviewed HEAD `13d5935a787b02f3bf24056cde89f6f77d3dce25`;

@@ -1,0 +1,194 @@
+{
+  "$id": "https://phase-tool.local/schemas/stage3-command-result-1.1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "blockers": {
+            "minItems": 1
+          },
+          "error": {
+            "type": "string"
+          },
+          "exit_code": {
+            "const": 40
+          },
+          "inspection_required": {
+            "const": true
+          },
+          "success": {
+            "const": false
+          },
+          "target_verified": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "inspection_status": {
+            "const": "recovered_verified"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blockers": {
+            "maxItems": 0
+          },
+          "error": {
+            "type": "null"
+          },
+          "exit_code": {
+            "const": 0
+          },
+          "inspection_required": {
+            "const": false
+          },
+          "recovery_observations": {
+            "minItems": 1
+          },
+          "success": {
+            "const": true
+          },
+          "target_verified": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "blockers": {
+      "items": {
+        "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "command": {
+      "const": "inspect"
+    },
+    "effect_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$",
+          "type": "string"
+        }
+      ]
+    },
+    "execution_disposition": {
+      "description": "Unknown original run fact: no original receipt. Never inferred from recovery.",
+      "type": "null"
+    },
+    "exit_code": {
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "inspection_required": {
+      "type": "boolean"
+    },
+    "inspection_status": {
+      "enum": [
+        "indeterminate",
+        "recovered_verified"
+      ]
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "mutation_attempted": {
+      "description": "Unknown original run fact: no original receipt. Never inferred from recovery.",
+      "type": "null"
+    },
+    "receipt_digest": {
+      "description": "Unknown original run fact: no original receipt. Never inferred from recovery.",
+      "type": "null"
+    },
+    "recorded_recovery_mutation_attempted": {
+      "description": "True if a validated retained recovery observation records an attempt; otherwise unknown, not proof of no recovery mutation.",
+      "enum": [
+        true,
+        null
+      ]
+    },
+    "recovery_observations": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "https://phase-tool.local/schemas/recovery-result-1.1.schema.json"
+          }
+        },
+        "required": [
+          "digest",
+          "result"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "stage3_command_result_version": {
+      "const": "1.1"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "target_verified": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "terminal_status": {
+      "description": "Unknown original run fact: no original receipt. Never inferred from recovery.",
+      "type": "null"
+    }
+  },
+  "required": [
+    "blockers",
+    "command",
+    "effect_plan_digest",
+    "error",
+    "execution_disposition",
+    "exit_code",
+    "intent_digest",
+    "mutation_attempted",
+    "receipt_digest",
+    "run_id",
+    "stage3_command_result_version",
+    "success",
+    "terminal_status",
+    "target_verified",
+    "inspection_status",
+    "inspection_required",
+    "recorded_recovery_mutation_attempted",
+    "recovery_observations"
+  ],
+  "title": "Phase inspect missing-original-receipt result 1.1",
+  "type": "object"
+}

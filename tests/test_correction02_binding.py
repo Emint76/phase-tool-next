@@ -323,7 +323,17 @@ def test_inspection_binding_does_not_depend_on_effect_receipt_presence(tmp_path,
     if case == "missing_receipt":
         args, run, _query_args = crash_prepared_bundle(tmp_path, version="2.0")
         original_inspection = _inspect(app, args)
-        assert original_inspection["success"] and original_inspection["receipt_digest"] is None, original_inspection
+        # A valid intent without a final receipt is inspectable but does not
+        # establish completed execution. rc4 makes this formerly unserializable
+        # response explicit in the missing-receipt 1.1 envelope.
+        assert original_inspection["stage3_command_result_version"] == "1.1"
+        assert original_inspection["success"] is False
+        assert original_inspection["inspection_status"] == "indeterminate"
+        assert original_inspection["exit_code"] == 40
+        assert original_inspection["mutation_attempted"] is None
+        assert original_inspection["receipt_digest"] is None
+        assert original_inspection["error"] == "inspection.original_receipt_missing"
+        assert original_inspection["intent_digest"] and original_inspection["effect_plan_digest"]
     else:
         args = bundle_arguments(tmp_path) | {"publication_version": "2.0"}
         if case == "planned":

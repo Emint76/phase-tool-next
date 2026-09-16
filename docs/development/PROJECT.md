@@ -16,12 +16,13 @@ public; historical reports and release assets retain their original wording.
 
 `phase-dev` develops; the maintainer independently accepts or rejects the result.
 A commit/push, a PR, a release, and production deployment are separate actions.
-The **PHASE-NEXT-PUBLIC-RELEASE-CLEANUP** task is documentation/metadata only:
-one focused PR may be merged with a normal merge commit after clean scope and
-green CI. It does not authorize runtime, contract, schema, package/version,
-release-asset, tag, installation, working-profile or production changes, or a
-stable release. Repository description and rc5 release body are the only GitHub
-metadata edits in scope; rc5 remains a prerelease.
+The **PHASE-NEXT-STABLE-1.1.0-CANDIDATE** task prepares stable candidate **1.1.0**
+in one focused `release/1.1.0` PR from `87474fb5b5a5a2b7a19c468b2ffb8afe0b1628ed`.
+Only package/product version metadata and necessary tests/current docs change.
+Runtime semantics, schemas/contracts and historical rc5 evidence remain unchanged.
+Exact-head tests, builds and disposable installed acceptance precede independent
+review. No merge, stable tag/release, registry publication, working-profile
+installation or production deployment is authorized; rc5 remains a prerelease.
 
 ## Historical bootstrap direction
 

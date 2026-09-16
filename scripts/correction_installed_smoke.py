@@ -49,7 +49,7 @@ def inspect_both(query):
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--root',type=Path,required=True); args=p.parse_args()
     root=args.root.absolute(); root.mkdir(parents=True,exist_ok=False)
-    assert metadata.version('phase-tool')=='1.1.0rc5'
+    assert metadata.version('phase-tool')=='1.1.0'
     rows=[]
     for transport in ('cli','mcp'):
         trial=root/transport; trial.mkdir()

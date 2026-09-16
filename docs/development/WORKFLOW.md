@@ -3,10 +3,11 @@
 The repository is **PUBLIC**; the current verified prerelease is
 [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5).
 Stable **v1.1.0 has not been released**. See [STATE.md](STATE.md) for provenance.
-The **PHASE-NEXT-PUBLIC-RELEASE-CLEANUP** task allows only current documentation,
-repository description and rc5 release-body cleanup, followed by a normal merge
-commit for a clean PR with green CI. Runtime, schemas/contracts, package/version,
-release assets, tags, prerelease flag, production and profiles remain out of scope.
+The **PHASE-NEXT-STABLE-1.1.0-CANDIDATE** task prepares stable candidate **1.1.0**
+through version metadata and necessary tests/current docs only. Runtime semantics,
+schemas/contracts and historical evidence remain unchanged. Exact-head green CI
+and retained candidate packages precede independent review. No merge, stable
+tag/release, registry publication, production deployment or working-profile install.
 
 Use one bounded `/goal` for one verifiable result and one substantive PR, not a
 PR for every small edit. Keep the accepted task text and scope fixed. Changes to
@@ -28,7 +29,8 @@ deployment require their own authority and explicit approval.
 
 Never stage logs, credentials, environments or research data. Use a literal file
 allowlist and verify staged paths, diff, base commit and remote before committing.
-The cleanup branch is `docs/public-release-cleanup`, targeting `main`.
+The candidate branch is `release/1.1.0`, targeting `main` from exact base
+`87474fb5b5a5a2b7a19c468b2ffb8afe0b1628ed`.
 Historically, bootstrap used `chore/private-bootstrap` while the repository was private.
 After original import, no new commits go directly to `main`.
 
@@ -66,5 +68,5 @@ job or billing change is authorized.
 Require available main protection (PR plus both checks; no force-push/deletion).
 Record an explicit protection gap if the account plan cannot enforce it; do not
 buy a plan or invent a second reviewer. Maintainer review is independent and is
-not an automated approval. Historical bootstrap approval limits do not describe
-the current cleanup task's explicit conditional merge authorization.
+not an automated approval. Prior cleanup merge authorization does not apply
+to this candidate task: leave its PR open and unmerged for independent review.

@@ -1,6 +1,20 @@
 # Development state
 
-## Current public state — PHASE-NEXT-PUBLIC-RELEASE-CLEANUP
+## Current public state — PHASE-NEXT-STABLE-1.1.0-CANDIDATE
+
+- Stable candidate: package and Core/CLI **1.1.0**; stable release **not published**.
+- Current published prerelease remains [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5),
+  accepted after independent review and canary verification (prior evidence).
+- Base: `87474fb5b5a5a2b7a19c468b2ffb8afe0b1628ed`; branch `release/1.1.0`.
+- Delta: version exposure/metadata plus necessary tests and current documentation.
+  Inspection, recovery, streaming, bundles, effects and schemas/contracts are unchanged.
+- Exact-head Python 3.11/3.12 CI, package hashes, installed smoke and source/package
+  byte comparisons are required before readiness; final evidence is external under
+  `ROOT/evidence/STABLE-1.1.0-CANDIDATE/` and `ROOT/artifacts/STABLE-1.1.0-CANDIDATE/`.
+- Next: independent limited stable-promotion and exact-package review. No merge,
+  stable tag/release, package-registry publication, deployment or working-profile install.
+
+## Historical public cleanup snapshot — PHASE-NEXT-PUBLIC-RELEASE-CLEANUP
 
 - `Emint76/phase-tool-next` is **PUBLIC**. The current verified prerelease is
   [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5),

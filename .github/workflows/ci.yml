@@ -93,7 +93,7 @@ jobs:
           "$VENV/bin/python" -m pip install "$EVIDENCE"/dist/*.whl 2>&1 | tee "$EVIDENCE/install-wheel.log"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.1.0rc4"; print(p)' | tee "$EVIDENCE/installed-location.txt"
+          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.1.0rc5"; print(p)' | tee "$EVIDENCE/installed-location.txt"
           "$VENV/bin/phase" --version | tee "$EVIDENCE/installed-version.txt"
           "$VENV/bin/phase" doctor | tee "$EVIDENCE/installed-doctor.json"
           "$VENV/bin/phase" contracts list | tee "$EVIDENCE/installed-contracts.json"
@@ -162,7 +162,7 @@ jobs:
           "$PYTHON" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == "1.1.0rc4"; print(p)' > "$EVIDENCE/installed-location.txt"
+          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == "1.1.0rc5"; print(p)' > "$EVIDENCE/installed-location.txt"
       - name: Real 64 MiB 1 GiB 2 GiB streaming and RSS gate
         run: |
           unset PYTHONPATH

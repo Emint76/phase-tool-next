@@ -5,8 +5,8 @@ from phase_tool.application import PhaseApplication
 
 
 def test_rc01_has_explicit_prerelease_and_resolves_old_contracts() -> None:
-    assert metadata.version('phase-tool')=='1.1.0rc4'
-    assert __version__=='1.1.0-rc.4'
+    assert metadata.version('phase-tool')=='1.1.0rc5'
+    assert __version__=='1.1.0-rc.5'
     app=PhaseApplication()
     assert app.doctor().payload['version']==__version__
     contracts=app.contracts_list().payload['contracts']
@@ -23,7 +23,7 @@ def test_installed_candidate_cli_mcp_smoke(tmp_path) -> None:
         env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode==0,result.stdout+result.stderr
     report=json.loads((tmp_path/'installed/summary.json').read_text())
-    assert report['success'] and report['version']=='1.1.0rc4'
+    assert report['success'] and report['version']=='1.1.0rc5'
     assert report['file_bytes']==2097152
     assert report['bundle_members']==2
     assert report['cross_inspect'] and report['recovery'] and report['metadata_status_not_verification']

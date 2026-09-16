@@ -1,4 +1,4 @@
-"""Installed rc4 continuation + post-recovery inspect, no source-tree imports."""
+"""Installed rc5 continuation + post-recovery inspect, no source-tree imports."""
 import argparse, asyncio, json, os, subprocess, sys
 from pathlib import Path
 from importlib import metadata
@@ -49,7 +49,7 @@ def inspect_both(query):
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--root',type=Path,required=True); args=p.parse_args()
     root=args.root.absolute(); root.mkdir(parents=True,exist_ok=False)
-    assert metadata.version('phase-tool')=='1.1.0rc4'
+    assert metadata.version('phase-tool')=='1.1.0rc5'
     rows=[]
     for transport in ('cli','mcp'):
         trial=root/transport; trial.mkdir()

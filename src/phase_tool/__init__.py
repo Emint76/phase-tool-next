@@ -1,3 +1,3 @@
 """Validation-only Phase Tool Core."""
 
-__version__ = "1.1.0-rc.4"
+__version__ = "1.1.0-rc.5"

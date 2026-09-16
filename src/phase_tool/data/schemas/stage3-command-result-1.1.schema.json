@@ -73,15 +73,8 @@
       "const": "inspect"
     },
     "effect_plan_digest": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        }
-      ]
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
     },
     "error": {
       "oneOf": [
@@ -113,15 +106,8 @@
       ]
     },
     "intent_digest": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        }
-      ]
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
     },
     "mutation_attempted": {
       "description": "Unknown original run fact: no original receipt. Never inferred from recovery.",
@@ -159,15 +145,8 @@
       "type": "array"
     },
     "run_id": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-          "type": "string"
-        }
-      ]
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
     },
     "stage3_command_result_version": {
       "const": "1.1"

@@ -1,5 +1,29 @@
 # Development state
 
+## Current public state — PHASE-NEXT-PUBLIC-RELEASE-CLEANUP
+
+- `Emint76/phase-tool-next` is **PUBLIC**. The current verified prerelease is
+  [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5),
+  accepted after independent review and canary verification.
+- Stable **v1.1.0 has not been released**. Distribution is via GitHub Release
+  assets, not a PyPI publication; this cleanup does not deploy the product.
+- rc5 tag target / cleanup base: `2779c9b0cf544337539ec41c83cc74c252f939a5`.
+  Reviewed package source: `0c21465e09acb12b849f2dd3238bb18c8b50427d`;
+  both commits have tree `2ea2f2df1bd8cd0ae4349836eef041bbe887ea7a`.
+  Published package bytes are retained unchanged, not rebuilt for this cleanup.
+- The repository was private at initial rc5 publication and later became public.
+  Historical reports and attached release notes preserve that original context.
+- Scope: current documentation, repository description and rc5 release body only.
+  A clean, green cleanup PR may use a normal merge commit; no runtime, package,
+  tag, prerelease-flag or production changes. Stable candidate preparation is a
+  separate next task, not a release authorization here.
+
+## Historical development snapshots
+
+Everything below records earlier task states and their then-applicable limits.
+References to private visibility, pending gates or forbidden merge/release actions
+are historical, not statements of current repository or release status.
+
 ## PHASE-NEXT-RC4-SCHEMA-CORRECTION — rc5 R1 candidate
 
 - Start HEAD: `fefa76e11313b270e8189fb1a39aaf5c6739d6d4`; same PR #3/branch.

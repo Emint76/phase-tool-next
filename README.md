@@ -1,6 +1,8 @@
 # Phase Tool
 
-Private prerelease **1.1.0rc1** (RC01): [candidate notes](docs/development/RC01-RELEASE-NOTES.md) and [file/bundle integration](docs/development/RC01-INTEGRATION.md). Not a published release or production deployment.
+This repository is **PUBLIC**. The current verified prerelease is [**v1.1.0rc5**](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5), accepted after independent review and canary verification. **Stable v1.1.0 has not been released.** Prerelease packages are available as GitHub Release assets; this is not a PyPI publication or a production deployment.
+
+See the [file/bundle integration guide](docs/development/RC01-INTEGRATION.md) and [current development state](docs/development/STATE.md). The [RC01 candidate notes](docs/development/RC01-RELEASE-NOTES.md) are historical, not the current release description.
 
 Phase Tool is a local, registry-driven execution product. Its CLI and MCP adapters are thin transports over one `PhaseApplication`, which resolves an exact contract binding and calls the existing `PhaseCore.run` lifecycle.
 
@@ -21,10 +23,10 @@ See:
 
 ## Quick Start
 
-Install a built wheel in a normal virtual environment:
+Download `phase_tool-1.1.0rc5-py3-none-any.whl` from the [v1.1.0rc5 GitHub Release](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5), then install the downloaded local wheel in a normal virtual environment on a supported Linux/POSIX host:
 
 ```console
-python -m pip install phase_tool-1.1.0rc1-py3-none-any.whl
+python -m pip install ./phase_tool-1.1.0rc5-py3-none-any.whl
 phase --version
 phase doctor
 phase contracts list

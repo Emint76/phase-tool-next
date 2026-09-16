@@ -1,8 +1,8 @@
 # Phase Tool
 
-This repository is **PUBLIC**. The current verified prerelease is [**v1.1.0rc5**](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5), accepted after independent review and canary verification. **Stable v1.1.0 has not been released.** Prerelease packages are available as GitHub Release assets; this is not a PyPI publication or a production deployment.
+This repository is **PUBLIC**. The current stable release is [**v1.1.0**](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0): **PUBLIC STABLE RELEASED**. Packages are distributed through GitHub Release assets; no PyPI/TestPyPI publication or production deployment has been performed.
 
-**This source tree prepares the stable candidate 1.1.0** (package and Core/CLI versions). The candidate is not a published release; rc5 remains the current published prerelease. This promotion changes version exposure/metadata and the corresponding tests/docs, not runtime semantics.
+The stable release passed independent review before merge; exact-head CI and post-merge CI completed successfully. Published packages are the exact retained reviewed bytes, not rebuilt from the merge commit. [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5) is the previous verified prerelease, preserved as historical evidence.
 
 See the [file/bundle integration guide](docs/development/RC01-INTEGRATION.md) and [current development state](docs/development/STATE.md). The [RC01 candidate notes](docs/development/RC01-RELEASE-NOTES.md) are historical, not the current release description.
 
@@ -25,10 +25,10 @@ See:
 
 ## Quick Start
 
-Download `phase_tool-1.1.0rc5-py3-none-any.whl` from the [v1.1.0rc5 GitHub Release](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5), then install the downloaded local wheel in a normal virtual environment on a supported Linux/POSIX host:
+Download `phase_tool-1.1.0-py3-none-any.whl` from the [v1.1.0 GitHub Release](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0), then install the downloaded local wheel in a normal virtual environment on a supported Linux/POSIX host:
 
 ```console
-python -m pip install ./phase_tool-1.1.0rc5-py3-none-any.whl
+python -m pip install ./phase_tool-1.1.0-py3-none-any.whl
 phase --version
 phase doctor
 phase contracts list

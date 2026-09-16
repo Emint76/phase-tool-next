@@ -1,6 +1,30 @@
 # Development state
 
-## Current public state — PHASE-NEXT-STABLE-1.1.0-CANDIDATE
+## Current public state — Phase Tool Next 1.1.0 PUBLIC STABLE RELEASED
+
+- Repository: **PUBLIC**. Current stable release:
+  [v1.1.0](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0).
+- Independent review completed before [PR #5](https://github.com/Emint76/phase-tool-next/pull/5)
+  was merged. [Exact-head CI](https://github.com/Emint76/phase-tool-next/actions/runs/35099769425)
+  and [post-merge CI](https://github.com/Emint76/phase-tool-next/actions/runs/35126751915)
+  completed with **SUCCESS**.
+- Stable tag target: `5ba874f77e9225aae29e6c84cfc3f776df557c9c`.
+  Reviewed package source: `4bf87695845884a19c0bf7f2c2179a2e41499a8d`;
+  shared tree: `631559cf387d438de722e801bc1cab8792530586`.
+- Published packages are the **exact retained reviewed bytes**, not rebuilt from
+  the merge commit or replaced by post-merge CI outputs. Package hashes and
+  producing CI artifact identity are recorded in the stable release.
+- [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5)
+  is the previous verified prerelease; its tag, release, assets and evidence remain historical.
+- Distribution: GitHub Release assets. No PyPI/TestPyPI publication, production
+  deployment or working-profile installation has been performed.
+- Next: the 1.1.0 release cycle is complete; separately decide working-environment
+  rollout/installation and the next roadmap. This cleanup changes current docs only.
+
+## Historical stable preparation snapshot — PHASE-NEXT-STABLE-1.1.0-CANDIDATE
+
+The following snapshots retain their original task states and restrictions;
+pending review/merge/release wording below is historical, not current status.
 
 - Stable candidate: package and Core/CLI **1.1.0**; stable release **not published**.
 - Current published prerelease remains [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5),

@@ -2,6 +2,8 @@
 
 This repository is **PUBLIC**. The current verified prerelease is [**v1.1.0rc5**](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5), accepted after independent review and canary verification. **Stable v1.1.0 has not been released.** Prerelease packages are available as GitHub Release assets; this is not a PyPI publication or a production deployment.
 
+**This source tree prepares the stable candidate 1.1.0** (package and Core/CLI versions). The candidate is not a published release; rc5 remains the current published prerelease. This promotion changes version exposure/metadata and the corresponding tests/docs, not runtime semantics.
+
 See the [file/bundle integration guide](docs/development/RC01-INTEGRATION.md) and [current development state](docs/development/STATE.md). The [RC01 candidate notes](docs/development/RC01-RELEASE-NOTES.md) are historical, not the current release description.
 
 Phase Tool is a local, registry-driven execution product. Its CLI and MCP adapters are thin transports over one `PhaseApplication`, which resolves an exact contract binding and calls the existing `PhaseCore.run` lifecycle.

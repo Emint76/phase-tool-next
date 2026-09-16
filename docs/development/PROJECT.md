@@ -1,10 +1,11 @@
 # Phase Next — Public Development
 
-The repository is **PUBLIC**. The current verified prerelease is
-[v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5),
-accepted after independent review and canary verification. Stable **v1.1.0 has
-not been released**; packages are distributed through GitHub Release assets,
-not as a PyPI publication. See [STATE.md](STATE.md) for current state and history.
+The repository is **PUBLIC**. Phase Tool Next **1.1.0 = PUBLIC STABLE RELEASED**;
+the current stable release is
+[v1.1.0](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0).
+Packages are distributed through GitHub Release assets. No PyPI/TestPyPI
+publication or production deployment has been performed.
+See [STATE.md](STATE.md) for current state and history.
 
 Phase Next is the standalone public continuation at `Emint76/phase-tool-next`,
 not a GitHub fork. Its original source is `Emint76/phase-tool-codex`, release/tag
@@ -16,13 +17,13 @@ public; historical reports and release assets retain their original wording.
 
 `phase-dev` develops; the maintainer independently accepts or rejects the result.
 A commit/push, a PR, a release, and production deployment are separate actions.
-The **PHASE-NEXT-STABLE-1.1.0-CANDIDATE** task prepares stable candidate **1.1.0**
-in one focused `release/1.1.0` PR from `87474fb5b5a5a2b7a19c468b2ffb8afe0b1628ed`.
-Only package/product version metadata and necessary tests/current docs change.
-Runtime semantics, schemas/contracts and historical rc5 evidence remain unchanged.
-Exact-head tests, builds and disposable installed acceptance precede independent
-review. No merge, stable tag/release, registry publication, working-profile
-installation or production deployment is authorized; rc5 remains a prerelease.
+The stable release passed independent review before merge, with exact-head CI
+and post-merge CI **SUCCESS**. Published packages are the exact retained reviewed
+bytes, not rebuilt from the merge commit. The previous verified prerelease
+[v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5)
+remains historical; its tag, release and assets are preserved.
+The 1.1.0 release cycle is complete. Working-environment rollout/installation
+and the next roadmap require separate decisions; neither is part of this cleanup.
 
 ## Historical bootstrap direction
 

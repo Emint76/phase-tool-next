@@ -72,9 +72,6 @@ jobs:
           python --version | tee "$EVIDENCE/python-version.txt"
           uname -a | tee "$EVIDENCE/kernel.txt"
           stat -f -c '%T' . "$RUNNER_TEMP" | tee "$EVIDENCE/filesystems.txt"
-      - name: Bootstrap scope check
-        if: github.head_ref == 'chore/private-bootstrap'
-        run: python scripts/private_bootstrap_check.py | tee "$EVIDENCE/bootstrap-check.json"
       - name: Install test dependencies
         run: |
           python -m pip install ".[test]" 2>&1 | tee "$EVIDENCE/install-test-deps.log"
@@ -113,7 +110,7 @@ jobs:
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/correction_installed_smoke.py" --root "$EVIDENCE/installed-correction" 2>&1 | tee "$EVIDENCE/installed-correction.log"
-      - name: Preserve private verification artifacts
+      - name: Preserve verification artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:

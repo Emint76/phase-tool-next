@@ -19,7 +19,7 @@
 - Distribution: GitHub Release assets. No PyPI/TestPyPI publication, production
   deployment or working-profile installation has been performed.
 - Next: the 1.1.0 release cycle is complete; separately decide working-environment
-  rollout/installation and the next roadmap. This cleanup changes current docs only.
+  rollout/installation and the next roadmap.
 
 ## Historical stable preparation snapshot — PHASE-NEXT-STABLE-1.1.0-CANDIDATE
 

@@ -26,22 +26,23 @@ deployment require their own authority and explicit approval.
 
 - `instance/toolkit/`: this checkout, the only Git publication root;
 - `instance/archive/`: empty reserve, outside this checkout;
-- `preparation/`, `evidence/bootstrap/`, `artifacts/baseline/`, `scratch/`:
-  preparation, command evidence, original release assets and disposable runtimes.
+- `preparation/`, `evidence/<task>/`, `artifacts/<task>/`, `scratch/`:
+  preparation, task-specific evidence/artifacts and disposable runtimes.
+- `evidence/bootstrap/` and `artifacts/baseline/`: preserved historical bootstrap
+  evidence and original release assets, not current task output locations.
 
 Never stage logs, credentials, environments or research data. Use a literal file
 allowlist and verify staged paths, diff, base commit and remote before committing.
-For this documentation-only cleanup, use `docs/post-release-1.1.0`, targeting
-`main` from exact base `5ba874f77e9225aae29e6c84cfc3f776df557c9c`.
-Historically, bootstrap used `chore/private-bootstrap` while the repository was private.
-After original import, no new commits go directly to `main`.
+Start a focused branch from the verified current `origin/main`, make the bounded
+change, and open a PR targeting `main`. Bind the accepted scope to its exact base;
+stop and reassess if that base changes. No new commits go directly to `main`.
 
 `origin` must be `https://github.com/Emint76/phase-tool-next.git`, with
-`remote.pushDefault=origin` and `push.default=simple`. The bootstrap established
-a local pre-push hook allowing only that exact URL, then private and now public.
-It was tested against other public-URL arguments without pushing to those repositories.
-It is local safety, not server-rights revocation: `--no-verify`, changing config,
-or another checkout can bypass it. New checkouts need their own local guard.
+`remote.pushDefault=origin` and `push.default=simple`. Retain the existing local
+pre-push guard restricting pushes to that exact URL. This is destination safety,
+not a repository-visibility requirement or server-rights revocation: `--no-verify`,
+changing config, or another checkout can bypass it. Verify the destination in
+every checkout; do not bypass an active guard.
 
 ## Verification and bounded loop
 
@@ -70,7 +71,8 @@ job or billing change is authorized.
 Require available main protection (PR plus both checks; no force-push/deletion).
 Record an explicit protection gap if the account plan cannot enforce it; do not
 buy a plan or invent a second reviewer. Maintainer review is independent and is
-not an automated approval. This cleanup permits one focused documentation commit
-and an ordinary merge commit only after a docs-only diff, **CLEAN** PR and green
-exact-head CI are verified. No squash, rebase or admin bypass. Verify main and a
-clean checkout after merge, with stable and rc5 tags/releases/assets unchanged.
+not an automated approval. After exact-head CI, review and the accepted task's
+gates, use a normal merge commit only when merge is authorized, the scoped diff
+is verified, and the PR is **CLEAN/MERGEABLE**. No squash, rebase or admin bypass.
+Verify main, a clean checkout and post-merge CI. Development changes do not
+authorize changes to existing tags, releases or assets.

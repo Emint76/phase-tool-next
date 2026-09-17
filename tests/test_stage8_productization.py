@@ -404,7 +404,9 @@ def test_publication_metadata_documentation_and_linux_ci_are_complete() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project["version"] == "1.1.0"
     assert project["readme"] == "README.md"
-    assert project["license"]["file"] == "LICENSE"
+    assert project["license"] == "MIT"
+    assert project["license-files"] == ["LICENSE"]
+    assert not any(value.startswith("License ::") for value in project["classifiers"])
     assert project["scripts"] == {
         "phase": "phase_tool.cli.main:main",
         "phase-mcp": "phase_tool.mcp_server:main",

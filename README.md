@@ -1,5 +1,22 @@
 # Phase Tool
 
+A file-writing job can fail after changing its destination but before reporting
+success. The caller then needs to know what was actually published, whether the
+bytes are intact, and whether it is safe to retry.
+
+Phase Tool provides verified local publication of files and bundles for automation
+scripts, data pipelines, and agent tooling. It records the intended operation and
+its evidence, applies bounded filesystem changes, and verifies the result. Python,
+CLI, and MCP callers use the same implementation. Recovery after an interruption
+is limited to explicitly supported cases; an error or missing response does not
+mean that nothing was written.
+
+For example, a pipeline can publish a generated report and its CSV tables as one
+bundle, retain the operation's evidence, and inspect the published bytes after a
+lost completion response instead of blindly publishing again. See the
+[file/bundle integration guide](docs/development/RC01-INTEGRATION.md) for commands,
+limits, and recovery rules. To contribute, start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
 This repository is **PUBLIC**. The current stable release is [**v1.1.0**](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0): **PUBLIC STABLE RELEASED**. Packages are distributed through GitHub Release assets; no PyPI/TestPyPI publication or production deployment has been performed.
 
 The stable release passed independent review before merge; exact-head CI and post-merge CI completed successfully. Published packages are the exact retained reviewed bytes, not rebuilt from the merge commit. [v1.1.0rc5](https://github.com/Emint76/phase-tool-next/releases/tag/v1.1.0rc5) is the previous verified prerelease, preserved as historical evidence.

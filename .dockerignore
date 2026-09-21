@@ -1,0 +1,10 @@
+# Positive allowlist: only the staged distribution inputs reach the builder.
+**
+!Dockerfile
+!.dockerignore
+!docker/
+!docker/requirements.lock
+!docker/wheels.json
+!docker/stage.py
+!wheels/
+!wheels/*.whl

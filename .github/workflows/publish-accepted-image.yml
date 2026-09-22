@@ -1,0 +1,450 @@
+name: Publish accepted Phase Tool 1.1.0 image
+
+# Promotion only: no checkout, build, docker load, alternate tags, or PAT.
+# Maintainer prerequisite: exclude ALL other writers to this package/tag.
+# GitHub concurrency is not a registry-wide lock or conditional manifest PUT.
+# New GHCR packages default private. This does NOT establish anonymous pull.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ghcr-emint76-phase-tool-1.1.0
+  cancel-in-progress: false
+
+jobs:
+  publisher:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'Emint76/phase-tool-next' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' &&
+      github.workflow_ref == 'Emint76/phase-tool-next/.github/workflows/publish-accepted-image.yml@refs/heads/main' &&
+      github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check trusted invocation and initialize provenance
+        env:
+          WORK: ${{ runner.temp }}/phase-accepted-publisher
+          EVIDENCE: ${{ runner.temp }}/phase-accepted-publisher/evidence
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'WORK=%s\nEVIDENCE=%s\n' "$WORK" "$EVIDENCE" >> "$GITHUB_ENV"
+          mkdir -m 700 "$WORK"
+          mkdir -m 700 "$EVIDENCE" "$WORK/private"
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          expected = {
+              'GITHUB_EVENT_NAME': 'workflow_dispatch',
+              'GITHUB_REPOSITORY': 'Emint76/phase-tool-next',
+              'GITHUB_REF': 'refs/heads/main',
+              'GITHUB_WORKFLOW_REF': 'Emint76/phase-tool-next/.github/workflows/publish-accepted-image.yml@refs/heads/main',
+          }
+          if any(os.environ.get(k) != v for k, v in expected.items()):
+              raise SystemExit('FAIL: untrusted invocation')
+          if event.get('repository', {}).get('default_branch') != 'main' or event.get('inputs'):
+              raise SystemExit('FAIL: default branch or inputs')
+          sha = os.environ.get('GITHUB_SHA', '')
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or os.environ.get('GITHUB_WORKFLOW_SHA') != sha:
+              raise SystemExit('FAIL: workflow SHA')
+          expected.update({k: os.environ[k] for k in ('GITHUB_SHA', 'GITHUB_WORKFLOW_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT')})
+          expected['status'] = 'STARTED_NOT_PUBLISHED'
+          expected['public_anonymous_pull_verified'] = False
+          pathlib.Path(os.environ['EVIDENCE'], 'invocation.json').write_text(json.dumps(expected, indent=2) + '\n')
+          PY
+
+      - name: Install native copy tool and capture exact runtime
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          sudo -n timeout 240 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo -n timeout 120 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends skopeo
+          skopeo --version | tee "$EVIDENCE/skopeo-version.txt"
+          dpkg-query -W -f='${Package}\t${Version}\n' skopeo golang-github-containers-common > "$EVIDENCE/apt-packages.txt"
+          sha256sum "$(command -v skopeo)" > "$EVIDENCE/skopeo-binary-SHA256.txt"
+          python3 --version > "$EVIDENCE/python-version.txt"
+          uname -srm > "$EVIDENCE/kernel.txt"
+          cp /etc/os-release "$EVIDENCE/os-release.txt"
+
+      - name: Validate pinned archive and prove local index preservation
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > "$WORK/publisher.py" <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import subprocess
+          import sys
+          import tarfile
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          REPOSITORY = 'Emint76/phase-tool-next'
+          TAG = '1.1.0'
+          ASSET = 'phase-tool-1.1.0-linux-amd64.oci.tar'
+          ASSET_URL = 'https://github.com/Emint76/phase-tool-next/releases/download/v1.1.0/' + ASSET
+          ARCHIVE_SHA = 'c74a7acda1af0af300c63825f577d3836fb4f2378903b58a98601955b6217b38'
+          ACCEPTED = 'sha256:5e6f98d684b7f65e6798f2fdc23edf05ed839ed96b611de29e4930c357ce0277'
+          IMAGE = 'sha256:30807a60358cca59c289e4079f19314c74e41aa4a15d2e34ece1fb001026a737'
+          ATTESTATION = 'sha256:4f6019fe4f89153e1cf8d9be0d04db9e8179ce7bf5b109f49eb1cfce02d02305'
+          CONFIG = 'sha256:b4650e39e3d330cbc4787c562fcb1d88505fbe4aa5f2d96e80c1ad971dc2a839'
+          ATTESTATION_CONFIG = 'sha256:e58b473b5d3bb40970fc41a8e105d40a8a807d2ce7b86f4b68cbc00a8a655925'
+          INDEX_TYPE = 'application/vnd.oci.image.index.v1+json'
+          MANIFEST_TYPE = 'application/vnd.oci.image.manifest.v1+json'
+          REGISTRY_NAME = 'ghcr.io/emint76/phase-tool'
+          DESTINATION = 'docker://' + REGISTRY_NAME + ':' + TAG
+          MANIFEST_URL = 'https://ghcr.io/v2/emint76/phase-tool/manifests/1.1.0'
+          TOKEN_URL = 'https://ghcr.io/token?' + urllib.parse.urlencode({
+              'service': 'ghcr.io', 'scope': 'repository:emint76/phase-tool:pull',
+          })
+          MAX_BLOB = 100 * 1024 * 1024
+
+          class Failure(Exception):
+              pass
+
+          def require(condition, code):
+              if not condition:
+                  raise Failure(code)
+
+          def sha256(data):
+              return 'sha256:' + hashlib.sha256(data).hexdigest()
+
+          def decode(data):
+              try:
+                  return json.loads(data)
+              except (ValueError, UnicodeError):
+                  raise Failure('invalid-json') from None
+
+          def save(path, data):
+              path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+          def blob_path(digest):
+              require(isinstance(digest, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', digest), 'digest-format')
+              return 'blobs/sha256/' + digest[7:]
+
+          def validate_root(raw):
+              require(sha256(raw) == ACCEPTED, 'accepted-index-digest-mismatch')
+              index = decode(raw)
+              require(index.get('schemaVersion') == 2 and index.get('mediaType') == INDEX_TYPE, 'not-accepted-oci-index')
+              require([d['digest'] for d in index['manifests']] == [IMAGE, ATTESTATION], 'child-manifest-set')
+              return index
+
+          def verify_graph(read, evidence=None):
+              require(decode(read('oci-layout')) == {'imageLayoutVersion': '1.0.0'}, 'oci-layout-version')
+              wrapper = decode(read('index.json'))
+              require(wrapper.get('schemaVersion') == 2, 'layout-index-schema')
+              roots = wrapper.get('manifests', [])
+              require(len(roots) == 1, 'ambiguous-layout-root')
+              root = roots[0]
+              require(root.get('digest') == ACCEPTED and root.get('mediaType') == INDEX_TYPE, 'layout-root-identity')
+              require(root.get('annotations', {}).get('org.opencontainers.image.ref.name') == TAG, 'layout-root-tag')
+              blobs = {}
+              documents = {}
+
+              def blob(desc):
+                  require(not desc.get('urls'), 'external-blob-url')
+                  digest = desc['digest']
+                  data = read(blob_path(digest))
+                  require(len(data) <= MAX_BLOB and type(desc.get('size')) is int and len(data) == desc['size'], 'blob-size')
+                  require(sha256(data) == digest, 'blob-digest')
+                  blobs[digest] = {'size': len(data), 'mediaType': desc['mediaType']}
+                  return data
+
+              raw = blob(root)
+              index = validate_root(raw)
+              documents['accepted-index.json'] = raw
+              children = []
+              for desc in index['manifests']:
+                  require(desc.get('mediaType') == MANIFEST_TYPE, 'child-media-type')
+                  manifest_raw = blob(desc)
+                  manifest = decode(manifest_raw)
+                  require(manifest.get('schemaVersion') == 2 and manifest.get('mediaType') == MANIFEST_TYPE, 'manifest-schema')
+                  config_raw = blob(manifest['config'])
+                  config = decode(config_raw)
+                  role = 'image' if desc['digest'] == IMAGE else 'attestation'
+                  expected_config = CONFIG if role == 'image' else ATTESTATION_CONFIG
+                  expected_arch, expected_os = ('amd64', 'linux') if role == 'image' else ('unknown', 'unknown')
+                  require(manifest['config']['digest'] == expected_config, 'config-identity')
+                  require((config.get('architecture'), config.get('os')) == (expected_arch, expected_os), 'config-platform')
+                  require(desc.get('platform') == {'architecture': expected_arch, 'os': expected_os}, 'descriptor-platform')
+                  if role == 'attestation':
+                      annotations = desc.get('annotations', {})
+                      require(annotations.get('vnd.docker.reference.type') == 'attestation-manifest', 'attestation-type')
+                      require(annotations.get('vnd.docker.reference.digest') == IMAGE, 'attestation-subject')
+                  for layer in manifest['layers']:
+                      blob(layer)
+                  documents[role + '-manifest.json'] = manifest_raw
+                  documents[role + '-config.json'] = config_raw
+                  children.append({
+                      'role': role, 'manifest_digest': desc['digest'], 'config_digest': expected_config,
+                      'architecture': expected_arch, 'os': expected_os,
+                      'layers': manifest['layers'], 'rootfs': config.get('rootfs'),
+                  })
+              require(len(blobs) == 14, 'blob-closure-count')
+              if evidence is not None:
+                  evidence.mkdir(parents=True, exist_ok=True)
+                  for name, data in documents.items():
+                      (evidence / name).write_bytes(data)
+              return {'accepted_index': ACCEPTED, 'children': children, 'blobs': blobs, 'blob_count': len(blobs)}
+
+          def verify_archive(path, evidence=None):
+              with path.open('rb') as stream:
+                  require(hashlib.file_digest(stream, 'sha256').hexdigest() == ARCHIVE_SHA, 'archive-digest-mismatch')
+              with tarfile.open(path, 'r:') as archive:
+                  members = archive.getmembers()
+                  names = [m.name for m in members]
+                  require(len(names) == len(set(names)), 'duplicate-tar-member')
+                  for member in members:
+                      parts = PurePosixPath(member.name).parts
+                      require(not member.name.startswith('/') and '\\' not in member.name and ':' not in member.name and '..' not in parts, 'unsafe-tar-path')
+                      require(member.isfile() or member.isdir(), 'unsafe-tar-member-type')
+                  def read(name):
+                      member = archive.getmember(name)
+                      require(member.isfile() and member.size <= MAX_BLOB, 'tar-member-size-or-type')
+                      with archive.extractfile(member) as stream:
+                          return stream.read(MAX_BLOB + 1)
+                  report = verify_graph(read, evidence)
+                  actual_blobs = {m.name for m in members if m.isfile() and m.name.startswith('blobs/')}
+                  require(actual_blobs == {blob_path(d) for d in report['blobs']}, 'archive-blob-closure')
+              return report
+
+          def verify_directory(path, evidence=None):
+              def read(name):
+                  file = path / name
+                  require(file.resolve().is_relative_to(path.resolve()) and not file.is_symlink(), 'unsafe-layout-path')
+                  require(file.stat().st_size <= MAX_BLOB, 'layout-file-size')
+                  return file.read_bytes()
+              return verify_graph(read, evidence)
+
+          def copy_image(source, destination, work, operation, authfile=None):
+              digestfile = work / (operation + '.digest')
+              command = ['skopeo', '--command-timeout', '10m', '--tmpdir', str(work / 'private'),
+                         'copy', '--all', '--preserve-digests', '--retry-times', '0',
+                         '--src-tls-verify=true', '--dest-tls-verify=true', '--digestfile', str(digestfile)]
+              if authfile is not None:
+                  command += ['--authfile', str(authfile)]
+              command += [source, destination]
+              # No shell, debug mode, credentials in argv, or authenticated stderr in artifacts.
+              env = {k: v for k, v in os.environ.items() if k != 'GH_TOKEN'}
+              result = subprocess.run(command, env=env, stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=630, check=False)
+              require(result.returncode == 0, 'skopeo-copy-failed-' + operation)
+              require(digestfile.read_text().strip() == ACCEPTED, 'skopeo-copy-digest-' + operation)
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def http_get(url, headers):
+              # Authenticated requests never follow redirects, even to another HTTPS host.
+              require(url in (TOKEN_URL, MANIFEST_URL), 'http-endpoint-allowlist')
+              opener = urllib.request.build_opener(NoRedirect())
+              request = urllib.request.Request(url, headers=headers, method='GET')
+              try:
+                  response = opener.open(request, timeout=30)
+              except urllib.error.HTTPError as error:
+                  response = error
+              except (urllib.error.URLError, OSError, TimeoutError):
+                  raise Failure('registry-network-or-tls') from None
+              try:
+                  with response:
+                      body = response.read(2 * 1024 * 1024 + 1)
+                      require(len(body) <= 2 * 1024 * 1024, 'registry-response-too-large')
+                      return response.code, {k.lower(): v for k, v in response.headers.items()}, body
+              except (OSError, TimeoutError):
+                  raise Failure('registry-response-read') from None
+
+          def classify_manifest(status, headers, body):
+              if status == 200:
+                  require(headers.get('content-type', '').split(';')[0].strip() == INDEX_TYPE, 'registry-not-oci-index')
+                  validate_root(body)
+                  require(headers.get('docker-content-digest', ACCEPTED) == ACCEPTED, 'registry-digest-header')
+                  return 'present'
+              if status == 404:
+                  require(headers.get('content-type', '').split(';')[0].strip() == 'application/json', 'non-json-not-found')
+                  error = decode(body)
+                  errors = error.get('errors') if isinstance(error, dict) else None
+                  require(isinstance(errors, list) and bool(errors), 'unrecognized-not-found')
+                  require(all(isinstance(e, dict) and e.get('code') in ('MANIFEST_UNKNOWN', 'NAME_UNKNOWN') for e in errors), 'ambiguous-or-denied-not-found')
+                  return 'absent'
+              if status in (401, 403):
+                  raise Failure('registry-auth-denied')
+              raise Failure('registry-unexpected-http-status')
+
+          def probe(actor, secret, evidence, label):
+              credential = base64.b64encode((actor + ':' + secret).encode()).decode('ascii')
+              status, _, body = http_get(TOKEN_URL, {'Authorization': 'Basic ' + credential, 'Accept': 'application/json'})
+              require(status == 200, 'registry-token-request-failed')
+              document = decode(body)
+              bearer = document.get('token') or document.get('access_token')
+              require(isinstance(bearer, str) and bool(bearer) and all(33 <= ord(c) <= 126 for c in bearer), 'invalid-registry-token')
+              status, headers, body = http_get(MANIFEST_URL, {
+                  'Authorization': 'Bearer ' + bearer, 'Accept': INDEX_TYPE, 'Accept-Encoding': 'identity',
+              })
+              state = classify_manifest(status, headers, body)
+              save(evidence / (label + '.json'), {
+                  'state': state, 'http_status': status,
+                  'raw_sha256': sha256(body) if state == 'present' else None,
+              })
+              if state == 'present':
+                  (evidence / (label + '-raw-index.json')).write_bytes(body)
+              return state
+
+          def promotion_flow(probe_tag, push, verify_content):
+              state = probe_tag('before')
+              require(state in ('present', 'absent'), 'invalid-probe-state')
+              if state == 'absent':
+                  # Recheck immediately before write; not an atomic registry-wide CAS.
+                  state = probe_tag('immediately-before')
+                  require(state in ('present', 'absent'), 'invalid-probe-state')
+              outcome = 'ALREADY_PRESENT_VERIFIED_NO_PUSH'
+              if state == 'absent':
+                  push()
+                  outcome = 'PUSHED_AND_READ_BACK_VERIFIED'
+              require(probe_tag('after-copy-or-existing') == 'present', 'missing-after-copy')
+              verify_content()
+              require(probe_tag('after-content-verification') == 'present', 'tag-changed-after-verification')
+              return outcome
+
+          def guard():
+              require(os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch', 'event-guard')
+              require(os.environ.get('GITHUB_REPOSITORY') == REPOSITORY, 'repository-guard')
+              require(os.environ.get('GITHUB_REF') == 'refs/heads/main', 'ref-guard')
+              require(os.environ.get('GITHUB_WORKFLOW_REF') == REPOSITORY + '/.github/workflows/publish-accepted-image.yml@refs/heads/main', 'workflow-ref-guard')
+              sha = os.environ.get('GITHUB_SHA', '')
+              require(re.fullmatch(r'[0-9a-f]{40}', sha) and sha == os.environ.get('GITHUB_WORKFLOW_SHA'), 'workflow-sha-guard')
+              event = decode(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
+              require(event.get('repository', {}).get('default_branch') == 'main' and not event.get('inputs'), 'default-branch-or-inputs-guard')
+
+          def local(work, evidence):
+              guard()
+              report = verify_archive(work / ASSET, evidence / 'archive')
+              save(evidence / 'archive-verification.json', report)
+              result = subprocess.run(['skopeo', '--version'], capture_output=True, text=True, timeout=15, check=True)
+              match = re.search(r'^skopeo version (\d+)\.(\d+)\.(\d+)', result.stdout)
+              require(match is not None and tuple(map(int, match.groups())) >= (1, 13, 3), 'skopeo-version-too-old')
+              copy_image('oci-archive:' + str(work / ASSET) + ':' + TAG,
+                         'oci:' + str(work / 'local-roundtrip') + ':' + TAG, work, 'local')
+              roundtrip = verify_directory(work / 'local-roundtrip', evidence / 'local-roundtrip')
+              require(roundtrip == report, 'local-copy-content-mismatch')
+              save(evidence / 'local-preservation.json', roundtrip)
+              save(evidence / 'result.json', {
+                  'status': 'LOCAL_VERIFIED_NOT_PUBLISHED', 'archive_sha256': ARCHIVE_SHA,
+                  'asset_url': ASSET_URL, 'accepted_index': ACCEPTED, 'public_anonymous_pull_verified': False,
+              })
+
+          def publish(work, evidence):
+              guard()
+              report = verify_archive(work / ASSET)
+              require(decode((evidence / 'local-preservation.json').read_bytes()) == report, 'missing-or-mismatched-local-proof')
+              actor, secret = os.environ.get('GITHUB_ACTOR', ''), os.environ.get('GH_TOKEN', '')
+              require(re.fullmatch(r'[A-Za-z0-9_\[\]-]+', actor) and bool(secret), 'missing-workflow-credential')
+              authfile = work / 'private' / 'auth.json'
+              encoded = base64.b64encode((actor + ':' + secret).encode()).decode('ascii')
+              try:
+                  with authfile.open('x', encoding='utf-8') as stream:
+                      os.chmod(authfile, 0o600)
+                      json.dump({'auths': {'ghcr.io': {'auth': encoded}}}, stream)
+                  def push():
+                      save(evidence / 'write-intent.json', {'destination': DESTINATION, 'expected_index': ACCEPTED, 'status': 'COPY_ATTEMPTED_NOT_YET_VERIFIED'})
+                      copy_image('oci-archive:' + str(work / ASSET) + ':' + TAG, DESTINATION, work, 'push', authfile)
+                  def verify_content():
+                      copy_image('docker://' + REGISTRY_NAME + '@' + ACCEPTED,
+                                 'oci:' + str(work / 'registry-readback') + ':' + TAG, work, 'readback', authfile)
+                      readback = verify_directory(work / 'registry-readback', evidence / 'registry-readback')
+                      require(readback == report, 'registry-content-mismatch')
+                      save(evidence / 'registry-content-verification.json', readback)
+                  outcome = promotion_flow(lambda label: probe(actor, secret, evidence, label), push, verify_content)
+                  save(evidence / 'result.json', {
+                      'status': outcome, 'destination': DESTINATION, 'accepted_index': ACCEPTED,
+                      'archive_sha256': ARCHIVE_SHA, 'asset_url': ASSET_URL,
+                      'architecture': 'amd64', 'os': 'linux', 'child_manifest': IMAGE,
+                      'config': CONFIG, 'attestation_manifest': ATTESTATION,
+                      'public_anonymous_pull_verified': False,
+                      'external_writer_exclusion': 'MAINTAINER_PREREQUISITE_NOT_ATOMICALLY_ENFORCED',
+                  })
+              finally:
+                  authfile.unlink(missing_ok=True)
+
+          def main():
+              work, evidence = Path(os.environ['WORK']), Path(os.environ['EVIDENCE'])
+              phase = sys.argv[1]
+              require(phase in ('local', 'publish'), 'unknown-phase')
+              try:
+                  {'local': local, 'publish': publish}[phase](work, evidence)
+              except Exception as error:
+                  # Never print exception repr, registry response, environment, or credentials.
+                  code = str(error) if isinstance(error, Failure) else 'unexpected-failure'
+                  save(evidence / 'failure.json', {'status': 'FAIL', 'phase': phase, 'code': code})
+                  print('FAIL: ' + code, file=sys.stderr)
+                  return 1
+              print('PASS: ' + phase)
+              return 0
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          PY
+          curl --disable --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --connect-timeout 20 \
+            --max-time 300 --max-filesize 60000000 --retry 2 \
+            --output "$WORK/phase-tool-1.1.0-linux-amd64.oci.tar" \
+            'https://github.com/Emint76/phase-tool-next/releases/download/v1.1.0/phase-tool-1.1.0-linux-amd64.oci.tar'
+          python3 "$WORK/publisher.py" local
+
+      - name: Promote only if absent and read back all accepted content
+        timeout-minutes: 24
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 "$WORK/publisher.py" publish
+
+      - name: Remove credential file and inventory safe provenance
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f -- "$WORK/private/auth.json"
+          if test -d "$EVIDENCE"; then
+            python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['EVIDENCE'])
+          inventory = []
+          for path in sorted(root.rglob('*')):
+              if path.is_file() and path.name != 'SHA256SUMS.json':
+                  with path.open('rb') as stream:
+                      digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                  inventory.append({'path': path.relative_to(root).as_posix(), 'sha256': digest, 'bytes': path.stat().st_size})
+          (root / 'SHA256SUMS.json').write_text(json.dumps(inventory, indent=2) + '\n')
+          PY
+          fi
+
+      - name: Preserve provenance only (never credentials or private scratch)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-accepted-1.1.0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase-accepted-publisher/evidence/
+          include-hidden-files: false
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 30

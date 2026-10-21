@@ -1,5 +1,10 @@
 # Native component checkpoint: experimental candidate, no admitted route
 
+Later checkpoints: [native file effects](NATIVE_FILE_EFFECTS.md) and
+[namespace pins/external replacement](NATIVE_NAMESPACE_SCOPE.md). The source
+table below identifies the earlier kernel-window checkpoint, not every file in
+the current candidate tree. No later checkpoint admits a storage route.
+
 Candidate identity: Core SemVer **1.2.0-rc.1**, distribution PEP 440
 **1.2.0rc1**. No tag/release is created by this checkpoint. Internal native
 primitives are unselected: installation, profiles, registry, provider selection,

@@ -1,0 +1,9 @@
+# Offline derivative solely for owned test mountpoint initialization.
+ARG GATE_BASE
+FROM ${GATE_BASE}
+USER root
+RUN --network=none mkdir -p /qualification/reference /qualification/records /qualification/preparation /qualification/evidence \
+    && chown -R 10001:10001 /qualification
+USER 10001:10001
+ENTRYPOINT ["/opt/phase/bin/python"]
+CMD ["-c", "import time; time.sleep(86400)"]

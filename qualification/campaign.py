@@ -101,7 +101,12 @@ def verify_owned(state: dict, *, read_only: bool = False) -> str:
     require(set(metadata["CapDrop"] or []) == {"ALL"}, "capabilities differ")
     require("no-new-privileges" in (metadata["SecurityOpt"] or []), "no-new-privileges missing")
     require(metadata["Memory"] == 2 * 1024**3 and metadata["NanoCpus"] == 2 * 10**9 and metadata["PidsLimit"] == 128, "resource limits differ")
-    require(metadata["Mounts"] == expected["Mounts"], "mount map changed")
+    # Docker serializes its mount map in varying list order. Preserve every
+    # field and compare the exact entries by their unique destination.
+    current_mounts = sorted(metadata["Mounts"], key=lambda m: m["Destination"])
+    expected_mounts = sorted(expected["Mounts"], key=lambda m: m["Destination"])
+    require(len({m["Destination"] for m in current_mounts}) == len(current_mounts), "duplicate mount destination")
+    require(current_mounts == expected_mounts, "mount map changed")
     for volume in state["volumes"].values():
         current = json.loads(docker("volume", "inspect", volume["Name"]))[0]
         require(current["Name"] == volume["Name"] and current["CreatedAt"] == volume["CreatedAt"], "volume identity changed")
@@ -275,7 +280,9 @@ def main() -> None:
         except Exception as error:
             result = {"result": {"verdict": "NOT_VERIFIED", "reason": "EXECUTION_OR_OBSERVATION_GAP",
                        "error": str(error), "traceback": traceback.format_exc()}}
-        record = {"controller_digest": sha(Path(__file__).read_bytes()), "source_commit": state["source_commit"],
+        record = {"controller_digest": sha(Path(__file__).read_bytes()),
+                  "controller_commit": execute(["git", "-C", str(REPO), "rev-parse", "HEAD"]).decode().strip(),
+                  "source_commit": state["source_commit"],
                   "host_free_after": reserve(), "test_image_id": state["test_image_id"], "result": result,
                   "baseline_inventory": state["baseline_inventory"], "ownership": state}
         binding = retain(state, provisional, record, name)

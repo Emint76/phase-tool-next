@@ -17,9 +17,9 @@ implementation ready for these final tests, not a replacement acceptance rule.
 | Item | Current verdict | Cause and next action |
 |---|---|---|
 | A05 literal native Windows SYMLINK, tag `0xA000000C` | NOT_VERIFIED | Both creation APIs returned 1314. No owned safe fixture or separately authorized suitable stand is available. Current Windows policies/privileges must not change. Replay on the separately provisioned stand described below. |
-| Complete native MIX six-contract lifecycle | NOT_VERIFIED | Trusted composition, closed effect leases, shared pending-root index, IPC fencing and native contract/inspect/recovery integration are not implemented yet. This is implementation work, not a proven Windows permission or ChatGPT limitation. Continue it and accessible synthetic functional tests. |
+| Complete native MIX six-contract lifecycle | NOT_VERIFIED | Trusted composition, closed effect leases, root-wide original-intent guard, IPC fencing and native contract/inspect/recovery integration are not implemented yet. This is implementation work, not a proven Windows permission or ChatGPT limitation. Continue it and accessible synthetic functional tests. |
 | Complete final-build REF regression/program | NOT_VERIFIED | Linux CI and selected ext4 reference results exist; the entire original REF campaign has not been accepted for a final candidate. Run applicable unchanged reference and new implementation regressions against the exact accepted artifact. |
-| Two-container native coordinator/alias domain | NOT_VERIFIED | Windows mutex L1 passed; the two Linux coordinators, common ext4 index and native worker have not been integrated/tested together. This is not a completed C02. |
+| Two-container native coordinator/alias domain | NOT_VERIFIED | Windows mutex L1 passed; the two Linux coordinators, common qualified ext4 evidence/operational lock and native worker have not been integrated/tested together. This is not a completed C02. |
 | G06 lifecycle/failure propagation | NOT_VERIFIED | Native directory flush requests and bounded error probes exist, but final contract integration, exact pinned-parent call ordering and failure propagation are not accepted. |
 | FULL | NOT_VERIFIED; unavailable | No admitted NTFS evidence/preparation implementation. Investigate separately. MIX acceptance does not imply FULL; FULL is not the minimum release scope. |
 | Native installed CLI/MCP, historical compatibility and runtime rollback | NOT_VERIFIED | Pending the new complete installation and accepted artifact. Linux installed CLI/MCP evidence does not qualify the native route. |
@@ -44,7 +44,7 @@ They must not be promoted to full case verdicts by this ledger.
 | B01–B03 | Exclusive create/collisions, unchanged existing/hardlink aliases, byte-boundary/empty/NUL payloads and independent identities/hashes. |
 | B04–B06 | Short/zero writes, I/O/access/space/flush errors, partial create/payload crashes and capture/frozen-input drift. Label injection versus actual OS behavior. Never fill the shared disk. |
 | B07–B08 | Both high-level file API generations, digest/root/overlap negatives and unchanged 1 MiB/2 GiB boundaries including +1 rejection before mutation. |
-| C01–C02 | Lock release/crash/timeout and aliases across two private containers of the same engine; stable common index plus native mutex/worker. Mutex-only L1 does not complete the composed protocol. |
+| C01–C02 | Lock release/crash/timeout and aliases across two private containers of the same engine; stable common original-intent guard plus native mutex/worker. Mutex-only L1 does not complete the composed protocol. |
 | C03–C06 | Same-key concurrent/completed/lost-response replay, changed-input conflicts, different-key create/version competition, and natural capture timestamps. Do not fix timestamps or change keys to hide conflicts. |
 | D01 | 1000 real atomic current replacements; two continuous independent readers with at least 1000 successful samples each. Old/new-only observations; retained old-handle reads. |
 | D02–D03 | Native no-replace directory commit, existing empty/nonempty targets and competition; hardlink objects, digest collisions, identities/link counts and safe private-link cleanup. Retain the historical 9p EINVAL counterexample. |
@@ -58,12 +58,15 @@ They must not be promoted to full case verdicts by this ledger.
 | F05–F07 | Read-only publication recovery, authorized bundle commit_prepared and concurrent/repeated recovery; release/close errors never become success even after commit. |
 | F08–F09 | Exact contract-supported version continuation after independent investigation, original evidence unchanged, restart/replay with original identities and no new-key/root escape. |
 
-New composition also requires pending-root transition crash tests: before/after
-each immutable entry/head, dispatch, native commit, lost response, original
-worker exit, receipt and final head. Test stale IPC after generation change,
-two coordinators attempting different index bindings, overlapping grants and
-an orphan native syscall. Unknown cannot be inferred away from an empty list
-of returned effect receipts.
+New composition also requires crash tests before/after the original Core intent,
+dispatch, native commit, lost response, original worker completion, receipt and
+permitted recovery. Test stale IPC after completed work, two coordinators
+attempting conflicting evidence bindings, overlapping grants and an orphan
+native syscall. Unknown cannot be inferred away from an empty receipt list.
+The former second entry/head/generation journal is superseded; original intent,
+receipt, binding and recovery coverage remains mandatory. See the
+[complexity decision](ARCHITECTURE_COMPLEXITY_REVIEW.md). The original 47 cases,
+guarantees, counts and acceptance criteria remain unchanged.
 
 Keep original counts: sequential 10/lane; 8 processes × 100 create races;
 100 ownership transfers; 1000 replace switches and ≥1000 reads per observer;

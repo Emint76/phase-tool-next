@@ -3,8 +3,8 @@
 A mutex serializes cooperating live workers. It is NOT a durable pending-intent
 index or a crash-recovery decision: the object disappears at last handle close.
 A future trusted composition must bind every coordinator for this physical root
-to one qualified ext4 pending-root index, reject overlapping grants, and inspect
-the original operation before allowing effects after an uncertain outcome.
+to the same qualified ext4 Core evidence and operational lock, reject overlapping
+grants, and resolve original intents before allowing effects after uncertainty.
 """
 from __future__ import annotations
 

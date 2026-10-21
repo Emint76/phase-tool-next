@@ -113,52 +113,58 @@ The combined 256 MiB small-stage gate and 32 GiB campaign cap remain unchanged.
 C: had 29.338 GiB free (31.501 GB), S: 203.094 GiB. Reported ext4 `statvfs`
 capacity does not represent additional physical space independent of C:.
 
-## Required durable coordination before IPC admission
+## Required coordination through the original Core evidence
 
-The mutex is not a durable intent index or a recovery decision. Once the last
-handle closes, the Windows object disappears. An ext4-only flock also cannot
-cover a Windows syscall that outlives its Linux coordinator. Both mechanisms
-must be composed, with one installation-owned pending-root index for every
-alias/coordinator of the same physical root.
+The mutex is not durable execution evidence or a recovery decision. Once the
+last handle closes, the Windows object disappears. An ext4 flock cannot cover
+a Windows syscall that outlives its Linux coordinator. Both roles are needed,
+but they do not require a second journal. The earlier proposed PENDING/FINALIZED
+index/head/generation store is superseded by the
+[complexity decision](ARCHITECTURE_COMPLEXITY_REVIEW.md).
 
-Required order under one stable ext4 coordinator lock (separate from the
-replaceable head file):
+Under one stable installation-owned operational lock, scan the ORIGINAL native
+Core intents and receipts before idempotency or result reuse. All coordinators,
+root aliases and the full current/version-object footprint must share the same
+trusted evidence identity. Missing, corrupt or unresolved authoritative evidence
+blocks dispatch. Start with O(n) scans; no mutable index is authoritative.
 
-`durable intent/frozen inputs → immutable PENDING entry → durable head → dispatch
-→ original worker completion → independent inspect → durable receipt
-→ immutable FINALIZED entry → durable head`.
+The original lifecycle remains: freeze/plan and durable Core intent before
+execution, bound native worker dispatch, established worker completion,
+independent observation and durable Core receipt. A crash between these steps
+leaves the original intent unresolved. Only an exact permitted receipt/recovery
+proof resolves it. Current absent bytes, a vanished mutex or a new request key
+do not prove the former worker cannot write. There is no manual reset or
+commissioning operation.
 
-Entries must bind generation, predecessor digest, physical root/grant/composition,
-intent, plan and frozen inputs without digest cycles. Head replacement requires
-the expected predecessor. Missing/corrupt/unknown-schema state and any durability
-or finalization error block dispatch. A missing head of an existing index cannot
-be treated as a fresh IDLE root. FINALIZED means an established outcome, including
-an established failure without effect, and does not mean success only.
-
-The installation must reject overlapping ancestor/descendant root grants or use
-a separately reviewed common coordination domain. Distinct root IDs alone do
-not serialize overlapping trees. The mutex helper does not implement admission.
-
-Concrete integration obligations identified in independent architecture review:
-
-| Source | Required change, not yet implemented |
+| Source | Required integration |
 |---|---|
-| New operational index module/schema | Immutable transitions plus checked mutable head on qualified ext4; no weakening of immutable run evidence |
-| `core.py` | Pending-root gate before idempotency/reuse; durable dispatch disposition; finalize index only after outcome/evidence/worker proof |
-| `mutation/broker.py` | Lost IPC response after possible dispatch remains indeterminate even with zero received effect receipts |
-| New native executor/IPC | One-shot fenced lease bound to root/index/generation/intent/plan/frozen/grant/composition; status-only reconnect; PID plus process creation identity/handle |
-| `evidence/__init__.py` | Preserve immutable artifacts and bind index transition references; reuse durable primitives only under proven ext4/pinned-parent conditions |
-| `inspection`, `recovery.py`, continuation modules | Exact new bindings; original-operation investigation without automatic replay or new-run escape |
-| `installation.py`, new contracts/descriptors | One trusted index binding across aliases/coordinators; native root identities, overlap admission and exact implementation selection |
+| `core.py` | Root-wide unresolved-intent gate before idempotency/reuse; original intent carries a closed versioned native binding. Possible dispatch with no returned receipts remains indeterminate. |
+| `mutation/broker.py` | Typed possible-dispatch interruption; preserve every received effect receipt and never infer failed-no-effect from an empty list. |
+| Native executor/IPC | One-shot bounded worker bound to original intent/plan/frozen inputs/grants/composition; exact process creation identity and completion proof. Unknown remains blocked. |
+| `evidence/__init__.py` | Reuse immutable synced publication and existing qualified ext4 ownership boundary. No second store, journal, head or generation protocol. |
+| `inspection`, `recovery.py`, continuation modules | Exact native binding and complete footprint observation; original-operation investigation and only contract-permitted recovery. |
+| `installation.py`, versioned composition/schema | Closed trusted native selection, one evidence identity across aliases/coordinators and overlap rejection. A candidate measurement profile is not support qualification. |
 
-Current Core paths that continue after `no_effect_observed`, `archived_not_published`
-or `published_not_finalized` cannot by themselves authorize a new native dispatch.
-Likewise an empty effect-receipt list after a lost IPC response cannot be mapped
-to rejected/failed-no-effect. A separate persistent `dispatch_may_have_occurred`
-disposition is required. Historical POSIX bindings and semantics stay intact.
+Reject overlapping ancestor/descendant grants unless the complete composition
+establishes a reviewed common coordination domain. Sorted distinct root mutexes
+alone do not serialize overlapping trees. Existing POSIX and historical bindings
+are unchanged. Class65 replacement is not CAS.
 
-Crash qualification must cover every durable transition, IPC dispatch and lost
-response, native commit, worker completion, receipt and final head update. A
-stale command after a new generation and two coordinators attempting different
-index bindings need explicit negative tests. None is implied by this L1 mutex
-result. Installed native CLI/MCP, lifecycle, rollback and release remain pending.
+Core's new possible-dispatch handling has an actual, separately documented
+[12-case ext4 regression](CORE_DISPATCH_OUTCOME.md). It does not implement the
+root-wide gate, native executor or native profile. Multi-effect possible dispatch
+cannot be finalized with progress1.0 as though unreceipted effects were
+not_started; first native dispatch must be single-effect until a versioned
+progress representation is implemented.
+
+Crash qualification still covers before/after original intent, dispatch, native
+commit, lost response, original worker completion, receipt and permitted recovery.
+Test stale IPC, conflicting evidence bindings, overlapping grants and a native
+syscall that outlives its coordinator. No case/count is waived by simplifying
+the architecture. Installed native CLI/MCP, lifecycle, rollback and release are
+still pending.
+
+The current source updates only the module-level coordination docstring to
+match this decision. Its executable mutex logic is byte-for-byte unchanged;
+the exact historical L1 source hash in the table remains the executed revision,
+not a claim that a changed source was rerun.

@@ -2,8 +2,9 @@
 
 This is an internal component, not an admitted Windows storage route.
 Implementation readiness, installed native CLI/MCP, contract lifecycle, A05,
-G06, MIX and FULL remain **NOT_VERIFIED**. The native executor, shared durable
-pending-root index and trusted IPC are still required.
+G06, MIX and FULL remain **NOT_VERIFIED**. The native executor, root-wide gate derived from original Core intents and
+trusted IPC are still required. No separate pending journal is planned; see
+[complexity decision](ARCHITECTURE_COMPLEXITY_REVIEW.md).
 
 `NativeMutationIO` now owns one PID/thread-affine, nonreentrant mutation session.
 Every changing entry, including mutable opens and namespace flush, passes the

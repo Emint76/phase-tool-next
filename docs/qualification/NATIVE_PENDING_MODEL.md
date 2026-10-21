@@ -1,6 +1,13 @@
-# Native pending-lane records: pure model checkpoint
+# Archived native pending-lane prototype: superseded
 
-`mutation/ntfs/pending.py` provides internal immutable records and structural
+**Superseded unreleased design.** The active candidate removes the model and its
+16 pure tests. Exact source and results below remain in Git/Phase history.
+They are historical evidence, not a required storage/coordination architecture.
+See [complexity decision](ARCHITECTURE_COMPLEXITY_REVIEW.md): reuse original
+Core intents and receipts, with no second intent/head/generation journal.
+The following sections describe the archived prototype.
+
+The former `mutation/ntfs/pending.py` provided internal immutable records and structural
 transition checks. It does not provide a disk store, admission, dispatch,
 recovery authorization or permission to install a FINALIZED head. The native
 route, full lifecycle, A05, G06, MIX and FULL remain **NOT_VERIFIED**.
@@ -91,10 +98,11 @@ owned ext4 with native receipt and separate read-only inspect/readback/hashes.
 No completed tests were replayed for preservation. Full evidence remains
 private; this document contains synthetic summaries only.
 
-Next: pinned ext4 persistence with immutable generation files and checked head,
-real artifact/quiescence verification, trusted single-index admission, fenced
-native IPC and Core handling of a possibly dispatched effect without receipt.
-See [coordination requirements](NATIVE_ROOT_COORDINATION.md) and the
-[mandatory remaining tests](FINAL_QUALIFICATION_REMAINING.md). Production
-Phase/Hermes and their canonical stores, along with global Windows/Docker
-settings, are unchanged.
+The next active integration reuses the original Core intent, receipt and qualified
+ext4 EvidenceStore under one operational lock, with a root-wide unresolved-intent
+scan and native worker completion proof. It does not install this prototype's
+journal or mutable head. A derived performance index is a separate future task,
+[issue #15](https://github.com/Emint76/phase-tool-next/issues/15), conditional on
+measurement. See the [complexity decision](ARCHITECTURE_COMPLEXITY_REVIEW.md)
+and [mandatory remaining tests](FINAL_QUALIFICATION_REMAINING.md). Production
+Phase/Hermes and global Windows/Docker settings are unchanged.

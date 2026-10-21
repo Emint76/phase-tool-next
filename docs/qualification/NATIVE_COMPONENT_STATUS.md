@@ -106,3 +106,18 @@ composite artifacts, target preconditions, sealed effect leases and unknown-outc
 inspection. Physical rename is not CAS. Writable capabilities must not survive
 a sealed contract commit. Existing Core lifecycle, limits and historical bindings
 are not weakened by these drafts.
+
+## Current complexity decision and Core prerequisite
+
+The second pending-lane journal/head model is superseded and removed from the
+active unreleased candidate. Its exact historical source and 16-test result
+remain preserved. Reuse original Core intent/receipt/evidence, one operational
+lock and a root-wide unresolved-intent scan; no FIFO scheduler, second store or
+parallel document-version system. Optional derived-index performance work is
+[issue #15](https://github.com/Emint76/phase-tool-next/issues/15).
+
+The [12-case Core/ext4 regression](CORE_DISPATCH_OUTCOME.md) verifies honest
+possible-dispatch handling, strict inspect attachments and no unsafe same-key
+retry. It does not admit a native route. See the
+[component-by-component decision](ARCHITECTURE_COMPLEXITY_REVIEW.md). Native
+composition, IPC/completion, root-wide gate and first Core NTFS E2E remain pending.

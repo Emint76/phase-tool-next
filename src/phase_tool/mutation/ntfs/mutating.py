@@ -188,11 +188,12 @@ class NativeMutationIO(NativeIO):
         event = {'api':'NtCreateFile','disposition':disposition,'directory':directory,'leaf':name,
                  'return_status':f'0x{status & 0xffffffff:08x}',
                  'io_status':f'0x{ios.Result.Status & 0xffffffff:08x}',
-                 'information':ios.Information,'started_ns':started,'returned_ns':time.monotonic_ns(),
+                 'information':ios.Information,'output_handle_present':bool(value.value),
+                 'started_ns':started,'returned_ns':time.monotonic_ns(),
                  'effect_state':'created' if status==0 and ios.Result.Status==0 and exclusive
                      and ios.Information==2 else 'opened' if status==0 and ios.Result.Status==0
                      and not exclusive and ios.Information==1 else 'not_committed_by_this_call'
-                     if status & 0xffffffff in {0xc0000035,0xc0000022,0xc0000034,0xc000050b} else 'unknown'}
+                     if not value.value and status & 0xffffffff in {0xc0000035,0xc0000022,0xc0000034,0xc000050b} else 'unknown'}
         self.events.append(event)
         result = None
         if value.value:
@@ -201,7 +202,10 @@ class NativeMutationIO(NativeIO):
         try:
             if not (status==0 and ios.Result.Status==0 and result is not None
                     and ios.Information==(2 if exclusive else 1)):
-                raise PhaseError('ntfs.create_failed' if exclusive else 'ntfs.open_failed',details={'event':event})
+                raise PhaseError(('ntfs.create_outcome_unknown' if exclusive else 'ntfs.open_outcome_unknown')
+                                 if result is not None else
+                                 ('ntfs.create_failed' if exclusive else 'ntfs.open_failed'),
+                                 details={'event':event})
             identity = self.identity(result)
             event['object_identity'] = identity.as_dict()
             self._post(event,(parent,True,expected_parent),(result,directory,identity))

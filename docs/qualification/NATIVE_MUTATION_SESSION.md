@@ -86,3 +86,10 @@ this new gate revision. Focused native execution and all
 [remaining mandatory tests](FINAL_QUALIFICATION_REMAINING.md) are pending.
 Existing provider selection, descriptors, historical bindings and production
 Hermes/Phase configuration are unchanged.
+
+
+A subsequent internal create-outcome telemetry revision is documented in
+[NATIVE_FILE_EXECUTOR.md](NATIVE_FILE_EXECUTOR.md). It preserves the session-gate
+logic and adds conservative handling of unexpected native output handles.
+The source/test hashes above identify the historical11-case gate checkpoint;
+they are not a new native execution claim for the changed source.

@@ -121,3 +121,11 @@ possible-dispatch handling, strict inspect attachments and no unsafe same-key
 retry. It does not admit a native route. See the
 [component-by-component decision](ARCHITECTURE_COMPLEXITY_REVIEW.md). Native
 composition, IPC/completion, root-wide gate and first Core NTFS E2E remain pending.
+
+
+The unselected [native file physical step](NATIVE_FILE_EXECUTOR.md) now has eight
+actual pure fault regressions and exact source/evidence bindings. Native API
+boundaries in those tests are fakes. A new create-outcome telemetry revision
+conservatively treats unexpected output handles as unknown; old L1 source hashes
+remain historical, with no transferred qualification. This adds no admitted
+profile, IPC or supported contract route. Native Core E2E is still pending.

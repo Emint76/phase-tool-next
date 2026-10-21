@@ -4,6 +4,13 @@ This directory starts an execution of the immutable six-document qualification
 program dated 2026-10-21. It is **not an NTFS support declaration**. Production
 admission, Core, contracts, registry and guarantee profiles remain unchanged.
 
+Current execution outcome: **the tested MIX composition is blocked by a real
+bundle RENAME_NOREPLACE failure**. See [RESULTS.md](RESULTS.md) for measured
+results and independent verification, and [ROLLBACK.md](ROLLBACK.md) for the
+preserved baseline. No support release is accepted. Follow-up decisions are
+tracked in [#12](https://github.com/Emint76/phase-tool-next/issues/12); the
+separate large binary version gap is [#13](https://github.com/Emint76/phase-tool-next/issues/13).
+
 Current candidate base: main `721945ce46546e82ef31134d1e1bb54802a1d027`.
 Historical runtime reference: v1.1.0 `5ba874f77e9225aae29e6c84cfc3f776df557c9c`.
 The runtime files in these trees are identical. Separate reference provenance

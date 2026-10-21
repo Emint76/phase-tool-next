@@ -188,3 +188,13 @@ No implementation/profile is admitted and no runtime version is released.
 REF/MIX/FULL contract-family verdicts remain NOT_VERIFIED; merge/release gates
 are not satisfied. Source authority/profile/descriptors and production remain
 unchanged.
+
+## Later source-preservation and V2 checkpoint
+
+See [current component status](NATIVE_COMPONENT_STATUS.md) for exact source
+preservation, separate pre-execution reviews, V1 NOT_VERIFIED analysis and the
+completed V2 50-control/50-window result. V2 demonstrated kernel prevention;
+post-detection, A05, G06 and complete route remain NOT_VERIFIED. The later human
+instruction requires the literal native Windows SYMLINK A05 case; generic tests
+cannot substitute. Candidate identity is now 1.2.0-rc.1 / 1.2.0rc1; internal
+native modules are unselected, with no admitted profile or released runtime.

@@ -1,5 +1,11 @@
 # Candidate all-native NTFS authority: oracle mapping proposal
 
+Later human instruction supersedes any proposed substitution for literal A05:
+A05 remains NOT_VERIFIED until the mandatory Windows SYMLINK case is performed
+on an authorized suitable stand. Generic native tests provide independent
+evidence and do not replace that case. See
+[current component status](NATIVE_COMPONENT_STATUS.md).
+
 Not implementation acceptance. No new Phase route is qualified by this document.
 The original program and failed/missing cases remain unchanged.
 
@@ -12,7 +18,7 @@ The actual Linux-created links have LX tag 0xA000001D, junction has 0xA0000003.
 No tag 0xA000000C exists in the two inspected owned synthetic campaigns.
 
 This does not establish a product defect or make a different backend impossible.
-The latest human instruction permits a reviewed change of platform test mechanics
+The earlier continuation instruction permits a reviewed change of platform test mechanics
 while preserving the tested property. Independent review conditionally admits
 an all-native, tag-independent namespace barrier as a candidate alternative.
 The literal historical native-SYMLINK fixture case stays NOT_VERIFIED.
@@ -46,8 +52,8 @@ No claim blocks an administrator or all unrelated external writers.
 The proposed generic reparse oracle combines the unconditional implementation
 barrier, documented all-reparse Native API semantics, real junction/LX cases at
 every path position, metadata-conversion races, rename races and outside-sentinel
-checks. It must be reviewed against exact code and reached schedules before
-replacing the old literal test for the new backend's property coverage.
+checks. This independent property coverage requires exact-code and reached-schedule
+review. It does not replace the mandatory literal Windows SYMLINK A05 case.
 
 ## G06 must have its own physical proof
 

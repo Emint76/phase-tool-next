@@ -8,11 +8,47 @@ observation errors; callers must classify those effects and never blindly retry.
 from __future__ import annotations
 
 import ctypes as C
+from functools import wraps
+import os
+import threading
 import time
 
 from .native import (NativeHandle, NativeIdentity, NativeIO, _ObjectAttributes,
                      _UnicodeString, _IoStatus, _RenameInfo, _leaf, _require, _error_record)
 from ...errors import PhaseError
+
+
+def _mutation_call(method):
+    """Gate one owner-thread method, including all its checks and native call.
+
+    Sealing revokes future ingress, not an already accepted syscall or result.
+    There is no automatic retry, result close, deletion or outcome rewriting.
+    """
+    @wraps(method)
+    def controlled(self, *arguments, **keywords):
+        self._assert_mutation_owner()
+        with self._mutation_guard:
+            _require(not self._mutation_sealed, 'ntfs.mutation_session_sealed')
+            if self._mutation_active:
+                self._seal_locked('reentrant:' + method.__name__)
+                raise PhaseError('ntfs.reentrant_mutation_forbidden')
+            try:
+                self._mutation_active = True
+                # A reentrant seal between the ingress check and activation
+                # must not start the method after a quiescent seal returned.
+                _require(not self._mutation_sealed, 'ntfs.mutation_session_sealed')
+                return method(self, *arguments, **keywords)
+            except BaseException:
+                # Preserve the original exception and every native event. An
+                # error does not prove that the accepted call had no effect.
+                self._seal_locked('error:' + method.__name__)
+                raise
+            finally:
+                self._mutation_active = False
+                if self._mutation_sealed:
+                    self._writable.clear()
+                    self._created.clear()
+    return controlled
 
 
 class _RenameInfoEx(C.Structure):
@@ -24,6 +60,7 @@ class NativeMutationIO(NativeIO):
     """Native API adapter. Admission, contract leases and root scope live above."""
 
     def __init__(self):
+        self._init_mutation_session()
         super().__init__()
         _require(_RenameInfoEx.RootDirectory.offset == 8 and _RenameInfoEx.FileName.offset == 20
                  and C.sizeof(_RenameInfoEx) == 24, 'ntfs.abi_mismatch')
@@ -39,6 +76,80 @@ class NativeMutationIO(NativeIO):
         self.kernel.WriteFile.restype = C.c_int32
         self.kernel.SetEndOfFile.argtypes = [C.c_void_p]
         self.kernel.SetEndOfFile.restype = C.c_int32
+
+    def _init_mutation_session(self) -> None:
+        _require(not hasattr(self, '_mutation_owner'), 'ntfs.mutation_session_already_initialized')
+        self._mutation_owner = (os.getpid(), threading.get_native_id())
+        self._mutation_guard = threading.RLock()
+        self._mutation_active = self._mutation_sealed = False
+        self._mutation_seal_metadata: dict[str, str] = {}
+
+    @property
+    def mutation_state(self) -> str:
+        if self._mutation_sealed:
+            return 'sealed_active' if self._mutation_active else 'sealed'
+        return 'active' if self._mutation_active else 'open'
+
+    @property
+    def mutation_seal_reason(self) -> str | None:
+        return self._mutation_seal_metadata.get('reason')
+
+    def _assert_mutation_owner(self) -> None:
+        _require(self._mutation_owner == (os.getpid(), threading.get_native_id()),
+                 'ntfs.mutation_wrong_thread_or_process')
+
+    def _seal_locked(self, reason: str) -> None:
+        # This flag is the irreversible ingress revocation. Diagnostic reason
+        # uses one builtin setdefault, so reentrant seal cannot overwrite it.
+        self._mutation_sealed = True
+        self._mutation_seal_metadata.setdefault('reason', reason)
+        if not self._mutation_active:
+            self._writable.clear()
+            self._created.clear()
+
+    def seal_mutations(self) -> str:
+        """Revoke future methods without cancelling an accepted call.
+
+        A signal handler may ONLY call this method. It must not read/hash/close
+        handles, because those operations can change a shared file pointer or
+        finalize a handle still in use. This trusted-executor restriction is
+        not enforced against arbitrary Python callbacks by this primitive.
+
+        'sealed_active' is not quiescence. The accepted method may still change
+        storage and return its real result (including a handle owned by caller).
+        The executor must await its completion, stop subsequent mutations and
+        classify actual events/independent observations before saving evidence.
+        Read-only observation and one-attempt close remain available afterwards.
+        """
+        self._assert_mutation_owner()
+        with self._mutation_guard:
+            self._seal_locked('owner_finalization')
+            return self.mutation_state
+
+    def _require_active_mutation(self) -> None:
+        self._assert_mutation_owner()
+        _require(self._mutation_active and not self._mutation_sealed,
+                 'ntfs.mutation_gate_required')
+
+    def _live(self, handle: NativeHandle) -> None:
+        self._assert_mutation_owner()
+        super()._live(handle)
+
+    def _open(self, name: str, *, parent: NativeHandle | None, directory: bool,
+              rename_source: bool = False, namespace_flush: bool = False,
+              sharing: int = 3) -> NativeHandle:
+        self._assert_mutation_owner()
+        if rename_source or namespace_flush:
+            return self._open_mutable(name, parent=parent, directory=directory,
+                rename_source=rename_source, namespace_flush=namespace_flush, sharing=sharing)
+        # Observation remains available after a seal; it grants no DELETE or
+        # namespace-flush access and never truncates or creates.
+        return super()._open(name, parent=parent, directory=directory,
+            rename_source=rename_source, namespace_flush=namespace_flush, sharing=sharing)
+
+    @_mutation_call
+    def _open_mutable(self, name: str, **mode) -> NativeHandle:
+        return super()._open(name, **mode)
 
     def _checked_writable(self, handle: NativeHandle, expected: NativeIdentity) -> None:
         self.assert_object(handle, directory=False, expected=expected)
@@ -58,6 +169,7 @@ class NativeMutationIO(NativeIO):
     def _open_disposition(self, parent: NativeHandle, name: str, *, directory: bool,
                           expected_parent: NativeIdentity, exclusive: bool,
                           delete_access: bool = False) -> NativeHandle:
+        self._require_active_mutation()
         _leaf(name)
         _require(type(directory) is bool and type(exclusive) is bool and type(delete_access) is bool,
                  'ntfs.invalid_open_mode')
@@ -105,11 +217,13 @@ class NativeMutationIO(NativeIO):
                         'primary_error':_error_record(primary),'event':event}) from primary
             raise
 
+    @_mutation_call
     def create_exclusive(self, parent: NativeHandle, name: str, *, directory: bool,
                          expected_parent: NativeIdentity, delete_access: bool = False) -> NativeHandle:
         return self._open_disposition(parent,name,directory=directory,expected_parent=expected_parent,
                                       exclusive=True,delete_access=delete_access)
 
+    @_mutation_call
     def open_writable(self, parent: NativeHandle, name: str, *, expected_parent: NativeIdentity,
                       expected: NativeIdentity) -> NativeHandle:
         result = self._open_disposition(parent,name,directory=False,expected_parent=expected_parent,exclusive=False)
@@ -123,6 +237,7 @@ class NativeMutationIO(NativeIO):
                     'primary_error':_error_record(primary),'close_error':_error_record(error)}) from primary
             raise
 
+    @_mutation_call
     def write_chunk(self, file: NativeHandle, data: bytes, *, offset: int,
                     expected: NativeIdentity) -> int:
         self._checked_writable(file,expected)
@@ -145,6 +260,7 @@ class NativeMutationIO(NativeIO):
             raise PhaseError('ntfs.write_failed',details={'event':event})
         return written.value
 
+    @_mutation_call
     def truncate(self, file: NativeHandle, *, length: int, expected: NativeIdentity) -> None:
         self._checked_writable(file,expected)
         _require(type(length) is int and 0 <= length <= 2*1024**3,'ntfs.invalid_truncate_range')
@@ -161,6 +277,7 @@ class NativeMutationIO(NativeIO):
         self._post(event,(file,False,expected))
         if not result: raise PhaseError('ntfs.truncate_failed',details={'event':event})
 
+    @_mutation_call
     def flush_file(self, file: NativeHandle, expected: NativeIdentity) -> dict:
         self._checked_writable(file,expected)
         ios, started = _IoStatus(), time.monotonic_ns()
@@ -175,6 +292,7 @@ class NativeMutationIO(NativeIO):
         if not event['accepted']: raise PhaseError('ntfs.flush_failed',details={'event':event})
         return event
 
+    @_mutation_call
     def flush_namespace(self, parent: NativeHandle, expected: NativeIdentity) -> dict:
         event = super().flush_namespace(parent,expected)
         event['kind'] = 'directory'
@@ -187,6 +305,7 @@ class NativeMutationIO(NativeIO):
     def _name_effect(self, source: NativeHandle, parent: NativeHandle, name: str, *,
                      expected_source: NativeIdentity, expected_parent: NativeIdentity,
                      hardlink: bool, replace: bool) -> dict:
+        self._require_active_mutation()
         _leaf(name)
         _require(type(hardlink) is bool and type(replace) is bool and not (hardlink and replace),
                  'ntfs.invalid_name_effect')
@@ -230,6 +349,7 @@ class NativeMutationIO(NativeIO):
         if event['effect_state']!='committed': raise PhaseError('ntfs.name_effect_failed',details={'event':event})
         return event
 
+    @_mutation_call
     def rename(self, source: NativeHandle, parent: NativeHandle, name: str, *,
                expected_source: NativeIdentity, expected_parent: NativeIdentity, replace: bool = False) -> dict:
         return self._name_effect(source,parent,name,expected_source=expected_source,
@@ -242,11 +362,13 @@ class NativeMutationIO(NativeIO):
         return self.rename(source,parent,destination,expected_source=expected_source,
                            expected_parent=expected_parent,replace=False)
 
+    @_mutation_call
     def hardlink_noreplace(self, source: NativeHandle, parent: NativeHandle, name: str, *,
                           expected_source: NativeIdentity, expected_parent: NativeIdentity) -> dict:
         return self._name_effect(source,parent,name,expected_source=expected_source,
                                  expected_parent=expected_parent,hardlink=True,replace=False)
 
+    @_mutation_call
     def delete_created_link_and_close(self, source: NativeHandle, expected: NativeIdentity) -> dict:
         """Consume an original created handle, set disposition, then only close.
 

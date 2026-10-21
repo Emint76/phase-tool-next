@@ -1,7 +1,8 @@
 # Native component checkpoint: experimental candidate, no admitted route
 
-Later checkpoints: [native file effects](NATIVE_FILE_EFFECTS.md) and
-[namespace pins/external replacement](NATIVE_NAMESPACE_SCOPE.md). The source
+Later checkpoints: [native file effects](NATIVE_FILE_EFFECTS.md),
+[namespace pins/external replacement](NATIVE_NAMESPACE_SCOPE.md), and
+[root coordination](NATIVE_ROOT_COORDINATION.md). The source
 table below identifies the earlier kernel-window checkpoint, not every file in
 the current candidate tree. No later checkpoint admits a storage route.
 

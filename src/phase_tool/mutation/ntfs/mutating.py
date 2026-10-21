@@ -15,11 +15,18 @@ from .native import (NativeHandle, NativeIdentity, NativeIO, _ObjectAttributes,
 from ...errors import PhaseError
 
 
+class _RenameInfoEx(C.Structure):
+    _fields_ = [('Flags', C.c_uint32), ('RootDirectory', C.c_void_p),
+                ('FileNameLength', C.c_uint32), ('FileName', C.c_wchar * 1)]
+
+
 class NativeMutationIO(NativeIO):
     """Native API adapter. Admission, contract leases and root scope live above."""
 
     def __init__(self):
         super().__init__()
+        _require(_RenameInfoEx.RootDirectory.offset == 8 and _RenameInfoEx.FileName.offset == 20
+                 and C.sizeof(_RenameInfoEx) == 24, 'ntfs.abi_mismatch')
         self.events: list[dict] = []
         self._writable: set[NativeHandle] = set()
         self._created: set[NativeHandle] = set()
@@ -189,12 +196,20 @@ class NativeMutationIO(NativeIO):
         _require(not (source.directory and (hardlink or replace)),'ntfs.directory_effect_forbidden')
         _require(hardlink or source.rename_source,'ntfs.source_lease_required')
         encoded = name.encode('utf-16-le')
-        buffer = C.create_string_buffer(C.sizeof(_RenameInfo)+len(encoded))
-        data = _RenameInfo.from_buffer(buffer)
-        data.ReplaceIfExists,data.RootDirectory,data.FileNameLength = int(replace),parent.value,len(encoded)
-        C.memmove(C.addressof(buffer)+_RenameInfo.FileName.offset,encoded,len(encoded))
+        structure = _RenameInfoEx if replace else _RenameInfo
+        buffer = C.create_string_buffer(C.sizeof(structure)+len(encoded))
+        data = structure.from_buffer(buffer)
+        if replace:
+            # FileRenameInformationEx: preserve existing readers on the old
+            # object while future opens resolve the replacement. No fallback
+            # to legacy class 10, copy/delete, or bypass-access-check classes.
+            data.Flags = 0x1 | 0x2  # REPLACE_IF_EXISTS | POSIX_SEMANTICS.
+        else:
+            data.ReplaceIfExists = 0
+        data.RootDirectory,data.FileNameLength = parent.value,len(encoded)
+        C.memmove(C.addressof(buffer)+structure.FileName.offset,encoded,len(encoded))
         ios, started = _IoStatus(), time.monotonic_ns()
-        info_class = 11 if hardlink else 10
+        info_class = 11 if hardlink else 65 if replace else 10
         if not hardlink:
             # The original link may be the committed destination even when the
             # response is unknown. Never let a finally block delete it as a
@@ -202,6 +217,7 @@ class NativeMutationIO(NativeIO):
             self._created.discard(source)
         status = self.nt.NtSetInformationFile(source.value,C.byref(ios),buffer,len(buffer),info_class)
         event = {'api':'NtSetInformationFile','class':info_class,'replace_if_exists':replace,'leaf':name,
+                 'rename_flags':3 if replace else 0,
                  'source_identity':expected_source.as_dict(),'parent_identity':expected_parent.as_dict(),
                  'return_status':f'0x{status & 0xffffffff:08x}',
                  'io_status':f'0x{ios.Result.Status & 0xffffffff:08x}',

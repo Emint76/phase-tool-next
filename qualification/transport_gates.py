@@ -18,6 +18,7 @@ import stat
 import sys
 import time
 import traceback
+import zipfile
 
 ROOTS = {"REF": "/qualification/reference", "MIX": "/ntfs/transport-cases"}
 MANIFEST = Path("/artifacts/ownership.json")
@@ -70,9 +71,20 @@ def ownership(campaign: str) -> dict:
         raise ValueError("unexpected root map")
     for root in (*ROOTS.values(), "/qualification/records", "/qualification/preparation", "/qualification/evidence"):
         checked_path(Path(root))
+        fs = os.statvfs(root)
+        require(fs.f_bavail * fs.f_frsize >= 4 * 1024**3, "small-gate filesystem reserve unavailable")
         token = json.loads((Path(root) / ".campaign-owner.json").read_bytes())
         if token != {"campaign": campaign, "owner": OWNER}:
             raise ValueError("root ownership mismatch")
+    used = 0
+    for root in (*ROOTS.values(), "/qualification/records", "/qualification/preparation", "/qualification/evidence"):
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            for name in (*dirs, *files):
+                info = os.lstat(Path(directory) / name)
+                require(not stat.S_ISLNK(info.st_mode), "unexpected link in small-gate roots")
+                if stat.S_ISREG(info.st_mode):
+                    used += info.st_size
+    require(used < 256 * 1024**2, "small-gate logical storage budget exhausted")
     return manifest
 
 
@@ -87,12 +99,21 @@ def freeze() -> dict:
                       package / "installation.py", package / "data/registry.json",
                       package / "data/descriptors/guarantee/phase.posix.authority.v1.json",
                       package / "data/descriptors/guarantee/phase.mutation-guarantees.v1.json"]
+    wheel = Path("/artifacts/phase_tool-1.1.0-py3-none-any.whl")
+    require(digest(wheel.read_bytes()) == "sha256:9f37cb13e88d1e62d9a1f7c594ecfe0338eb7714afc1da069908cae3dfcfbc5a", "wheel hash mismatch")
+    with zipfile.ZipFile(wheel) as bundle:
+        wheel_members = {name: digest(bundle.read(name)) for name in bundle.namelist()
+                         if name.startswith("phase_tool/") and not name.endswith("/")}
+    installed_members = {"phase_tool/" + p.relative_to(package).as_posix(): digest(p.read_bytes())
+                         for p in package.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+    require(installed_members == wheel_members, "installed package differs from official wheel")
     return {
         "phase_version": importlib.metadata.version("phase-tool"),
         "python": sys.version, "optimize": sys.flags.optimize, "platform": platform.platform(), "uid": os.getuid(), "gid": os.getgid(),
         "dependencies": sorted((d.metadata["Name"], d.version) for d in importlib.metadata.distributions()),
         "artifact_digests": {str(p.relative_to(package)): digest(p.read_bytes()) for p in artifact_paths},
         "harness_digest": digest(Path(__file__).read_bytes()),
+        "wheel_digest": digest(wheel.read_bytes()), "installed_wheel_members": installed_members,
         "registry": PhaseApplication().contracts_list().payload,
         "profile": repr(registered_profile_binding("phase.posix.authority.v1@1.0.0")),
         "mountinfo": Path("/proc/self/mountinfo").read_text(),

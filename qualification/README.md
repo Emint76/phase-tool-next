@@ -24,6 +24,13 @@ program, concurrency tests, syscall semantics review or full Phase lifecycle.
 If an essential primitive fails, dependent mutation stops and remaining cases
 stay NOT_VERIFIED. The original counterexample must be retained.
 
+This small stage allocates under 256 MiB with a 4 GiB reserve checked on the host
+and relevant ext4/NTFS roots. It changes no large-workload threshold: 64 GiB host
+and VM reserves are still mandatory before large cases. A short first-failure
+run retains requested/completed counts and is never treated as ten passing
+repeats. The image is an offline directory-only derivative of the available
+v1.1.0 image, without package installs, pulls or image exports.
+
 `transport_gates.py` has no deletion routine and no admission override. Its
 fixed mount roots require campaign owner tokens. The syscall observer calls the
 genuine `os.fsync`; D02 calls the installed, unchanged `_rename_noreplace`.

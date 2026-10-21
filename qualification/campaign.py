@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 
 REPO = Path(__file__).resolve().parent.parent
@@ -87,6 +88,9 @@ def container_metadata(identifier: str) -> dict:
 
 
 def verify_owned(state: dict, *, read_only: bool = False) -> str:
+    checked_host_path(Path(state["host_root"]), existing=True)
+    marker = json.loads((Path(state["host_root"]) / "ownership.json").read_bytes())
+    require(marker["campaign"] == state["campaign"] and marker["owner"] == OWNER, "host owner changed")
     name = "verifier" if read_only else "worker"
     expected = state["containers"][name]
     metadata = container_metadata(expected["Id"])
@@ -94,6 +98,8 @@ def verify_owned(state: dict, *, read_only: bool = False) -> str:
     require(metadata["User"] == "10001:10001", "wrong container user")
     require(metadata["Labels"].get("owner") == OWNER and metadata["Labels"].get("campaign") == state["campaign"], "container owner mismatch")
     require(metadata["ReadonlyRootfs"] and metadata["NetworkMode"] == "none", "container policy differs")
+    require(set(metadata["CapDrop"] or []) == {"ALL"}, "capabilities differ")
+    require("no-new-privileges" in (metadata["SecurityOpt"] or []), "no-new-privileges missing")
     require(metadata["Memory"] == 2 * 1024**3 and metadata["NanoCpus"] == 2 * 10**9 and metadata["PidsLimit"] == 128, "resource limits differ")
     require(metadata["Mounts"] == expected["Mounts"], "mount map changed")
     for volume in state["volumes"].values():
@@ -142,16 +148,22 @@ def reserve() -> dict:
 def prepare(campaign: str, provisional: Path) -> dict:
     require(os.name == "nt", "Windows host controller required")
     root = checked_host_path(Path("S:/Phase-NTFS-Qualification") / campaign, existing=False)
+    checked_host_path(provisional, existing=False)
     require(not root.exists(), "campaign root already exists")
     require(not provisional.exists(), "campaign state already exists")
     provisional.mkdir(parents=True, exist_ok=False)
     before = {"host_free": reserve(), "containers": []}
+    volume_query = "Get-Volume -DriveLetter S,C | Select-Object DriveLetter,FileSystemType,DriveType,UniqueId,Size,SizeRemaining | ConvertTo-Json"
+    before["host_volumes"] = json.loads(execute(["powershell", "-NoProfile", "-Command", volume_query]).decode("utf-8-sig"))
+    require(next(v for v in before["host_volumes"] if v["DriveLetter"] == "S")["FileSystemType"] == "NTFS", "S is not NTFS")
     for identifier in docker("ps", "-aq", "--no-trunc").decode().split():
         # Metadata only; no Config.Env, command contents, scientific data or secrets.
         before["containers"].append(container_metadata(identifier))
     save_exclusive(provisional / "before.json", before)
     image = json.loads(docker("image", "inspect", BASE))[0]
     require(image["Id"] == BASE, "reference image mismatch")
+    require("phase-tool@" + BASE in image["RepoDigests"], "exact local FROM digest not available")
+    before["reference_image"] = {k: image[k] for k in ("Id", "RepoDigests", "RootFS", "Architecture", "Os")}
     root.parent.mkdir(exist_ok=True)
     checked_host_path(root.parent, existing=True)
     root.mkdir(exist_ok=False)
@@ -170,7 +182,7 @@ def prepare(campaign: str, provisional: Path) -> dict:
              "created_utc_ns": time.time_ns(), "source_commit": execute(["git", "-C", str(REPO), "rev-parse", "HEAD"]).decode().strip(),
              "harness_digest": sha(script.read_bytes()), "reference_image": BASE,
              "containers": {}, "volumes": {}, "records": [], "small_gate_budget_bytes": 256 * 1024**2,
-             "host_before": before["host_free"]}
+             "host_before": before["host_free"], "baseline_inventory": before}
     # Ownership marker freezes planned roots before any docker mount is created.
     save_exclusive(root / "ownership.json", state)
     save_exclusive(artifacts / "ownership.json", state)
@@ -180,7 +192,10 @@ def prepare(campaign: str, provisional: Path) -> dict:
     docker("build", "--pull=false", "--network", "none", "--label", "owner=" + OWNER,
            "--label", "campaign=" + campaign, "-t", tag, "-f", str(REPO / "qualification/Dockerfile.gates"),
            str(REPO / "qualification"), timeout=120)
-    state["test_image_id"] = json.loads(docker("image", "inspect", tag))[0]["Id"]
+    built_image = json.loads(docker("image", "inspect", tag))[0]
+    state["test_image_id"] = built_image["Id"]
+    base_layers = image["RootFS"]["Layers"]
+    require(built_image["RootFS"]["Layers"][:len(base_layers)] == base_layers, "test image ancestry mismatch")
     update_state(provisional / "state.json", state)
     for key in VOLUME_DESTINATIONS:
         name = f"phase-ntfs-q-{campaign}-{key}"
@@ -216,7 +231,10 @@ def prepare(campaign: str, provisional: Path) -> dict:
                 require(mount["Name"] == state["volumes"][key]["Name"], "wrong volume")
             else:
                 source = artifacts if mount["Destination"] == "/artifacts" else transport
-                require(os.path.normcase(mount["Source"]) == os.path.normcase(str(source)), "wrong host bind")
+                actual = mount["Source"].replace("\\", "/")
+                host_form = str(source).replace("\\", "/")
+                engine_form = "/run/desktop/mnt/host/" + host_form[0].lower() + host_form[2:]
+                require(actual.lower() in {host_form.lower(), engine_form.lower()}, "wrong host bind")
         state["containers"][role] = metadata
         update_state(provisional / "state.json", state)
     initializer = "import json,os; from pathlib import Path; token=json.loads(input()); roots=json.loads(input()); [(lambda p: p.write_text(json.dumps(token)) if not p.exists() else (_ for _ in ()).throw(RuntimeError('existing token')))(Path(r)/'.campaign-owner.json') for r in roots]"
@@ -244,9 +262,14 @@ def main() -> None:
         reserve()
         action = "freeze" if args.action == "prepare" else args.action
         name = f"g-{action}-{(args.lane or 'env').lower()}-{uuid.uuid4().hex[:8]}"
-        result = invoke(state, action, lane=args.lane)
+        try:
+            result = invoke(state, action, lane=args.lane)
+        except Exception as error:
+            result = {"result": {"verdict": "NOT_VERIFIED", "reason": "EXECUTION_OR_OBSERVATION_GAP",
+                       "error": str(error), "traceback": traceback.format_exc()}}
         record = {"controller_digest": sha(Path(__file__).read_bytes()), "source_commit": state["source_commit"],
-                  "host_free_after": reserve(), "test_image_id": state["test_image_id"], "result": result}
+                  "host_free_after": reserve(), "test_image_id": state["test_image_id"], "result": result,
+                  "baseline_inventory": state["baseline_inventory"], "ownership": state}
         binding = retain(state, provisional, record, name)
         state["records"].append(binding | {"action": action, "lane": args.lane, "result": result.get("result")})
         update_state(provisional / "state.json", state)

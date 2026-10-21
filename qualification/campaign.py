@@ -189,7 +189,15 @@ def prepare(campaign: str, provisional: Path) -> dict:
     save_exclusive(provisional / "state.json", state)
     short = campaign[:8]
     tag = "phase-ntfs-gates:" + campaign
+    base_tag = "phase-ntfs-gate-base:" + campaign
+    found = subprocess.run(["docker", "image", "inspect", base_tag], capture_output=True)
+    require(found.returncode != 0, "owned base tag already exists")
+    docker("image", "tag", BASE, base_tag)
+    require(json.loads(docker("image", "inspect", base_tag))[0]["Id"] == BASE, "owned base tag mismatch")
+    state["owned_base_tag"] = base_tag
+    update_state(provisional / "state.json", state)
     docker("build", "--pull=false", "--network", "none", "--label", "owner=" + OWNER,
+           "--build-arg", "GATE_BASE=" + base_tag,
            "--label", "campaign=" + campaign, "-t", tag, "-f", str(REPO / "qualification/Dockerfile.gates"),
            str(REPO / "qualification"), timeout=120)
     built_image = json.loads(docker("image", "inspect", tag))[0]

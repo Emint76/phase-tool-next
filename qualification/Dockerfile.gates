@@ -1,5 +1,6 @@
 # Offline derivative solely for owned test mountpoint initialization.
-FROM phase-tool@sha256:5e6f98d684b7f65e6798f2fdc23edf05ed839ed96b611de29e4930c357ce0277
+ARG GATE_BASE
+FROM ${GATE_BASE}
 USER root
 RUN --network=none mkdir -p /qualification/reference /qualification/records /qualification/preparation /qualification/evidence \
     && chown -R 10001:10001 /qualification

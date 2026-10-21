@@ -395,7 +395,16 @@ def inspect_run(
         attachment_digests = {plan_attachment_digest, validators_digest}
         claimed = set(receipt["evidence"]["attachment_digests"])
         effect_receipts = receipt["effect_receipts"]
-        if effect_receipts:
+        unknown_dispatch_without_receipts = (
+            not effect_receipts
+            and receipt["terminal_status"] == "indeterminate"
+            and receipt["execution_disposition"] == "executed"
+            and receipt["mutation_attempted"] is True
+            and receipt["recovery_required"] is True
+            and receipt["retry_disposition"] == "forbidden"
+            and "broker.dispatch_outcome_unknown" in receipt["blockers"]
+        )
+        if effect_receipts or unknown_dispatch_without_receipts:
             pre_validators, pre_validators_digest = _read_canonical(run_root / "attachments" / "pre-validator-results.json")
             stored_effect_receipts, effect_receipts_digest = _read_canonical(run_root / "attachments" / "effect-receipts.json")
             if stored_effect_receipts != effect_receipts:

@@ -228,6 +228,11 @@ class PhaseCore:
                 receipt = parse_json_bytes(read_evidence_bytes(receipt_path))
                 if receipt.get("terminal_status") == "validated_planned":
                     continue
+                # A transient absent target cannot discharge an unresolved
+                # dispatched worker. Only a future explicit verified resolution
+                # path can do so; normal idempotency is not recovery authority.
+                if "broker.dispatch_outcome_unknown" in receipt.get("blockers", []):
+                    raise PhaseError("idempotency.prior_inspection_required", path.parent.name)
                 if receipt.get("terminal_status") != "succeeded_verified":
                     try:
                         inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings)
@@ -586,7 +591,10 @@ class PhaseCore:
         finalization_failed: bool,
         required_attachments_present: bool = True,
         interruption_code: str | None = None,
+        possible_dispatch: bool = False,
     ) -> dict[str, Any]:
+        if type(possible_dispatch) is not bool:
+            raise PhaseError("broker.invalid_dispatch_disposition")
         result_effect = plan["effects"][-1]
         failed_receipts = [receipt for receipt in effect_receipts if receipt["status"] != "applied_verified"]
         status = failed_receipts[0]["status"] if failed_receipts else ("applied_verified" if len(effect_receipts) == len(plan["effects"]) else "failed_no_effect")
@@ -602,7 +610,9 @@ class PhaseCore:
             "indeterminate": ("indeterminate", "indeterminate", 50, True),
         }
         all_effects_verified = status == "applied_verified" and len(effect_receipts) == len(plan["effects"])
-        if all_effects_verified and post_verified and not finalization_failed:
+        if possible_dispatch:
+            terminal, result_state, exit_code, recovery = "indeterminate", "indeterminate", 50, True
+        elif all_effects_verified and post_verified and not finalization_failed:
             terminal, result_state, exit_code, recovery = "succeeded_verified", "verified_result", 0, False
         elif all_effects_verified:
             terminal, result_state, exit_code, recovery = "committed_unverified", "committed_unverified", 40, True
@@ -622,10 +632,12 @@ class PhaseCore:
             interruption_code
             or ("evidence.finalization_failed" if finalization_failed else (error["code"] if error else "verification.incomplete"))
         ]
+        if possible_dispatch:
+            blockers = sorted(set(blockers + ["broker.dispatch_outcome_unknown"]))
         return self._base_receipt(request, validator_results, timestamp) | {
             "terminal_status": terminal,
             "execution_disposition": "executed",
-            "mutation_attempted": any(bool(receipt["attempted"]) for receipt in effect_receipts),
+            "mutation_attempted": possible_dispatch or any(bool(receipt["attempted"]) for receipt in effect_receipts),
             "result_state": result_state,
             "canonical_result": (
                 self._canonical_result(
@@ -855,6 +867,7 @@ class PhaseCore:
         progress_digest: str | None = None
         latest_progress: dict[str, Any] | None = None
         interruption_code: str | None = None
+        possible_dispatch = False
         runner = ValidatorRunner(self.registry)
         try:
             reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute)
@@ -979,6 +992,7 @@ class PhaseCore:
                     )
                 except BrokerExecutionInterrupted as interrupted:
                     effect_receipts = list(interrupted.effect_receipts)
+                    possible_dispatch = interrupted.possible_dispatch
                     if interrupted.progress_digest is not None:
                         progress_digest = interrupted.progress_digest
                         latest_progress = self._ordered_progress(plan, effect_receipts)
@@ -1030,7 +1044,7 @@ class PhaseCore:
             return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, intent, plan, tuple(lifecycle), receipt_digest, plan_digest)
         except (PhaseError, OSError) as exc:
             intent_digest = profile_digest("intent", intent) if intent is not None else None
-            if effect_receipts and intent_digest is not None and contract is not None and plan is not None:
+            if (effect_receipts or possible_dispatch) and intent_digest is not None and contract is not None and plan is not None:
                 required_attachments_present = True
                 try:
                     _, effects_digest = store.write_or_verify_canonical("attachments/effect-receipts.json", effect_receipts)
@@ -1038,7 +1052,13 @@ class PhaseCore:
                         attachment_digests.append(effects_digest)
                 except (PhaseError, OSError):
                     required_attachments_present = False
-                if len(plan["effects"]) > 1:
+                if possible_dispatch and len(plan["effects"]) > 1:
+                    # Progress1.0 calls every unreceipted effect not_started.
+                    # Do not produce that false claim for a lost dispatch. The
+                    # first native adapter must admit single-effect plans only;
+                    # a future versioned progress format is needed for more.
+                    required_attachments_present = False
+                elif len(plan["effects"]) > 1:
                     latest_progress = self._ordered_progress(plan, effect_receipts)
                     try:
                         _, progress_digest = store.replace_attachment_canonical("ordered-effect-progress.json", latest_progress)
@@ -1065,6 +1085,7 @@ class PhaseCore:
                     finalization_failed=interruption_code is None or not required_attachments_present,
                     required_attachments_present=required_attachments_present,
                     interruption_code=interruption_code,
+                    possible_dispatch=possible_dispatch,
                 )
                 validate_receipt(receipt, self.registry)
                 if not lifecycle or lifecycle[-1] != "receipt":

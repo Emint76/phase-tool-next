@@ -67,11 +67,18 @@ class BrokerExecutionInterrupted(Exception):
         cause: PhaseError | OSError,
         effect_receipts: list[dict[str, Any]],
         progress_digest: str | None,
+        *,
+        possible_dispatch: bool = False,
     ) -> None:
+        # Internal executor disposition, never inferred from an empty receipt
+        # list or caller request. Existing in-process paths keep the old default.
+        if type(possible_dispatch) is not bool:
+            raise PhaseError("broker.invalid_dispatch_disposition")
         super().__init__(str(cause))
         self.cause = cause
         self.effect_receipts = tuple(effect_receipts)
         self.progress_digest = progress_digest
+        self.possible_dispatch = possible_dispatch
 
 
 def ordered_progress_document(plan: Mapping[str, Any], effect_receipts: list[dict[str, Any]]) -> dict[str, Any]:

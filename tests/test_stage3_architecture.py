@@ -79,10 +79,19 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
         "mutation/object_store_publish.py",
         "mutation/target_authority.py",
         "mutation/posix/authority.py",
+        # Reviewed native physical IO boundary; no directory or module glob.
+        "mutation/ntfs/mutating.py",
         "evidence/__init__.py",
         "freeze/__init__.py",
     }
     forbidden_calls = {"os.open", "os.write", "os.link", "os.replace", "shutil.move", "write_bytes", "write_text", "unlink", "rename"}
+    native_calls_by_module = {
+        "mutation/ntfs/native.py": {"NtSetInformationFile", "NtFlushBuffersFileEx"},
+        "mutation/ntfs/mutating.py": {
+            "NtCreateFile", "NtSetInformationFile", "WriteFile", "SetEndOfFile", "NtFlushBuffersFileEx",
+        },
+    }
+    native_write_calls = set().union(*native_calls_by_module.values())
     hits: list[tuple[str, int, str]] = []
     for path in sorted(PACKAGE.rglob("*.py")):
         relative = path.relative_to(PACKAGE).as_posix()
@@ -91,6 +100,8 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                 continue
             name = _call_name(node)
             terminal = name.rsplit(".", 1)[-1]
+            if terminal in native_write_calls and terminal not in native_calls_by_module.get(relative, set()):
+                hits.append((relative, node.lineno, name))
             if name in forbidden_calls or terminal in forbidden_calls:
                 if relative not in allowed_write_modules:
                     hits.append((relative, node.lineno, name))

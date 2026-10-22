@@ -5,12 +5,16 @@ PID search, retry permission or persistent state. This proves this process's
 exit only; a fixed worker must independently forbid descendants/handle transfer.
 The trusted owner must never close/replace its process handle or mutate this
 object during these calls; no caller-supplied callbacks or provider hooks.
+Exact Popen support is limited to Windows CPython3.12.10 internal Handle layout;
+no parent/bootstrap, installation selection or ordinary Core admission is added.
 """
 from __future__ import annotations
 
 import ctypes as C
 from multiprocessing.context import SpawnProcess
 import os
+import subprocess
+import sys
 import threading
 import time
 
@@ -27,13 +31,27 @@ class _FileTime(C.Structure):
 
 
 class WindowsProcessWitness:
-    def __init__(self, process: SpawnProcess):
+    def __init__(self, process: SpawnProcess | subprocess.Popen):
         _require(not getattr(self, '_initialization_attempted', False), 'ntfs.worker_witness_initialization_consumed')
         self._initialization_attempted = True
-        _require(os.name == 'nt' and type(process) is SpawnProcess, 'ntfs.owned_spawn_process_required')
+        _require(os.name == 'nt' and type(process) in (SpawnProcess, subprocess.Popen),
+                 'ntfs.owned_creation_process_required')
         _require(type(process.pid) is int and process.pid > 0, 'ntfs.started_worker_required')
         self.process, self.pid = process, process.pid
-        self.handle = process.sentinel
+        self._popen = type(process) is subprocess.Popen
+        self._handle_object = None
+        if self._popen:
+            # This is CPython's actual creation handle, borrowed from its exact
+            # trusted Popen owner. Never accept an arbitrary PID/handle wrapper.
+            _require(sys.platform == 'win32' and sys.implementation.name == 'cpython'
+                and sys.version_info[:3] == (3, 12, 10), 'ntfs.windows_cpython31210_process_required')
+            handle = getattr(process, '_handle', None)
+            _require(process._child_created is True and type(handle) is subprocess.Handle
+                and handle.closed is False, 'ntfs.owned_popen_handle_required')
+            self._handle_object = handle
+            self.handle = int(handle)
+        else:
+            self.handle = process.sentinel
         _require(type(self.handle) is int and self.handle > 0, 'ntfs.worker_process_handle_required')
         self._owner = (os.getpid(), threading.get_ident())
         self._entered = False
@@ -51,8 +69,14 @@ class WindowsProcessWitness:
 
     def _owned(self):
         _require(self._owner == (os.getpid(), threading.get_ident()), 'ntfs.worker_witness_owner_changed')
-        _require(self.process.sentinel == self.handle and self.process.pid == self.pid,
-                 'ntfs.worker_creation_handle_changed')
+        _require(self.process.pid == self.pid, 'ntfs.worker_creation_handle_changed')
+        if self._popen:
+            _require(self.process._child_created is True
+                and self.process._handle is self._handle_object
+                and self._handle_object.closed is False
+                and int(self._handle_object) == self.handle, 'ntfs.worker_creation_handle_changed')
+        else:
+            _require(self.process.sentinel == self.handle, 'ntfs.worker_creation_handle_changed')
 
     def _call(self, name, *arguments):
         self._owned()

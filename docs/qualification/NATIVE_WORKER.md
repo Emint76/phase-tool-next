@@ -71,3 +71,48 @@ contract to obtain a positive Core demonstration. Existing Core file contracts
 must still reject the native route until coverage is honestly established.
 Independent software work continues. See [remaining tests](FINAL_QUALIFICATION_REMAINING.md)
 and [isolated A05 stand](A05_STAND_REQUIREMENTS.md).
+
+## Parent-side frame correlation, implementation candidate
+
+Two pure functions in this same worker module check canonical closed READY and
+completion frames against trusted parent context, grants, effects and the PID
+from the retained creation process. READY is only a bound echo. Completion
+keeps worker_exit_established=false and forwards indeterminate/error evidence;
+it never attests process exit, effect success, admission or retry permission.
+The existing Broker must still apply its exact effect-receipt schema and plan
+checks. Separate retained-HANDLE exit and independent native readback remain
+required. No new journal, coordinator, version history or persistence is added.
+
+Eight new synthetic frame regressions passed in0.008s, exit0, with no skip,
+timeout, truncation or source drift. They cover replay/cross-binding, extra/
+noncanonical or duplicate keys, size bounds, contradictory errors and Boolean/
+integer identity confusion. The ten-test result above belongs to its exact
+earlier source; those tests were not replayed in this new eight-test selection.
+Source review caught a direct nested grant equality
+comparison accepting bool==int; its unexecuted draft is retained, and the revised
+comparison uses canonical bytes. It is not a historical execution failure.
+
+The installed Windows CPython3.12.10 PipeConnection send/recv code waits without
+a finite timeout internally. poll(30) bounds readiness waiting only. This parser
+does no IPC and does not solve that supervisor deadline requirement. A fixed
+worker/parent transport, original-intent guard, native composition and Core E2E
+are still unfinished; no bounded supervisor is claimed by these functions.
+
+Worker SHA-256 `2d124787bf4a2eb5d5860dc03aeb80936cfbbf869fae66c965b5687778f836ba`.
+Test SHA-256 `ea7a7fe69e303df60da22088611d1a2b7b564d03e921e336951c4829688c7d02`.
+The203-file staged graph used audited e897 CI sources, the exact committed
+process witness and reviewed worker/test overlays. A separate RO container
+verified every staged hash and empty fixtures. Preflight loaded-module paths/
+hashes were retained; no separate module-origin manifest inside the test process
+was retained. No real IPC, Windows API, target effect or Core call was exercised.
+
+| Evidence | Run | Raw SHA-256 | Receipt SHA-256 |
+|---|---|---|---|
+| Source24 | `g-native-worker-frames-source-24-1792635137950948900` | `244e1e82eb33435c66e889d311e1dc34a24531d458addadef650d7b732e550a4` | `b08499e30b42051a06096bd9a9b8966ec574f95ed2a46f9db21fa3ddf49019f8` |
+| Before execution | `g-worker-frames-start-1792635213925546500` | `cf939147b376aea57340342ca637913845e4b19636bd227cf2af6931212c778a` | `d8f76ad9a99568a5f412a5eaafaf9f20c652a632c00387f333a83096c1b5c4ba` |
+| Eight-test result | `g-worker-frames-result-1792635221345693500` | `607a7f6455ddd74b154b87b4cf71ab83cb8e3765bc9dd4c2282bb60e33fd350d` | `5e046941c93a39880c6585cd877b3f8f87351509e7820bdabbf6b64c9399b7e6` |
+
+These Evidence/Raw records use unchanged isolated Phase1.1/ext4, native receipts
+and independent inspect/readback. Source review also caught a weak duplicate-key
+test oracle and reread-after-hash runner gap before execution; corrected bytes
+were frozen before the first run, and rejected drafts remain preserved.

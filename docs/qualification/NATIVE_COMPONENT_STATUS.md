@@ -154,3 +154,11 @@ two owned Windows children through retained creation handles: WAIT_TIMEOUT befor
 GO, then WAIT_OBJECT_0 and raw exit0/259 agreeing with multiprocessing. This proves
 those two process observations, without descendants, file effects, supervisor
 integration, native Core admission or a new persistent coordination system.
+
+Parent-side READY/completion correlation is now an unselected implementation
+candidate inside the existing worker module. Eight synthetic frame attack tests
+passed0.008s with separate RO staged-byte verification and empty fixtures.
+It still requires the standard Broker receipt validator and
+does not prove worker exit or effect success. Windows PipeConnection poll is
+not a complete send/recv deadline; supervisor transport and Core composition
+remain incomplete. No admission/profile/registry guard changed.

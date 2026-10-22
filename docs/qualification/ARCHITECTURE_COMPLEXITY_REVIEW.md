@@ -141,3 +141,9 @@ A qualification_candidate classification cannot manufacture provided guarantees.
 Develop independent worker/observer/binding/refusal components meanwhile; keep
 positive Core NTFS E2E NOT_VERIFIED until required evidence exists. No weaker
 contract, guard exception or reassignment of A05 only to G04 is introduced.
+
+The unselected [retained-process witness](NATIVE_PROCESS_WITNESS.md) is a small
+part of the executor/completion row above. Two own synthetic Windows children
+tested positive process-object exit, including raw exit259, without target writes.
+It adds no persistent coordination component and does not yet compose the worker,
+Core receipt or native inspector. Those integration requirements remain pending.

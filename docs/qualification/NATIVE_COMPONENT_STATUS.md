@@ -148,3 +148,9 @@ operation record. No prepare-frame/PID/boot journal or second coordinator is add
 A05 also maps to G01; the normal Core coverage guard remains closed while that
 mandatory evidence is missing. Independent implementation continues without a
 positive NTFS Core/receipt/inspect claim.
+
+The unselected [process witness](NATIVE_PROCESS_WITNESS.md) separately observed
+two owned Windows children through retained creation handles: WAIT_TIMEOUT before
+GO, then WAIT_OBJECT_0 and raw exit0/259 agreeing with multiprocessing. This proves
+those two process observations, without descendants, file effects, supervisor
+integration, native Core admission or a new persistent coordination system.

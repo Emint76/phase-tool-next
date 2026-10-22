@@ -270,6 +270,17 @@ def validate_static_plan(
     registry: RegistrySnapshot | None,
 ) -> None:
     _require_roots(contract, root_bindings)
+    _validate_logical_plan(plan, contract, registry)
+
+
+def _validate_logical_plan(
+    plan: dict[str, Any], contract: ResolvedContract, registry: RegistrySnapshot | None,
+) -> None:
+    """Pure plan contents only; supplies no filesystem qualification/authority.
+
+    The POSIX entrypoint above MUST retain its root checks before this helper.
+    Native intent parsing must independently bind genuine installed root grants.
+    """
     if registry is not None:
         schema = registry.schema_document("https://phase-tool.local/schemas/effect-plan.schema.json")
         errors = sorted(Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(plan), key=lambda error: list(error.path))

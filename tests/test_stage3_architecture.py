@@ -57,6 +57,74 @@ def _windows_control_pipe_write(relative: str, tree: ast.AST, node: ast.Call) ->
             and ast.unparse(assignments[0].value) == "self._identity(1)")
 
 
+def _readonly_process_class_import(relative: str, tree: ast.AST, node: ast.Import) -> bool:
+    """Inventory four reviewed class-identity references; never permit a spawn.
+
+    This is an architecture inventory for trusted source, not a Python security
+    analyser. No module-wide exemption or executable subprocess call is granted.
+    """
+    if relative != "mutation/ntfs/process_witness.py" or node not in tree.body:
+        return False
+    if len(node.names) != 1 or node.names[0].name != "subprocess" or node.names[0].asname is not None:
+        return False
+    imports = [item for item in ast.walk(tree) if isinstance(item, (ast.Import, ast.ImportFrom))
+               and (any(alias.name.split(".", 1)[0] == "subprocess" or alias.asname == "subprocess"
+                        for alias in item.names)
+                    or isinstance(item, ast.ImportFrom) and (item.module or "").split(".", 1)[0] == "subprocess")]
+    if imports != [node]:
+        return False
+    owners = [item for item in ast.walk(tree) if isinstance(item, ast.ClassDef)
+              and item.name == "WindowsProcessWitness"]
+    if len(owners) != 1 or owners[0] not in tree.body:
+        return False
+    constructors = [item for item in owners[0].body if isinstance(item, ast.FunctionDef)
+                    and item.name == "__init__"]
+    if len(constructors) != 1:
+        return False
+    constructor = constructors[0]
+    if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda))
+           for item in ast.walk(constructor) if item is not constructor):
+        return False
+    # Name Store is not every Python binding form: also inventory arguments,
+    # definition names, imports, exception aliases, scope and pattern bindings.
+    for item in ast.walk(tree):
+        if isinstance(item, ast.arg) and item.arg == "subprocess":
+            return False
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == "subprocess":
+            return False
+        if isinstance(item, ast.ExceptHandler) and item.name == "subprocess":
+            return False
+        if isinstance(item, (ast.Global, ast.Nonlocal)) and "subprocess" in item.names:
+            return False
+        if isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name == "subprocess":
+            return False
+        if isinstance(item, ast.MatchMapping) and item.rest == "subprocess":
+            return False
+    expected = {
+        "SpawnProcess | subprocess.Popen",
+        "type(process) in (SpawnProcess, subprocess.Popen)",
+        "type(process) is subprocess.Popen",
+        "type(handle) is subprocess.Handle",
+    }
+    expressions = [item for item in ast.walk(constructor)
+                   if isinstance(item, (ast.BinOp, ast.Compare)) and ast.unparse(item) in expected]
+    if len(expressions) != 4 or {ast.unparse(item) for item in expressions} != expected:
+        return False
+    process_args = [arg for arg in constructor.args.args if arg.arg == "process"]
+    if len(process_args) != 1 or process_args[0].annotation not in expressions:
+        return False
+    assignments = [item for item in ast.walk(constructor) if isinstance(item, ast.Assign)
+                   and len(item.targets) == 1 and ast.unparse(item.targets[0]) == "self._popen"
+                   and ast.unparse(item.value) == "type(process) is subprocess.Popen"]
+    if len(assignments) != 1:
+        return False
+    permitted = {id(item) for expression in expressions for item in ast.walk(expression)
+                 if isinstance(item, ast.Name) and item.id == "subprocess"}
+    references = [item for item in ast.walk(tree) if isinstance(item, ast.Name) and item.id == "subprocess"]
+    return (len(references) == len(permitted) == 4
+            and all(isinstance(item.ctx, ast.Load) and id(item) in permitted for item in references))
+
+
 def _string_values(tree: ast.AST) -> set[str]:
     values: set[str] = set()
     for node in ast.walk(tree):
@@ -194,10 +262,11 @@ def test_no_shell_exec_subprocess_or_dynamic_module_loading() -> None:
     hits: list[tuple[str, int, str]] = []
     for path in sorted(PACKAGE.rglob("*.py")):
         relative = path.relative_to(PACKAGE).as_posix()
-        for node in ast.walk(_tree(path)):
+        tree = _tree(path)
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.split(".", 1)[0] in forbidden_imports:
+                    if alias.name.split(".", 1)[0] in forbidden_imports and not _readonly_process_class_import(relative, tree, node):
                         hits.append((relative, node.lineno, alias.name))
             elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".", 1)[0] in forbidden_imports:
                 hits.append((relative, node.lineno, node.module or ""))
@@ -206,6 +275,53 @@ def test_no_shell_exec_subprocess_or_dynamic_module_loading() -> None:
                 if name in forbidden_calls:
                     hits.append((relative, node.lineno, name))
     assert hits == []
+
+
+_CLASS_IDENTITY_SOURCE = """import subprocess
+class WindowsProcessWitness:
+ def __init__(self, process: SpawnProcess | subprocess.Popen):
+  require(type(process) in (SpawnProcess, subprocess.Popen))
+  self._popen = type(process) is subprocess.Popen
+  require(type(handle) is subprocess.Handle)
+"""
+
+
+@pytest.mark.parametrize("relative,source,expected", [
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE, True),
+    ("mutation/ntfs/other.py", _CLASS_IDENTITY_SOURCE, False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE.replace("WindowsProcessWitness", "Other"), False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE.replace("__init__", "other"), False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE.replace("import subprocess", "import subprocess as subprocess"), False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE.replace("import subprocess", "from subprocess import Popen"), False),
+    ("mutation/ntfs/process_witness.py", "import subprocess\n" + _CLASS_IDENTITY_SOURCE, False),
+    ("mutation/ntfs/process_witness.py", "import os as subprocess\n" + _CLASS_IDENTITY_SOURCE, False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "from os import path as subprocess\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "subprocess.Popen([])\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "subprocess.run([])\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "subprocess.Handle(1)\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "alias = subprocess.Popen\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "getattr(subprocess, 'Popen')\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "subprocess = other\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "def other(subprocess): pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "def subprocess(): pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "class subprocess: pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "try: pass\nexcept Exception as subprocess: pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "global subprocess\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "match value:\n case subprocess: pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "match value:\n case [*subprocess]: pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "match value:\n case {**subprocess}: pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "[x for subprocess in values]\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "  def hidden(): return subprocess.Popen\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE + "  def hidden(): pass\n", False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE.replace("SpawnProcess | subprocess.Popen", "SpawnProcess"), False),
+    ("mutation/ntfs/process_witness.py", _CLASS_IDENTITY_SOURCE.replace("  self._popen =", "  other ="), False),
+])
+def test_readonly_process_import_inventory(relative, source, expected):
+    # Parse synthetic source only; never import subprocess or execute these calls.
+    tree = ast.parse(source)
+    node = next(item for item in ast.walk(tree) if isinstance(item, ast.Import)
+                and any(alias.name == "subprocess" for alias in item.names)) if "import subprocess" in source else ast.Import(names=[])
+    assert _readonly_process_class_import(relative, tree, node) is expected
 
 
 def test_phase_core_exposes_one_top_level_lifecycle() -> None:

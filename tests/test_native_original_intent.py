@@ -158,7 +158,7 @@ class OriginalNativeIntentTests(unittest.TestCase):
         args=self.arguments()
         for key in ('installed_core_binding','installed_native_binding','installed_implementation_binding'):
             with self.subTest(key=key):
-                changed=deepcopy(args);value=parse_json_bytes(changed[key]);value['unexpected']=True
+                changed=dict(args);value=parse_json_bytes(changed[key]);value['unexpected']=True
                 changed[key]=canonical_bytes(value)
                 with self.assertRaisesRegex(PhaseError,'ntfs.original_installation_binding_mismatch'):
                     parse_original_file_create(**changed)

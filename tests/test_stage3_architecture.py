@@ -103,7 +103,20 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
             if terminal in native_write_calls and terminal not in native_calls_by_module.get(relative, set()):
                 hits.append((relative, node.lineno, name))
             if name in forbidden_calls or terminal in forbidden_calls:
-                if relative not in allowed_write_modules:
+                # This exact transport call writes only borrowed stdout after
+                # the channel's identity/access/nonblocking check. It is not a
+                # target-filesystem writer; all other calls stay inventoried.
+                stdout_channel_write = (
+                    relative == "mutation/ntfs/channel.py" and name == "os.write"
+                    and len(node.args) == 2 and not node.keywords
+                    and isinstance(node.args[0], ast.Call)
+                    and _call_name(node.args[0]) == "self._identity"
+                    and len(node.args[0].args) == 1 and not node.args[0].keywords
+                    and isinstance(node.args[0].args[0], ast.Constant)
+                    and type(node.args[0].args[0].value) is int
+                    and node.args[0].args[0].value == 1
+                )
+                if relative not in allowed_write_modules and not stdout_channel_write:
                     hits.append((relative, node.lineno, name))
             if terminal == "open" and relative not in allowed_write_modules:
                 modes = [arg.value for arg in node.args[1:2] if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]

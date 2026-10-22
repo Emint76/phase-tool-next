@@ -235,3 +235,41 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         and grants[0].binding == contract.document['canonical_result']['root_binding']
         and grants[0].binding not in scope['forbidden_root_bindings'], 'ntfs.original_root_binding_mismatch')
     return _NativeFileCreateReadBinding(manifest_bytes, expected_manifest_digest, registry)
+
+
+_NATIVE_FILE_CREATE_REGISTRY_RESOURCE = "registries/native-file-create-candidate-v1.json"
+_NATIVE_FILE_CREATE_REGISTRY_DIGEST = "sha256:fa2a9aff5f576d15b5a71574a11bd3a7a994a38346540ff6d7e7a74335cfa2c7"
+
+
+def _native_file_create_candidate_registry():
+    """Load one code-selected structural snapshot, never native authority.
+
+    A future authenticated composition may select this unadmitted candidate.
+    Requests, intents, environment and external paths do not select the resource
+    or its digest. The ordinary Host factory and default registry are unchanged.
+    Loading it does not qualify roots, supply a profile or clear old evidence.
+    """
+    from . import __version__
+    from .canonical import canonical_bytes, digest_bytes, parse_json_bytes
+    from .registry import BundledRegistry, RegistrySnapshot
+
+    resources = BundledRegistry.resources()
+    try:
+        raw = resources[_NATIVE_FILE_CREATE_REGISTRY_RESOURCE]
+    except KeyError as exc:
+        raise PhaseError("ntfs.native_registry_missing") from exc
+    if digest_bytes(raw) != _NATIVE_FILE_CREATE_REGISTRY_DIGEST:
+        raise PhaseError("ntfs.native_registry_digest_mismatch")
+    document = parse_json_bytes(raw, maximum_bytes=256*1024)
+    if canonical_bytes(document) != raw:
+        raise PhaseError("ntfs.native_registry_noncanonical")
+    registry = RegistrySnapshot.from_document(document, resources)
+    expected = {"id": "file_create.v1", "version": "1.0.0",
+        "package_digest": "sha256:734cf6905eba9e513c01654555d0a97edf05cd6e7da6cd2ec468e926cdbe8b09"}
+    if registry.contract_bindings().get("file_create.v1@1.0.0") != expected:
+        raise PhaseError("ntfs.native_registry_selection_mismatch")
+    # The existing resolver checks trust, exact artifacts, dependencies, schemas
+    # and Core compatibility; no inactive-generation exception is added to Core.
+    registry.resolve_contract(expected["id"], expected["version"],
+        expected["package_digest"], core_version=__version__)
+    return registry

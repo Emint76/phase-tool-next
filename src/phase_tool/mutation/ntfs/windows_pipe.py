@@ -158,12 +158,14 @@ class WindowsPipeFrames:
             _require(bool(data), 'ntfs.pipe_eof')
         return bytes(value)
 
-    def _frame(self, sending: bool, raw: bytes | None, deadline_ns: int):
+    def _frame(self, sending: bool, raw: bytes | None, deadline_ns: int, maximum_bytes: int):
         progress = {'wire_bytes': 0, 'would_block': 0, 'zero_writes': 0, 'prefix_hex': ''}
         acquired, primary, answer = False, None, None
         try:
             acquired = self._gate.acquire(blocking=False)
             _require(acquired, 'ntfs.pipe_reentrant')
+            _require(type(maximum_bytes) is int and 1 <= maximum_bytes <= MAX_FRAME,
+                     'ntfs.pipe_frame_limit')
             _require(type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 30_000_000_000,
                      'ntfs.pipe_invalid_deadline')
             self._identity(0)
@@ -176,7 +178,7 @@ class WindowsPipeFrames:
                 header = self._read(9, deadline_ns, progress)
                 _require(re.fullmatch(rb'[0-9a-f]{8}\n', header) is not None, 'ntfs.pipe_invalid_header')
                 length = int(header[:8], 16)
-                _require(1 <= length <= MAX_FRAME, 'ntfs.pipe_frame_limit')
+                _require(1 <= length <= maximum_bytes, 'ntfs.pipe_frame_limit')
                 value = self._read(length, deadline_ns, progress)
                 _require(self._read(1, deadline_ns, progress) == b'\n', 'ntfs.pipe_invalid_terminator')
                 answer = value, dict(progress)
@@ -206,10 +208,12 @@ class WindowsPipeFrames:
         return answer
 
     def send_frame(self, raw: bytes, deadline_ns: int) -> dict:
-        return self._frame(True, raw, deadline_ns)
+        return self._frame(True, raw, deadline_ns, MAX_FRAME)
 
-    def receive_frame(self, deadline_ns: int) -> tuple[bytes, dict]:
-        return self._frame(False, None, deadline_ns)
+    def receive_frame(self, deadline_ns: int, *, maximum_bytes: int = MAX_FRAME) -> tuple[bytes, dict]:
+        # A consumer may only reduce the control bound; reject length from the
+        # header before reading or allocating its body. Terminal errors stay so.
+        return self._frame(False, None, deadline_ns, maximum_bytes)
 
     def seal(self) -> None:
         was_sealed = self._sealed

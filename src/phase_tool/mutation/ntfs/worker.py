@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from multiprocessing import connection as _connection
 
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
@@ -17,6 +18,7 @@ from ...paths import safe_relative_locator
 from .native import NativeIdentity, _error_record, _require
 from .scoped import NativeRootGrant
 from .file_create import NativeFileCreateOutcomeUnavailable, execute_file_create
+from .windows_pipe import WindowsPipeFrames
 
 
 _CONTEXT = {'worker_protocol', 'worker_version', 'run_id', 'intent_digest',
@@ -141,12 +143,15 @@ def run_file_create_worker(pipe: object, context: dict, grant_data: dict,
     pipe. No NativeIO, target handle, mutex or mutable API is opened before GO.
     No child, replacement worker or second GO is permitted by this function.
     """
-    _require(os.name == 'nt' and type(pipe) is _connection.PipeConnection, 'ntfs.windows_worker_pipe_required')
+    _require(os.name == 'nt' and (type(pipe) is WindowsPipeFrames
+        or type(pipe) is _connection.PipeConnection), 'ntfs.windows_worker_pipe_required')
+    framed = type(pipe) is WindowsPipeFrames
     primary = transport_error = close_error = None
     binding = None
     completion = None
     try:
         try:
+            handshake_deadline = time.perf_counter_ns() + 30_000_000_000
             binding = _context(context)
             grant = _grant(grant_data)
             _require(type(content) is bytes and len(content) <= 1024**2, 'mechanism.content_too_large')
@@ -163,12 +168,18 @@ def run_file_create_worker(pipe: object, context: dict, grant_data: dict,
                 'grant_digest': digest_bytes(canonical_bytes(grant.as_dict())),
                 'effect_digest': digest_bytes(canonical_bytes(effect)),
                 'content_digest': digest_bytes(content), 'content_length': len(content)}
-            pipe.send_bytes(canonical_bytes(ready))
-            _require(pipe.poll(30), 'ntfs.worker_go_deadline')
-            raw = pipe.recv_bytes(maxlength=4096)
+            if framed:
+                pipe.send_frame(canonical_bytes(ready), handshake_deadline)
+                raw, _progress = pipe.receive_frame(handshake_deadline, maximum_bytes=4096)
+            else:
+                pipe.send_bytes(canonical_bytes(ready))
+                _require(pipe.poll(30), 'ntfs.worker_go_deadline')
+                raw = pipe.recv_bytes(maxlength=4096)
             go = parse_json_bytes(raw, maximum_bytes=4096)
             _require(canonical_bytes(go) == raw and go == {'command': 'execute_file_create', 'context': binding},
                      'ntfs.worker_go_binding_mismatch')
+            if framed:
+                _require(time.perf_counter_ns() < handshake_deadline, 'ntfs.worker_go_deadline')
             effect_receipt, evidence = execute_file_create(grant, effect, content,
                 run_id=binding['run_id'], timestamp=timestamp)
             completion = {'worker_completion_version': '1.0', 'context': binding, 'pid': os.getpid(),
@@ -182,13 +193,21 @@ def run_file_create_worker(pipe: object, context: dict, grant_data: dict,
                 'error': _error_record(error), 'worker_exit_established': False}
         raw = canonical_bytes(completion)
         _require(len(raw) <= _MAX_RESULT, 'ntfs.worker_completion_limit')
-        pipe.send_bytes(raw)
+        if framed:
+            # Physical execution has no protocol deadline/cancellation promise.
+            # Completion gets its own finite send window after that operation.
+            pipe.send_frame(raw, time.perf_counter_ns() + 30_000_000_000)
+        else:
+            pipe.send_bytes(raw)
     except BaseException as transport:
         transport_error = transport
     finally:
         # Attempt exactly once even if building diagnostic completion fails.
         try:
-            pipe.close()
+            if framed:
+                pipe.seal()  # Entrypoint owns stream close; parent proves exit.
+            else:
+                pipe.close()
         except BaseException as finalization:
             close_error = finalization
     if transport_error is not None or close_error is not None:

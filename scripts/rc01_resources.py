@@ -40,6 +40,11 @@ def worker(root: Path):
     return 0 if response.exit_code == 0 and verified.payload["target_verified"] else 1
 
 
+def maximum_peak_rss_growth(records):
+    """Compare every larger workload with the first (64 MiB) baseline."""
+    return max(row["peak_rss_bytes"] for row in records[1:])-records[0]["peak_rss_bytes"]
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--worker", type=Path)
@@ -76,8 +81,8 @@ def main():
             item.update(input_bytes=size, source_allocated_bytes=info.st_blocks*512,
                         source_digest="sha256:"+expected.hexdigest())
             records.append(item)
-    delta=records[1]["peak_rss_bytes"]-records[0]["peak_rss_bytes"]
-    result={"method":"Linux ru_maxrss in separate child processes; input generation outside measured processes; real non-sparse I/O",
+    delta=maximum_peak_rss_growth(records)
+    result={"method":"Linux ru_maxrss in separate child processes; input generation outside measured processes; real non-sparse I/O; growth=max(1GiB,2GiB peaks)-64MiB baseline",
             "runs":records,"peak_rss_growth_bytes":delta,"maximum_growth_bytes":128*1024*1024,
             "pass":delta<=128*1024*1024,"python":sys.version,
             "retention":"generated input/target/payloads are disposable; exact runtime results, digests, logical/physical I/O counters retained"}

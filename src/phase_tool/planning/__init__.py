@@ -68,7 +68,28 @@ def build_idempotency_digests(
     if hook is not None:
         locator = hook.idempotency_locator(value, frozen_inputs, default=locator)
     root_identities = root_identity_records(contract, root_bindings)
-    root_identity = profile_digest("resolved-root-identity", root_identities)
+    return _idempotency_from_root_records(contract, candidate, frozen_inputs,
+        locator=locator, key=value.get("idempotency_key"), root_identities=root_identities,
+        root_identity_profile="resolved-root-identity")
+
+
+def _idempotency_from_root_records(
+    contract: ResolvedContract,
+    candidate: CapturedCandidate,
+    frozen_inputs: Mapping[str, FrozenInput],
+    *, locator: Any, key: str | None, root_identities: list[dict[str, object]],
+    root_identity_profile: str,
+) -> tuple[str, str, str | None, str, list[dict[str, object]]]:
+    """Pure digest projection, never qualification or filesystem identity proof.
+
+    Host callers retain real resolved-root capture. Native execution must supply
+    actual installed native grants after its own closed admission, without
+    converting Windows FileIDs into POSIX device/inode values. The two hash
+    domains intentionally stay distinct; the request/lineage formulas are shared.
+    """
+    if type(root_identity_profile) is not str or root_identity_profile not in {"resolved-root-identity", "native-root-identity-v1"}:
+        raise PhaseError("plan.root_identity_profile_unsupported")
+    root_identity = profile_digest(root_identity_profile, root_identities)
     scope = {
         "contract": {
             "id": contract.document["identity"]["id"],
@@ -88,7 +109,7 @@ def build_idempotency_digests(
             "inputs": [item.intent_record() for _, item in sorted(frozen_inputs.items())],
         },
     )
-    return scope_digest, request_digest, value.get("idempotency_key"), root_identity, root_identities
+    return scope_digest, request_digest, key, root_identity, root_identities
 
 
 def _require_roots(contract: ResolvedContract, root_bindings: Mapping[str, Path]) -> None:
@@ -121,7 +142,35 @@ def build_static_plan(
     generated_at: str,
     request_digest: str | None = None,
 ) -> dict[str, Any]:
+    # Keep the existing physical root checks on BOTH sides of plan building.
+    # A native caller must independently check its admitted grants before the
+    # private logical factory; this public POSIX entrypoint has no bypass flag.
     _require_roots(contract, root_bindings)
+    plan = _build_static_plan_after_root_checks(contract, candidate, frozen_inputs,
+        validator_results, root_bindings=root_bindings, run_id=run_id,
+        generated_at=generated_at, request_digest=request_digest)
+    validate_static_plan(plan, contract, root_bindings, None)
+    return plan
+
+
+def _build_static_plan_after_root_checks(
+    contract: ResolvedContract,
+    candidate: CapturedCandidate,
+    frozen_inputs: Mapping[str, FrozenInput],
+    validator_results: list[dict[str, Any]],
+    *,
+    root_bindings: Mapping[str, Path],
+    run_id: str,
+    generated_at: str,
+    request_digest: str | None = None,
+) -> dict[str, Any]:
+    """Construct the same plan once; callers retain root and logical checks.
+
+    The public POSIX wrapper checks roots before and after, then logical content.
+    A future closed native caller must first admit exact native grants, restrict
+    its supported effect kind, and validate logical content afterwards. This
+    private factory is neither an execution entrypoint nor a root qualifier.
+    """
     _ensure_validation_allows_plan(validator_results)
     value = parse_json_bytes(candidate.canonical_bytes)
     operation = contract.document["operation"]
@@ -237,9 +286,7 @@ def build_static_plan(
         })
     else:
         raise PhaseError("plan.operation_unsupported", operation["intent"])
-    plan = common | {"effects": effects}
-    validate_static_plan(plan, contract, root_bindings, None)
-    return plan
+    return common | {"effects": effects}
 
 
 def validate_plan_mechanism_authorization(

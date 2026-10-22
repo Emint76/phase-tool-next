@@ -1,7 +1,7 @@
-# Retained process witness: two synthetic Windows cases
+# Retained process witness
 
-This internal unselected helper observes an exact `SpawnProcess` creation handle
-retained by its trusted owner. It queries PID/times, waits and reads exit code;
+This internal unselected helper observes an exact `SpawnProcess`, or exact
+Windows CPython3.12.10 `Popen`, creation handle retained by its trusted owner. It queries PID/times, waits and reads exit code;
 it never starts a process, opens a process by PID, duplicates/closes a handle,
 terminates work or changes privileges. No entrypoint or profile selects it.
 
@@ -23,7 +23,82 @@ In particular259 after a positive wait must not be mistaken for a live process.
 See [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
 and [GetExitCodeProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess).
 
-## Exact implementation and actual observations
+## Current exact-Popen extension
+
+Current helper SHA-256
+`db9b9528c38c2ea1111e9c764e03e7b1b433ea732a3e4b3ef5c806cc9f9ca4db`.
+It adds one closed branch to the same witness; the original SpawnProcess sentinel
+and API/wait path remain. The Popen branch requires the exact CPython3.12.10
+Windows class and its actual original `subprocess.Handle` object, not an
+arbitrary PID, integer HANDLE, sentinel wrapper or subclass. It retains strong
+owner/Handle references and checks object identity, closed/child-created flags
+and PID before API use. The trusted owner must still forbid concurrent mutation.
+This is not an installation or executable-artifact verifier.
+
+Twelve first synthetic controls passed0.033s on Linux CPython3.11.16, with no
+errors/skips/timeout/drift and empty fixtures. Exact205 source files=203accepted
+02704 sources with witness replacement plus two test files;31 loaded origins
+were recorded in the actual test process. Test SHA-256
+`8dadeda6518592cc3d6784fc6ccd2a324be530ed5a15ee772440cb6ad0be90e9`.
+The facades replace Win32/owner boundaries deliberately; their individual fake
+API arrays are not saved, so the retained transcript plus frozen source
+assertions establish the tested oracle. They are not actual HANDLE observations.
+
+Result `g-popen-witness-pure-result-v1-1792653645248078200`: raw
+`e25c446a88b2bb20a054958a2e7e705a23338607f11ee510d121aba6bc0dae3e`, receipt
+`d47a31a713fae1b43af76a53816acf4881943762e331aa2ecf72ec4662e13b05`.
+Source30 `g-popen-witness-source-30-1792653620860271800` and START
+`g-popen-witness-pure-start-v1-1792653635550041300` precede it. Both separate
+agents restored252 sources, verified205 staged bytes/31 origins, the exact
+payload and12 oracles, then freshly checked all three through official Phase RO.
+
+Two separately reviewed first actual Windows Popen observations subsequently
+passed on CPython3.12.10 AMD64 with a non-elevated current token. TOKEN_QUERY
+and token-handle close succeeded; no rights/policy changes. The fixed synthetic
+children perform only a READY/exit barrier over pipes and exit; they never open
+a target, run Phase publication or create descendants.
+
+| Expected child exit | Before GO | After GO | Popen comparison | Finalization |
+|---|---|---|---|---|
+|0 | WAIT258, exit=false, code=null | WAIT0, exit=true, code0 |0 | seal/streams/creation HANDLE once |
+|259 | WAIT258, exit=false, code=null | WAIT0, exit=true, code259 |259 | seal/streams/creation HANDLE once |
+
+No primary/finalization errors, forced termination, source drift or held unknown
+owners were observed. The original creation Handle object remained identical.
+Full203 accepted Git files plus witness replacement were checked, and29 actual
+loaded origins/lengths/hashes retained from the same executed byte buffers.
+The runtime record includes interpreter and subprocess source hashes. This was
+a source overlay, not an installed accepted Windows package or parent bootstrap.
+Current WindowsPipeFrames is used only for this small barrier; the four earlier
+pipe fault cases do not automatically qualify a changed helper.
+
+Harness SHA-256
+`172c0509c9ac72e820528a7e952960e0d20a6db2447fce301682864d3309a4a0`.
+Source31 `g-popen-windows-source-31-1792655061973750100`, START
+`g-popen-windows-start-v1-1792655071683338800`, result
+`g-popen-windows-result-v1-1792655082359460000`: result raw
+`092d397fd384cae34ba79ecafc78d46e58e70a96d919d98b212020436194f76e`, receipt
+`3b81e801d5af5cd81ecef3d8b1701555c2d854b56d88d64c64ae56ba37f3a707`.
+Unchanged isolated Phase1.1/ext4 retained all packets with native receipts and
+separate RO inspect/readback. Both separate agents restored254 source entries,
+matched203 Git sources and29 actual origins, checked the raw API sequences and
+all six source/START/result bindings across pure/Windows stages, and freshly
+inspected those records. Runtime bytes matched the retained hashes. This shares
+the host/toolchain, not external certification or GitHub approval.
+Rejected unexecuted harness/source versions remain
+retained, including checked-source-buffer, early-exit fact and negative owner
+lifetime corrections. Unknown failure owners are held in harness memory through
+the archive attempt; interpreter finalization later may close a HANDLE without
+establishing exit. This adds no persistent coordinator or product recovery path.
+
+Peer stderr is DEVNULL, limiting diagnostics. API traces are component
+instrumentation, not independent kernel tracing. The two actual cases do not
+test API failure injection, hostile owner mutation, process descendants, target
+IO, full worker pipes, native Core/CLI/MCP/inspect, contract recovery or rollback.
+A05/G01/MIX/FULL and supported release remain NOT_VERIFIED. No new durable
+intent, queue, journal, provider selection or qualification exception exists.
+
+## Historical SpawnProcess implementation and actual observations
 
 Helper SHA-256 `bcce30bbb713b852388e9a2b25af1b851aa2b87e22c557a14804e882072c337c`.
 Harness SHA-256 `d7a021d006167c29b56f1db3dc90b1a485891ac1f3cf2f4c52a5229a0d7b969f`.

@@ -178,3 +178,16 @@ now has nine first pure controls, same checked byte buffers and37 origins from
 the actual test process, with separate RO206-file readback and empty fixtures.
 No real file-worker pipe, Popen bootstrap, native Core composition or qualification
 is claimed. Five additional receive-cap tests await the next exact-HEAD CI.
+
+Exact02704 Linux CI subsequently passed956/1unavailable NTFS-bind skip per
+Python, including9stdio+5receive-cap controls and13framing+8inventory+18older
+worker/correlator regressions. Its installed Linux CLI/MCP/resource and historical
+binding results do not qualify a native route.
+
+The same unselected [process witness](NATIVE_PROCESS_WITNESS.md) now has a closed
+exact-Popen/CPython3.12.10 branch. Twelve first pure controls and two separately
+reviewed actual own Windows creation-HANDLE observations0/259 passed, with
+Phase/ext4 receipts and separate RO readback. No new journal/queue/versioning.
+Fixed trusted original-intent parent/bootstrap, native observation wiring using
+existing observe_file, closed composition binding and root-wide original-intent
+guard remain pending. A05/G01/native Core/MIX/FULL/release remain NOT_VERIFIED.

@@ -133,6 +133,21 @@ class _NativeFileCreateReadBinding:
             installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),
             registry=self.registry, run_id=run_id, expected_intent_digest=intent_digest)
         intent = parse_json_bytes(original, maximum_bytes=2*1024**2)
+        return parse_original_file_create(intent_bytes=original, plan_bytes=plan,
+            pre_validator_bytes=pre, blob_bytes=content, registry=self.registry,
+            expected_run_id=run_id, expected_intent_digest=intent_digest,
+            **self._parser_bindings(intent))
+
+    def _parser_bindings(self, intent: dict) -> dict[str, bytes]:
+        """Same immutable expectations for reader/parser and original-intent gate.
+
+        This performs static correlation only. It neither validates the complete
+        original operation nor grants authority to dispatch a planned request.
+        Callers still own schema/canonical/registry checks of original bytes.
+        """
+        from .canonical import canonical_bytes, parse_json_bytes
+        from .mutation.ntfs.native import _require
+        manifest = parse_json_bytes(self.manifest_bytes, maximum_bytes=2*1024**2)
         _require(intent['contract'] == manifest['contract'], 'ntfs.original_installation_binding_mismatch')
         # Per-operation claims remain in the original intent. The unchanged
         # parser separately verifies their plan/hash/semantic linkage. Matching
@@ -143,13 +158,10 @@ class _NativeFileCreateReadBinding:
             'operation_nonce': intent['native_binding']['operation_nonce']}
         implementation = {'authority': manifest['authority'], 'mechanism': manifest['mechanism'],
             'effect_plan_digest': intent['implementation_binding']['effect_plan_digest']}
-        return parse_original_file_create(intent_bytes=original, plan_bytes=plan,
-            pre_validator_bytes=pre, blob_bytes=content, registry=self.registry,
-            expected_run_id=run_id, expected_intent_digest=intent_digest,
-            installed_core_binding=canonical_bytes(manifest['core']),
-            installed_native_binding=canonical_bytes(native),
-            installed_root_grants=canonical_bytes(manifest['root_grants']),
-            installed_implementation_binding=canonical_bytes(implementation))
+        return {'installed_core_binding': canonical_bytes(manifest['core']),
+            'installed_native_binding': canonical_bytes(native),
+            'installed_root_grants': canonical_bytes(manifest['root_grants']),
+            'installed_implementation_binding': canonical_bytes(implementation)}
 
 
 def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,

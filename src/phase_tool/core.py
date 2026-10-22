@@ -4,6 +4,7 @@ import base64
 import errno
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1128,3 +1129,203 @@ class PhaseCore:
                 raise
             receipt_digest = profile_digest("receipt", receipt)
             return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, intent, plan, tuple(lifecycle + ["receipt"]), receipt_digest, plan_digest)
+
+
+@contextmanager
+def _guard_native_original_intents(read_binding):
+    """Unselected refusal barrier over existing Core evidence, not authority.
+
+    A future trusted native entrypoint must acquire this BEFORE EvidenceStore
+    reservation and hold it through dispatch, retained-worker quiescence and
+    final evidence. Every overlapping root must share this physical evidence
+    root and lock. Normal Core.run/Host routes do not select this helper.
+    No native executed original can yet be discharged, including by a receipt.
+    """
+    import re
+    import stat
+    import sys
+    from .canonical import canonical_bytes
+    from .evidence import validate_run_id
+    from .installation import (_NativeFileCreateReadBinding,
+        _resolve_native_file_create_read_binding, _linux_filesystem_type,
+        qualify_host_authority_roots)
+    from .mutation.ntfs.native import _require
+    from .streaming import read_bounded_file
+
+    _require(type(read_binding) is _NativeFileCreateReadBinding,
+        'ntfs.original_read_binding_required')
+    # Recheck immutable configuration/current registry before any lock write.
+    _resolve_native_file_create_read_binding(manifest_bytes=read_binding.manifest_bytes,
+        expected_manifest_digest=read_binding.manifest_digest, registry=read_binding.registry)
+    manifest=parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
+    root=Path(manifest['evidence_root']);registry=read_binding.registry
+    _require(sys.platform.startswith('linux'), 'ntfs.original_linux_reader_required')
+    qualify_host_authority_roots({'phase_evidence_root':root})
+    _require(_linux_filesystem_type(root)=='ext4', 'ntfs.original_ext4_evidence_required')
+    phase=root/'.phase';runs=phase/'runs'
+
+    def safe_info(path, *, directory):
+        try:info=path.lstat()
+        except OSError as exc:
+            raise PhaseError('ntfs.original_evidence_unavailable') from exc
+        _require((stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+            and info.st_uid==os.geteuid() and not info.st_mode & 0o022,
+            'ntfs.original_evidence_object_unsafe')
+        if not directory:
+            _require(info.st_nlink==1, 'ntfs.original_evidence_object_unsafe')
+        return info.st_dev,info.st_ino
+
+    # Existing history is required; never mkdir a missing runs root as empty.
+    identity=manifest['evidence_identity']
+    _require(safe_info(root,directory=True)==(identity['device'],identity['inode']),
+        'ntfs.original_evidence_identity_mismatch')
+    anchors={path:safe_info(path,directory=True) for path in (root,phase,runs)}
+
+    def check_anchors():
+        for path,expected in anchors.items():
+            _require(safe_info(path,directory=True)==expected,
+                'ntfs.original_evidence_identity_mismatch')
+
+    def control(path):
+        raw=read_bounded_file(path,2*1024**2)
+        value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+        _require(canonical_bytes(value)==raw, 'ntfs.original_evidence_not_canonical')
+        return value,raw
+
+    def inventory(run):
+        # Flat Core-owned blobs/attachments only; do not follow any link or skip
+        # a non-directory run. This is not a cached index or a history count cap.
+        names=set();attachments={}
+        with os.scandir(run) as entries:
+            for entry in entries:
+                path=run/entry.name;names.add(entry.name)
+                if entry.name in {'blobs','attachments'}:
+                    safe_info(path,directory=True)
+                    with os.scandir(path) as children:
+                        for child in children:
+                            item=path/child.name;safe_info(item,directory=False)
+                            if entry.name=='blobs':
+                                _require(re.fullmatch(r'[0-9a-f]{64}',child.name) is not None,
+                                    'ntfs.original_evidence_name_unsafe')
+                            else:attachments[child.name]=item
+                else:
+                    safe_info(path,directory=False)
+                    _require(entry.name in {'intent.json','receipt.json'},
+                        'ntfs.original_evidence_name_unsafe')
+        return names,attachments
+
+    def no_effect_receipt(receipt,run_id,attachments,*,planned):
+        # Resolve the exact known package before validate_receipt's legacy
+        # unknown-package structural fallback can be reached.
+        _require(type(receipt) is dict, 'ntfs.original_receipt_binding_mismatch')
+        _require(receipt.get('contract')==manifest['contract'] and receipt.get('core')==manifest['core']
+            and receipt.get('run_id')==run_id, 'ntfs.original_receipt_binding_mismatch')
+        binding=receipt['contract']
+        registry.resolve_contract(binding['id'],binding['version'],binding['package_digest'],
+            core_version=receipt['core']['version'])
+        validate_receipt(receipt,registry)
+        _require(receipt['terminal_status']==('validated_planned' if planned else 'rejected')
+            and receipt['execution_disposition']=='not_executed'
+            and receipt['mutation_attempted'] is False
+            and receipt['result_state']==('planned_no_effect' if planned else 'none')
+            and receipt['canonical_result'] is None and receipt['effect_receipts']==[]
+            and receipt['prior_verified_receipt_digest'] is None
+            and receipt['recovery_required'] is False
+            and receipt['evidence']['finalization_status']=='finalized'
+            and 'broker.dispatch_outcome_unknown' not in receipt['blockers'],
+            'ntfs.original_history_unresolved')
+        if not planned:
+            _require(receipt['evidence']['intent_digest'] is None
+                and receipt.get('implementation_binding') is None
+                and receipt['retry_disposition']=='forbidden' and receipt['exit_code']==10
+                and bool(receipt['blockers']), 'ntfs.original_history_unresolved')
+        allowed={'effect-plan.json','pre-validator-results.json','validator-results.json'}
+        _require(set(attachments)<=allowed, 'ntfs.original_history_unresolved')
+        actual={digest_bytes(control(path)[1]) for path in attachments.values()}
+        _require(actual==set(receipt['evidence']['attachment_digests'])
+            and receipt['evidence']['required_attachments_present']==bool(actual),
+            'ntfs.original_attachment_mismatch')
+
+    def check_history():
+        with os.scandir(runs) as entries:
+            for entry in entries:
+                run=runs/entry.name;safe_info(run,directory=True)
+                names,attachments=inventory(run)
+                abandoned=re.fullmatch(r'\.abandoned-(.+)-([0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15})',entry.name)
+                if abandoned:
+                    validate_run_id(abandoned.group(1))
+                    _require('intent.json' not in names and 'receipt.json' not in names,
+                        'ntfs.original_history_unresolved')
+                    continue
+                validate_run_id(entry.name)
+                _require('intent.json' in names or 'receipt.json' in names,
+                    'ntfs.original_history_unresolved')
+                if 'intent.json' not in names:
+                    receipt,_=control(run/'receipt.json')
+                    no_effect_receipt(receipt,entry.name,attachments,planned=False)
+                    continue
+                intent,_=control(run/'intent.json')
+                _require(type(intent) is dict and intent.get('phase_intent_version')=='1.2',
+                    'ntfs.original_native_intent_required')
+                validate_intent(intent,registry)
+                _require(intent['run_id']==entry.name and intent['registry_snapshot_digest']==registry.digest,
+                    'ntfs.original_intent_mismatch')
+                expected=read_binding._parser_bindings(intent)
+                for key,value in [('installed_core_binding',intent['core']),
+                    ('installed_native_binding',intent['native_binding']),
+                    ('installed_root_grants',intent['idempotency']['root_identities']),
+                    ('installed_implementation_binding',intent['implementation_binding'])]:
+                    _require(expected[key]==canonical_bytes(value),
+                        'ntfs.original_installation_binding_mismatch')
+                # No POSIX observer for an executed native target. Terminal-looking
+                # receipts/EOF/no-effect/exit status cannot close a retained worker.
+                _require(intent['execution_requested'] is False, 'ntfs.original_history_unresolved')
+                _require('receipt.json' in names, 'ntfs.original_history_unresolved')
+                receipt,_=control(run/'receipt.json')
+                no_effect_receipt(receipt,entry.name,attachments,planned=True)
+                for path in attachments.values():
+                    control(path)
+                blobs=run/'blobs'
+                if blobs.exists():
+                    with os.scandir(blobs) as frozen:
+                        for item in frozen:
+                            _require(item.stat(follow_symlinks=False).st_size<=1024**2,
+                                'ntfs.original_frozen_input_required')
+                # Reuse metadata-only verification, including registry profile
+                # coverage. A synthetic/unavailable profile continues to refuse.
+                inspect_run(root,entry.name,registry)
+
+    yielded=False;primary_error=None
+    try:
+        # Purpose is fixed in code, never a request key/nonce/run/installation ID.
+        lock_path=operational_lock_path(phase/'locks',digest_bytes(b'phase.native-original-intents.v1'))
+        anchors[lock_path.parent]=safe_info(lock_path.parent,directory=True)
+        with _OperationalFileLock(lock_path) as lock:
+            try:
+                opened=os.fstat(lock._stream.fileno())
+                lock_identity=(opened.st_dev,opened.st_ino)
+                def check_lock():
+                    check_anchors()
+                    _require(safe_info(lock_path,directory=False)==lock_identity,
+                        'ntfs.original_evidence_identity_mismatch')
+                check_lock()
+                check_history();check_lock()
+                try:
+                    yielded=True
+                    yield None
+                except BaseException as primary:
+                    try:check_lock()
+                    except (OSError,PhaseError) as secondary:
+                        primary.add_note('Native original guard secondary identity failure: '+str(secondary))
+                    raise
+                else:check_lock()
+            except BaseException as error:
+                primary_error=error
+                raise
+    except BaseException as error:
+        if primary_error is not None and error is not primary_error:
+            primary_error.add_note('Native original guard secondary lock-finalization failure: '+str(error))
+            raise primary_error from error
+        if isinstance(error,OSError) and not yielded:
+            raise PhaseError('ntfs.original_evidence_unavailable') from error
+        raise

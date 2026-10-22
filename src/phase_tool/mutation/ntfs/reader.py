@@ -24,6 +24,19 @@ _CONTENT_LIMIT=1024**2  # Existing single frozen-input file_create.v1 subset.
 _DIGEST=re.compile(r'sha256:[0-9a-f]{64}')
 
 
+def _evidence_identity(raw: bytes) -> dict:
+    """Existing pure identity validation, shared by the unselected read binding."""
+    _require(type(raw) is bytes and len(raw)<=4096,
+        'ntfs.original_evidence_identity_required')
+    expected=parse_json_bytes(raw,maximum_bytes=4096)
+    _require(type(expected) is dict and set(expected)=={'stable_id','device','inode'}
+        and canonical_bytes(expected)==raw
+        and type(expected['stable_id']) is str and re.fullmatch(r'[a-z][a-z0-9._-]{0,127}',expected['stable_id']) is not None
+        and type(expected['device']) is int and expected['device']>=0
+        and type(expected['inode']) is int and expected['inode']>0,'ntfs.original_evidence_identity_required')
+    return expected
+
+
 def read_original_file_create_buffers(*, evidence_root: Path,
     installed_evidence_identity: bytes, registry: RegistrySnapshot,
     run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes,bytes]:
@@ -41,14 +54,7 @@ def read_original_file_create_buffers(*, evidence_root: Path,
     validate_run_id(run_id)
     _require(type(expected_intent_digest) is str and _DIGEST.fullmatch(expected_intent_digest) is not None,
         'ntfs.original_intent_digest_required')
-    _require(type(installed_evidence_identity) is bytes and len(installed_evidence_identity)<=4096,
-        'ntfs.original_evidence_identity_required')
-    expected=parse_json_bytes(installed_evidence_identity,maximum_bytes=4096)
-    _require(type(expected) is dict and set(expected)=={'stable_id','device','inode'}
-        and canonical_bytes(expected)==installed_evidence_identity
-        and type(expected['stable_id']) is str and re.fullmatch(r'[a-z][a-z0-9._-]{0,127}',expected['stable_id']) is not None
-        and type(expected['device']) is int and expected['device']>=0
-        and type(expected['inode']) is int and expected['inode']>0,'ntfs.original_evidence_identity_required')
+    expected=_evidence_identity(installed_evidence_identity)
     root=Path(evidence_root)
     _require(root.is_absolute(),'ntfs.original_evidence_root_required')
     qualify_host_authority_roots({'phase_evidence_root':root})

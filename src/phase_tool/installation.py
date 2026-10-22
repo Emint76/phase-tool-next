@@ -103,3 +103,123 @@ def host_installation() -> Installation:
         authority_provider=provider,
         authority_profile_binding=profile,
     )
+
+
+@dataclass(frozen=True)
+class _NativeFileCreateReadBinding:
+    """Internal static correlation data, never an Installation or authority.
+
+    Only a future authenticated startup may select this binding. An expected
+    manifest digest supplied here does not authenticate that startup, loaded
+    code, the declared artifact graph, a remote container or current invocation.
+    No GO, write, worker, receipt, recovery or qualification method exists.
+    """
+
+    manifest_bytes: bytes
+    manifest_digest: str
+    registry: object
+
+    def read(self, *, run_id: str, intent_digest: str):
+        from .canonical import canonical_bytes, canonical_digest, parse_json_bytes
+        from .mutation.ntfs.intent import parse_original_file_create
+        from .mutation.ntfs.native import _require
+        from .mutation.ntfs.reader import read_original_file_create_buffers
+
+        manifest = parse_json_bytes(self.manifest_bytes, maximum_bytes=2*1024**2)
+        _require(self.registry.digest == manifest['registry_snapshot_digest']
+            == canonical_digest(self.registry.to_document()), 'ntfs.original_registry_mismatch')
+        original, plan, pre, content = read_original_file_create_buffers(
+            evidence_root=Path(manifest['evidence_root']),
+            installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),
+            registry=self.registry, run_id=run_id, expected_intent_digest=intent_digest)
+        intent = parse_json_bytes(original, maximum_bytes=2*1024**2)
+        _require(intent['contract'] == manifest['contract'], 'ntfs.original_installation_binding_mismatch')
+        # Per-operation claims remain in the original intent. The unchanged
+        # parser separately verifies their plan/hash/semantic linkage. Matching
+        # a nonce does not establish freshness or permit GO/retry.
+        native = {'native_binding_version': '1.0',
+            'installation': {'id': manifest['installation_id'], 'descriptor_digest': self.manifest_digest},
+            'composition': manifest['composition'], 'evidence_identity': manifest['evidence_identity'],
+            'operation_nonce': intent['native_binding']['operation_nonce']}
+        implementation = {'authority': manifest['authority'], 'mechanism': manifest['mechanism'],
+            'effect_plan_digest': intent['implementation_binding']['effect_plan_digest']}
+        return parse_original_file_create(intent_bytes=original, plan_bytes=plan,
+            pre_validator_bytes=pre, blob_bytes=content, registry=self.registry,
+            expected_run_id=run_id, expected_intent_digest=intent_digest,
+            installed_core_binding=canonical_bytes(manifest['core']),
+            installed_native_binding=canonical_bytes(native),
+            installed_root_grants=canonical_bytes(manifest['root_grants']),
+            installed_implementation_binding=canonical_bytes(implementation))
+
+
+def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
+    expected_manifest_digest: str, registry: object) -> _NativeFileCreateReadBinding:
+    """Validate immutable static configuration without filesystem access.
+
+    This unselected internal format has no nonce, plan digest or own descriptor
+    digest. The expected raw SHA belongs to a future trusted startup, outside
+    request/intent. Its provenance and checked executable graph are NOT supplied
+    by this function. Normal host installation, defaults and guards are unchanged.
+    """
+    from pathlib import PurePosixPath
+    from jsonschema import Draft202012Validator, FormatChecker
+    from .canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
+    from .mutation.ntfs.native import _require
+    from .mutation.ntfs.reader import _evidence_identity
+    from .mutation.ntfs.worker import _grant
+    from .registry import RegistrySnapshot
+
+    _require(type(registry) is RegistrySnapshot, 'ntfs.original_registry_required')
+    _require(type(expected_manifest_digest) is str
+        and re.fullmatch(r'sha256:[0-9a-f]{64}', expected_manifest_digest) is not None,
+        'ntfs.original_installation_digest_required')
+    _require(type(manifest_bytes) is bytes and len(manifest_bytes) <= 2*1024**2,
+        'ntfs.original_installation_bytes_required')
+    _require(digest_bytes(manifest_bytes) == expected_manifest_digest, 'ntfs.original_installation_digest_mismatch')
+    manifest = parse_json_bytes(manifest_bytes, maximum_bytes=2*1024**2)
+    _require(type(manifest) is dict and canonical_bytes(manifest) == manifest_bytes,
+        'ntfs.original_installation_shape')
+    # The exact package must be resolved before its immutable schema fragments
+    # can validate the complete static projection. No replacement current schema.
+    for key in ('core', 'contract'):
+        binding = manifest.get(key)
+        _require(type(binding) is dict and set(binding) == {'id', 'version', 'package_digest'}
+            and all(type(value) is str for value in binding.values()), 'ntfs.original_installation_shape')
+    _require(manifest.get('registry_snapshot_digest') == registry.digest
+        == canonical_digest(registry.to_document()), 'ntfs.original_registry_mismatch')
+    binding = manifest['contract']
+    _require(binding['id'] == 'file_create.v1' and binding['version'] == '1.0.0',
+        'ntfs.original_single_effect_required')
+    contract = registry.resolve_contract(binding['id'], binding['version'], binding['package_digest'],
+        core_version=manifest['core']['version'])
+    resource = 'schemas/phase-intent-1.2.schema.json'
+    matches = [item['digest'] for item in contract.entry.get('package_artifacts', ()) if item['resource'] == resource]
+    _require(len(matches) == 1, 'intent.schema_unbound')
+    schema = registry.schema_document('https://phase-tool.local/' + resource, matches[0])
+    native = schema['$defs']['nativeBinding']['properties']
+    implementation = schema['properties']['implementation_binding']['properties']
+    properties = {
+        'native_read_installation_version': {'const': '1.0'},
+        'installation_id': native['installation']['properties']['id'],
+        'core': schema['properties']['core'], 'contract': schema['properties']['contract'],
+        'registry_snapshot_digest': {'$ref': '#/$defs/digest'},
+        'authority': implementation['authority'], 'mechanism': implementation['mechanism'],
+        'composition': native['composition'], 'evidence_identity': native['evidence_identity'],
+        'root_grants': schema['properties']['idempotency']['properties']['root_identities'],
+        'evidence_root': {'type': 'string', 'minLength': 1}}
+    Draft202012Validator({'$schema': schema['$schema'], '$defs': schema['$defs'],
+        'type': 'object', 'properties': properties, 'required': sorted(properties), 'additionalProperties': False},
+        registry=registry.schema_registry(), format_checker=FormatChecker()).validate(manifest)
+    _evidence_identity(canonical_bytes(manifest['evidence_identity']))
+    root = PurePosixPath(manifest['evidence_root'])
+    _require(root.is_absolute() and str(root) == manifest['evidence_root'] and str(root) != '/'
+        and '..' not in root.parts, 'ntfs.original_evidence_root_required')
+    mechanism = {key: contract.document['operation']['mechanism'][key] for key in ('id', 'version', 'package_digest')}
+    _require(manifest['mechanism'] == mechanism and manifest['authority']['usage'] == 'provider_backed',
+        'ntfs.original_implementation_mismatch')
+    grants = [_grant(row) for row in manifest['root_grants']]
+    scope = contract.document['write_scope']
+    _require(len(grants) == 1 and {grants[0].binding} == {row['binding_id'] for row in scope['roots']}
+        and grants[0].binding == contract.document['canonical_result']['root_binding']
+        and grants[0].binding not in scope['forbidden_root_bindings'], 'ntfs.original_root_binding_mismatch')
+    return _NativeFileCreateReadBinding(manifest_bytes, expected_manifest_digest, registry)

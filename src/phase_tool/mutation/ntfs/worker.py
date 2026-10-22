@@ -13,6 +13,7 @@ from multiprocessing import connection as _connection
 
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
+from ...paths import safe_relative_locator
 from .native import NativeIdentity, _error_record, _require
 from .scoped import NativeRootGrant
 from .file_create import NativeFileCreateOutcomeUnavailable, execute_file_create
@@ -23,6 +24,86 @@ _CONTEXT = {'worker_protocol', 'worker_version', 'run_id', 'intent_digest',
             'implementation_artifact_digest', 'operation_nonce'}
 _DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
 _MAX_RESULT = 512*1024
+
+
+def _frame(raw: bytes, keys: set[str]) -> dict:
+    _require(type(raw) is bytes and 0 < len(raw) <= _MAX_RESULT, 'ntfs.worker_frame_limit')
+    value = parse_json_bytes(raw, maximum_bytes=_MAX_RESULT)
+    _require(type(value) is dict and set(value) == keys and canonical_bytes(value) == raw,
+             'ntfs.worker_frame_shape')
+    return value
+
+
+def validate_worker_ready(raw: bytes, *, context: dict, grant_data: dict,
+                          effect: dict, content: bytes, expected_pid: int) -> dict:
+    """Correlate a READY frame against trusted parent data, without granting GO.
+
+    The parent must already have verified the original durable Core intent and
+    must obtain expected_pid from its retained creation process, not this frame.
+    This parser performs no IPC, process wait, target observation or authority
+    qualification. A matching readiness echo is not proof of loaded code.
+    """
+    binding, grant = _context(context), _grant(grant_data)
+    _require(type(expected_pid) is int and expected_pid > 0, 'ntfs.worker_pid_required')
+    _require(type(effect) is dict and type(content) is bytes and len(content) <= 1024**2,
+             'ntfs.worker_expected_binding_shape')
+    _require(effect.get('kind') == 'exclusive_create' and effect.get('content_digest') == digest_bytes(content)
+        and type(effect.get('content_length')) is int and effect['content_length'] == len(content),
+        'mechanism.content_binding_mismatch')
+    value = _frame(raw, {'worker_ready_version', 'context', 'pid', 'grant_digest',
+                         'effect_digest', 'content_digest', 'content_length'})
+    _require(type(value['pid']) is int and type(value['content_length']) is int,
+             'ntfs.worker_ready_binding_mismatch')
+    _require(value == {'worker_ready_version': '1.0', 'context': binding,
+        'pid': expected_pid, 'grant_digest': digest_bytes(canonical_bytes(grant.as_dict())),
+        'effect_digest': digest_bytes(canonical_bytes(effect)),
+        'content_digest': digest_bytes(content), 'content_length': len(content)},
+        'ntfs.worker_ready_binding_mismatch')
+    return value
+
+
+def validate_worker_completion(raw: bytes, *, context: dict, grant_data: dict,
+                               effect: dict, expected_pid: int) -> dict:
+    """Correlate an untrusted completion; never turn it into an exit/success fact.
+
+    The unchanged Broker must validate any effect receipt with its exact schema
+    and plan. A trusted process owner must separately establish retained-HANDLE
+    exit and native readback; Core owns disposition, persistence and recovery.
+    Error completions are retained, including a missing effect receipt. They do
+    not authorize retry, even if no target effect is reported.
+    """
+    binding, grant = _context(context), _grant(grant_data)
+    _require(type(expected_pid) is int and expected_pid > 0, 'ntfs.worker_pid_required')
+    _require(type(effect) is dict and effect.get('kind') == 'exclusive_create'
+        and type(effect.get('effect_id')) is str and bool(effect['effect_id'])
+        and type(effect.get('target')) is dict and set(effect['target']) == {'root_binding', 'relative_locator'}
+        and effect['target']['root_binding'] == grant.binding,
+        'ntfs.worker_expected_binding_shape')
+    safe_relative_locator(effect['target']['relative_locator'])
+    value = _frame(raw, {'worker_completion_version', 'context', 'pid', 'effect_receipt',
+                         'physical_evidence', 'error', 'worker_exit_established'})
+    _require(value['worker_completion_version'] == '1.0' and value['context'] == binding
+        and type(value['pid']) is int and value['pid'] == expected_pid
+        and value['worker_exit_established'] is False, 'ntfs.worker_completion_binding_mismatch')
+    receipt, physical, error = value['effect_receipt'], value['physical_evidence'], value['error']
+    if receipt is not None:
+        _require(type(receipt) is dict and receipt.get('run_id') == binding['run_id']
+            and receipt.get('effect_id') == effect['effect_id'] and receipt.get('kind') == effect.get('kind'),
+            'ntfs.worker_receipt_binding_mismatch')
+    if physical is not None:
+        _require(type(physical) is dict and physical.get('native_file_create_version') == '1.0'
+            and physical.get('run_id') == binding['run_id'] and physical.get('effect_id') == effect['effect_id']
+            and canonical_bytes(physical.get('grant')) == canonical_bytes(grant.as_dict())
+            and physical.get('locator') == effect['target'].get('relative_locator')
+            and physical.get('worker_exit_established') is False, 'ntfs.worker_physical_binding_mismatch')
+    if error is None:
+        _require(receipt is not None and physical is not None, 'ntfs.worker_completion_incomplete')
+    else:
+        _require(type(error) is dict and set(error) == {'type', 'code', 'message', 'details'}
+            and type(error['type']) is str and type(error['message']) is str
+            and (error['code'] is None or type(error['code']) is str) and type(error['details']) is dict
+            and receipt is None, 'ntfs.worker_error_binding_mismatch')
+    return value
 
 
 def _context(value: object) -> dict:

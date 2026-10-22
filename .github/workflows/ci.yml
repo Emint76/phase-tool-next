@@ -164,12 +164,14 @@ jobs:
         run: |
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
+          sha256sum "$GITHUB_WORKSPACE/scripts/rc01_resources.py" "$GITHUB_WORKSPACE/tests/test_resource_rss_gate.py" > "$EVIDENCE/harness-SHA256SUMS"
           "$RESOURCE_PYTHON" "$GITHUB_WORKSPACE/scripts/rc01_resources.py" --output "$EVIDENCE/resources.json" 2>&1 | tee "$EVIDENCE/resources.log"
       - name: Real 256 file 256 MiB bundle gate
         run: |
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
           "$RESOURCE_PYTHON" "$GITHUB_WORKSPACE/scripts/rc01_bundle_resources.py" --output "$EVIDENCE/bundle-resources.json" 2>&1 | tee "$EVIDENCE/bundle-resources.log"
+          sha256sum --check --status "$EVIDENCE/harness-SHA256SUMS"
       - name: Preserve exact-candidate resource evidence
         if: always()
         uses: actions/upload-artifact@v4

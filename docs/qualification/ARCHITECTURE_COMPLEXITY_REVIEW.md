@@ -125,3 +125,19 @@ Separate architecture review checked these source constraints. The new
 [borrowed-pipe channel](NATIVE_CHANNEL.md) has no FD acquisition/finalization
 subsystem, persistent state, service or queue; the entrypoint owns its pipes.
 It is unselected control transport, not a completed Core installation.
+
+## First worker and current admission boundary
+
+Keep the ORIGINAL durable intent before one owned worker. A separate prestart
+prepare frame, predeclared PID/time/boot subsystem or worker journal is unnecessary
+for the first file-create/recovery_none path. Loss leaves the original intent
+blocking later mutations; read-only inspection does not unlock it. Retained
+process-handle exit proof is required for normal completion, and is not a second
+operation lifecycle. See the unselected [worker](NATIVE_WORKER.md).
+
+A05 belongs to G01 in the original guarantee matrix. Its unavailable Windows
+SYMLINK case therefore blocks honest G01 admission as well as final qualification.
+A qualification_candidate classification cannot manufacture provided guarantees.
+Develop independent worker/observer/binding/refusal components meanwhile; keep
+positive Core NTFS E2E NOT_VERIFIED until required evidence exists. No weaker
+contract, guard exception or reassignment of A05 only to G04 is introduced.

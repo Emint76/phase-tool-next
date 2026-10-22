@@ -139,3 +139,12 @@ An unselected [borrowed-pipe channel](NATIVE_CHANNEL.md) now has eleven real
 Linux pipe protocol regressions with a synthetic peer. It adds no journal,
 queue, grant issuer, Windows supervisor or qualification profile. Full MIX/FULL,
 Core E2E and release acceptance remain NOT_VERIFIED.
+
+The unselected [one-operation Windows worker](NATIVE_WORKER.md) now forwards the
+existing physical step through closed READY/GO/completion data. Ten pure control
+and error regressions passed with synthetic peers/effects; no genuine Windows
+pipe or worker-exit proof was tested. Original intent remains the sole durable
+operation record. No prepare-frame/PID/boot journal or second coordinator is added.
+A05 also maps to G01; the normal Core coverage guard remains closed while that
+mandatory evidence is missing. Independent implementation continues without a
+positive NTFS Core/receipt/inspect claim.

@@ -90,6 +90,46 @@ Full private Evidence/Raw uses the existing isolated Phase1.1/ext4 route with
 native receipts, independent inspect/readback and exact hashes. No raw logs,
 private paths or scientific data are published here.
 
+## Actual whole-step L1 smoke at exact source64d81
+
+The whole physical function subsequently ran on three fresh synthetic NTFS
+targets, using the exact199-source graph of
+`64d81fd91f0be7a880819c53cdd82c5de9675e31` and the unchanged source hashes above.
+All three cases passed:0,65,536 and1,048,576bytes. Each created the file and
+attempted a genuine conflicting FILE_CREATE with different offered content.
+Create returned status/IOS0, information2 and a nonNULL handle. Collisions
+returned C0000035 with NULL output, no recorded WriteFile and bytes_written0.
+Create-after, collision-before/after and independent full native IDs matched.
+
+Separate Windows observer processes and parent Win32 readers verified bytes and
+identity after the mutators ended. All six distinct workers exited0 without
+forced termination or primary/finalization error. File/directory flush requests
+were accepted and the sibling sentinel inside the synthetic case root stayed
+unchanged. Two separate reviewers
+read the actual packets and freshly reread all three targets and sentinel; no
+test was replayed. Independence remains within the same host/toolchain.
+
+These are three additional component smoke cases, not mandatory B01/B02/C01
+completion, concurrency/crash qualification, a normal Core publication or an
+installed package acceptance. Product effect receipts are physical observations;
+the Phase receipts below archive their evidence through the existing ext4 route.
+No Phase Core receipt for the NTFS result was produced. Original MP wire bytes
+were not retained, so their recorded digest is diagnostic only; parsed results
+are protected by the archived parent packet. API events are instrumentation,
+not independent kernel tracing. A05 and the full route remain NOT_VERIFIED.
+
+| Binding | Run | Raw SHA-256 | Receipt SHA-256 |
+|---|---|---|---|
+| Source17 | `g-native-file-l1-source-17-1792625828393662900` | `bd1bed8cc333245e1c713d65a0bf51f05be4c3bc83609b9afe44aaf8e0a56e6e` | `a4f65b45795b1dbabbaf7dc2702f342d1c0bbc669cec700b07025c5f7c478e18` |
+| Start | `g-native-file-step-l1-start-1792625855951180000` | `aeaf4fa8c8d92cf2fb00aa4c79320e740d72e888964d4af4acda1042b471c449` | `670701d7cc6cce3adb4510d0880d4a59c4fbd5b08aeea31baf263b68c8d96c1e` |
+| Result | `g-native-file-step-l1-result-1792625869082053500` | `4fb6fca27a0483cafe4b44d14d98ace3021787390eb418f83213bc4161023f06` | `7ac94b3790cd9f949a83f8b2af352c005e0aa386a303b0ab4d20d43099ebcdb4` |
+
+The reviewed L1 harness is
+`5d4ba1876dae77da5b8ba53675380ef6cf51403e55935c0f76991d21be8740f1`.
+Fresh unchanged Phase1.1 read-only inspect/readback of source/start/result passed.
+Two earlier unexecuted harness revisions remain preserved as negative source
+review evidence; their finalization/oracle defects were fixed before this run.
+
 Next is the bounded relay/completion and original-intent guard, actual composed
 L1 G01–G03, then normal Core file→receipt→native independent inspect. Only proved
 guarantees may enter the new qualification profile; no9p allowlist or guard bypass.

@@ -12,7 +12,7 @@ Keep one Phase lifecycle and one owner of execution evidence. Reuse the original
 Core intent, receipt, evidence store, idempotency and contract-specific recovery.
 Do not build the proposed second coordination-intent/head/generation journal,
 separate ext4 store, or FIFO scheduler. The unreleased pure pending-lane model
-is an archived prototype and will be removed from the active candidate; its
+is an archived prototype and was removed from the active candidate; its
 source, 16-test result and rejected alternatives remain in Git/Phase history.
 The private ext4 pin and its unexecuted test drafts are preserved research,
 not prerequisites for the first native Core scenario.
@@ -91,3 +91,37 @@ not authorize support claims, merge or release before final acceptance.
 At this checkpoint, native Core E2E has NOT run: exact native composition,
 binding, fenced executor/completion and independent native inspector are still
 required. Existing native primitive successes are not substituted for it.
+
+## Minimum schema changes, checked against source64d81
+
+The current implementation-binding v1 is closed, not arbitrary JSON. Its
+authority/profile/provider shape and receipt1.0 can remain unchanged. Native
+grants, transport, evidence/preparation identity and installed execution/observer
+roles belong in one new closed binding within originalintent1.2 and a new
+contract package generation. Use genuine VolumeGUID/full native IDs for native
+idempotency, never synthetic POSIX device/inode records.
+
+The current guarantee-profile schema fixes the artifact to posix/authority.py
+and classification to production; the registry resolves that schema and checks
+one file. A new versioned profile schema/descriptor and explicit registry
+dispatch must verify the full executable graph and loaded origins. Preserve
+the old schema/bindings and the guarantee-coverage verifier. No qualification
+profile may claim untested guarantees simply because it is a test profile.
+
+The exclusive_create_v1 logical descriptor names effect_broker_builtin, so it
+does not inherently need a new logical mechanism binding when semantics, limits
+and authority usage stay identical. Exact Core artifact and native provider
+identity distinguish the implementation. This conclusion does not admit v2,
+versions or bundles; the current physical step still has the existing1MiB scope.
+
+Completion digest does not exist before execution. Original intent binds the
+expected protocol/configuration; receipt attachment_digests binds actual
+completion and read-only observations, checked against run/intent/plan/effect/
+native binding. Require those attachments only for the new intent/contract
+generation; historical evidence retains its exact validation path. An absent
+target never resolves unknown dispatch or authorizes replay.
+
+Separate architecture review checked these source constraints. The new
+[borrowed-pipe channel](NATIVE_CHANNEL.md) has no FD acquisition/finalization
+subsystem, persistent state, service or queue; the entrypoint owns its pipes.
+It is unselected control transport, not a completed Core installation.

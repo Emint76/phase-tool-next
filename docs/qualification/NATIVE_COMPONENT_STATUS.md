@@ -128,4 +128,14 @@ actual pure fault regressions and exact source/evidence bindings. Native API
 boundaries in those tests are fakes. A new create-outcome telemetry revision
 conservatively treats unexpected output handles as unknown; old L1 source hashes
 remain historical, with no transferred qualification. This adds no admitted
-profile, IPC or supported contract route. Native Core E2E is still pending.
+profile, IPC service or supported contract route. Native Core E2E is still pending.
+
+Later exact-source checks at64d81 completed three whole-step L1 create/collision
+cases, with six exited Windows workers and independent bytes/full-ID readback;
+see [physical step evidence](NATIVE_FILE_EXECUTOR.md). They do not replace the
+mandatory qualification repetitions or produce a native Core receipt.
+
+An unselected [borrowed-pipe channel](NATIVE_CHANNEL.md) now has eleven real
+Linux pipe protocol regressions with a synthetic peer. It adds no journal,
+queue, grant issuer, Windows supervisor or qualification profile. Full MIX/FULL,
+Core E2E and release acceptance remain NOT_VERIFIED.

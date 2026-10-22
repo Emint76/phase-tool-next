@@ -162,3 +162,11 @@ It still requires the standard Broker receipt validator and
 does not prove worker exit or effect success. Windows PipeConnection poll is
 not a complete send/recv deadline; supervisor transport and Core composition
 remain incomplete. No admission/profile/registry guard changed.
+
+The unselected [Windows borrowed-pipe helper](NATIVE_WINDOWS_PIPE.md) now has
+four first actual owned memory/process IPC cases: binary512KiB echo, reached
+backpressure/deadline, seven-byte header/deadline and truncated EOF. All peers
+exited cleanly, with retained creation-handle waits and separate Phase/ext4
+receipt/readback. It has no target effects, persistent coordination state or
+Core admission. Exact worker/parent binding, observer and full integration remain
+pending; the13 synthetic framing regressions await their first CI execution.

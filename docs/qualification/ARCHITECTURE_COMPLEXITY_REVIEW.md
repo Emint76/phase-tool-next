@@ -147,3 +147,9 @@ part of the executor/completion row above. Two own synthetic Windows children
 tested positive process-object exit, including raw exit259, without target writes.
 It adds no persistent coordination component and does not yet compose the worker,
 Core receipt or native inspector. Those integration requirements remain pending.
+
+The unselected [Windows byte-pipe helper](NATIVE_WINDOWS_PIPE.md) fills only the
+bounded-IPC part of the existing executor row. It reuses CPython nonblocking
+pipe support, has no resource-acquisition/cancellation subsystem and owns no
+durable operation state. Four owned pipe-only cases do not replace ordinary
+Core contract execution, native inspect or missing qualification evidence.

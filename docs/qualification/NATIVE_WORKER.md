@@ -17,8 +17,10 @@ plan, frozen bytes, installation/grants and complete loaded implementation graph
 It must retain the exact creation process handle, validate readiness and completion,
 establish process exit and obtain separate read-only native observation. PID or
 creation timestamp alone is not that proof. No such parent is installed here.
-`poll(30)` bounds initial frame availability, not complete receipt or OS execution.
-Frame limits do not imply cancellation or a hard deadline.
+On the original MP path, `poll(30)` bounds initial frame availability, not complete
+receipt or OS execution. The new [closed framing seam](NATIVE_WORKER_STDIO.md)
+uses an exact second pipe type with bounded control waiting; it adds no bootstrap
+or complete parent. Frame limits do not imply cancellation or a hard deadline.
 
 Until exact canonical GO, the worker only checks data and exchanges pipe control;
 it does not open NativeIO, target handles or a root mutex. It invokes the existing
@@ -28,7 +30,8 @@ The execute frame carries that context, not a caller-selected implementation.
 The trusted caller supplies independently authenticated frozen bytes and grant.
 
 Operation errors, completion/serialization/send errors and endpoint-close errors
-are retained separately. One outer finally attempts one endpoint close. A close
+are retained separately. One outer finally attempts one MP endpoint close or one
+borrowed-frame seal; the stream owner closes borrowed streams. Finalization
 failure produces abnormal worker completion even after a preliminary response.
 An error-free response or exit code zero does not establish a successful effect;
 the physical receipt may be indeterminate. `worker_exit_established` stays false.

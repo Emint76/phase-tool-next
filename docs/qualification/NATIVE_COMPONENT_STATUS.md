@@ -170,3 +170,11 @@ exited cleanly, with retained creation-handle waits and separate Phase/ext4
 receipt/readback. It has no target effects, persistent coordination state or
 Core admission. Exact worker/parent binding, observer and full integration remain
 pending; the13 synthetic framing regressions await their first CI execution.
+
+Those13 framing regressions and8 IO-inventory cases subsequently passed in exact
+b4e8 Linux CI (942passed/1unavailable NTFS-bind skip per Python); they do not
+qualify the actual NTFS route. The new [closed worker framing seam](NATIVE_WORKER_STDIO.md)
+now has nine first pure controls, same checked byte buffers and37 origins from
+the actual test process, with separate RO206-file readback and empty fixtures.
+No real file-worker pipe, Popen bootstrap, native Core composition or qualification
+is claimed. Five additional receive-cap tests await the next exact-HEAD CI.

@@ -80,16 +80,20 @@ the215 sources,202-file graph and28 origins afterwards. Both performed fresh
 RO Phase inspect/readback of all three packets and verified the actual negative
 oracles/exit facts. They share the host/toolchain, not external certification
 or GitHub approval. The13 synthetic framing/state regressions are separate from
-these four actual Windows cases; their first CI execution remains pending here.
+these four actual Windows cases; all13 passed on both Linux Python versions in
+exact b4e8 CI39727183428. That CI is not native contract qualification.
 
 ## Integration still required
 
-The current worker still requires exact `PipeConnection`; this helper is not an
-automatic replacement. The retained process witness still accepts `SpawnProcess`,
+The new [closed worker seam](NATIVE_WORKER_STDIO.md) explicitly accepts this exact
+framing type alongside `PipeConnection`; no automatic duck-type replacement is
+provided. HelperV4 adds a receive bound that may only reduce the control limit;
+these historical four real cases remain bound to helperV3. The retained process
+witness still accepts `SpawnProcess`,
 whereas these smoke peers used exact CPython `Popen` creation handles. No witness
 compatibility, complete parent supervisor or file-worker exchange is claimed.
 
-Complete the smallest explicit worker/parent seam, trusted original-intent/
+Complete the trusted parent/bootstrap, original-intent/
 installation binding, separate read-only native observer and root-wide scan of
 original unresolved intents. Keep the normal Core guarantee guard closed for
 missing A05/G01. **Native Core publication/receipt/inspect, versions, bundles,

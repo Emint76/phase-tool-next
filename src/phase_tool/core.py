@@ -42,11 +42,117 @@ CORE_BINDING = {
 
 
 class _OperationalFileLock:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, _checked_release: bool = False) -> None:
+        if type(_checked_release) is not bool:
+            raise PhaseError("lock.invalid_checked_mode")
         self.path = path
         self._stream = None
+        self._checked_release = _checked_release
+        self._checked_fd = None
+        self._checked_identity = None
+        self._checked_parent_identity = None
+        self._checked_enter_attempted = False
+
+    def fileno(self) -> int:
+        if self._checked_release:
+            if self._checked_fd is None:
+                raise PhaseError("lock.descriptor_unavailable")
+            return self._checked_fd
+        assert self._stream is not None
+        return self._stream.fileno()
+
+    def _check_checked_namespace(self) -> None:
+        import stat
+        from .evidence import _reject_existing_links
+        _reject_existing_links(self.path.parent)
+        parent = self.path.parent.lstat()
+        named = self.path.lstat()
+        if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
+            or parent.st_mode & 0o022
+            or (parent.st_dev, parent.st_ino) != self._checked_parent_identity
+            or not stat.S_ISREG(named.st_mode) or named.st_nlink != 1
+            or named.st_uid != os.geteuid() or named.st_mode & 0o022
+            or (named.st_dev, named.st_ino) != self._checked_identity):
+            raise PhaseError("lock.checked_namespace_identity_changed")
+
+    @staticmethod
+    def _checked_secondary(primary: BaseException | None, errors: list[BaseException]) -> None:
+        if not errors:
+            return
+        if primary is not None:
+            for error in errors:
+                primary.add_note("Checked lock finalization: " + str(error))
+            return
+        raise PhaseError("lock.checked_finalization_unknown", details={
+            'errors': [{'type': type(error).__name__, 'message': str(error),
+                'code': getattr(error, 'code', None), 'errno': getattr(error, 'errno', None)}
+                for error in errors]}) from errors[0]
+
+    def _enter_checked(self) -> "_OperationalFileLock":
+        import stat
+        if self._checked_enter_attempted:
+            raise PhaseError("lock.checked_acquisition_consumed")
+        self._checked_enter_attempted = True
+        if (os.name != 'posix' or not hasattr(os, 'O_NOFOLLOW')
+            or not hasattr(os, 'O_CLOEXEC') or not hasattr(os, 'O_DIRECTORY')
+            or not self.path.is_absolute()):
+            raise PhaseError("lock.checked_platform_unsupported")
+        import fcntl
+        from .evidence import _open_checked_operational_lock
+        descriptor, parent_identity, identity = _open_checked_operational_lock(self.path)
+        self._checked_fd = descriptor
+        self._checked_parent_identity, self._checked_identity = parent_identity, identity
+        descriptor = self._checked_fd
+        try:
+            deadline = time.monotonic() + _OPERATIONAL_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as error:
+                    if error.errno not in {errno.EINTR, errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise PhaseError("lock.acquire_timeout", str(self.path)) from error
+                    if error.errno != errno.EINTR:
+                        time.sleep(min(_OPERATIONAL_LOCK_RETRY_SECONDS, remaining))
+                else:
+                    self._check_checked_namespace()
+                    return self
+        except BaseException as primary:
+            # May have acquired before a namespace-check failure. Finalize this
+            # same descriptor once, preserving the original failure either way.
+            self._exit_checked(primary)
+            raise
+
+    def _exit_checked(self, primary: BaseException | None) -> None:
+        descriptor, self._checked_fd = self._checked_fd, None
+        if descriptor is None:
+            self._checked_secondary(primary, [PhaseError("lock.checked_finalization_consumed")])
+            return
+        import fcntl
+        errors = []
+        try: self._check_checked_namespace()
+        except BaseException as error: errors.append(error)
+        # A changed descriptor is no longer owned; never close a reused number.
+        # The bootstrap must forbid transfer/fork/concurrent use; dev/ino alone
+        # cannot authenticate an open-file-description after external FD reuse.
+        try:
+            current = os.fstat(descriptor)
+            if (current.st_dev, current.st_ino) != self._checked_identity:
+                raise PhaseError("lock.checked_descriptor_identity_changed")
+        except BaseException as error:
+            errors.append(error)
+        else:
+            try: fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except BaseException as error: errors.append(error)
+            try: os.close(descriptor)
+            except BaseException as error: errors.append(error)
+        self._checked_secondary(primary, errors)
 
     def __enter__(self) -> "_OperationalFileLock":
+        if self._checked_release:
+            return self._enter_checked()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._stream = self.path.open("a+b")
         if os.name == "nt":
@@ -82,6 +188,8 @@ class _OperationalFileLock:
         return self
 
     def __exit__(self, *_exc: object) -> None:
+        if self._checked_release:
+            return self._exit_checked(_exc[1] if len(_exc) > 1 else None)
         assert self._stream is not None
         try:
             if os.name == "nt":
@@ -140,6 +248,68 @@ class PhaseOutcome:
     lifecycle: tuple[str, ...]
     receipt_digest: str | None
     effect_plan_digest: str | None
+
+
+@dataclass
+class _NativeRunContext:
+    """Transient operation facts only; no installation authority or persistence.
+
+    The future closed native wrapper must admit its actual installation and
+    acquire the original-intent guard before entering the existing lifecycle.
+    These facts neither qualify a root nor discharge an unresolved original.
+    """
+
+    started: bool = False
+    inner_entered: bool = False
+    intent_recording_started: bool = False
+    broker_entered: bool = False
+    preparation_attempted: bool = False
+    publication_attempted: bool = False
+    possible_dispatch: bool = False
+    store: EvidenceStore | None = None
+    prepared_bytes: bytes | None = None
+
+    def start(self) -> None:
+        # Consume BEFORE EvidenceStore reservation, never after possible effects.
+        if (self.started or self.inner_entered or self.intent_recording_started
+            or self.broker_entered or self.preparation_attempted
+            or self.publication_attempted or self.possible_dispatch
+            or self.store is not None or self.prepared_bytes is not None):
+            raise PhaseError("ntfs.terminal_context_consumed")
+        self.started = True
+
+    @property
+    def prepared(self) -> PhaseOutcome | None:
+        if self.prepared_bytes is None:
+            return None
+        value = parse_json_bytes(self.prepared_bytes)
+        return PhaseOutcome(value['run_id'], value['exit_code'], value['receipt'],
+            value['intent'], value['effect_plan'], tuple(value['lifecycle']),
+            None, value['effect_plan_digest'])
+
+    def prepare(self, store: EvidenceStore, outcome: PhaseOutcome) -> PhaseOutcome:
+        if (not self.started or self.preparation_attempted or self.publication_attempted
+            or self.store is not store):
+            raise PhaseError("ntfs.terminal_preparation_consumed")
+        self.preparation_attempted = True
+        # Original/dispatch flags and the original store already exist before
+        # this fallible serialization. A failed copy cannot authorize no-effect.
+        from .canonical import canonical_bytes
+        raw = canonical_bytes({'run_id': outcome.run_id, 'exit_code': outcome.exit_code,
+            'receipt': outcome.receipt, 'intent': outcome.intent,
+            'effect_plan': outcome.effect_plan, 'lifecycle': list(outcome.lifecycle),
+            'effect_plan_digest': outcome.effect_plan_digest})
+        self.prepared_bytes = raw
+        # Each access decodes a fresh view; nested caller mutations cannot alter
+        # the immutable pending bytes. No receipt digest acknowledges a commit.
+        return self.prepared
+
+
+def _prepare_native_terminal(context: _NativeRunContext, store: EvidenceStore,
+    outcome: PhaseOutcome) -> PhaseOutcome:
+    if type(context) is not _NativeRunContext or type(store) is not EvidenceStore:
+        raise PhaseError("ntfs.terminal_context_required")
+    return context.prepare(store, outcome)
 
 
 class PhaseCore:
@@ -674,9 +844,21 @@ class PhaseCore:
         }
 
     def run(self, request: PhaseRequest, *, execute: bool = False, faults: CoreFaults | None = None) -> PhaseOutcome:
+        return self._run_lifecycle(request, execute=execute, faults=faults)
+
+    def _run_lifecycle(self, request: PhaseRequest, *, execute: bool = False,
+        faults: CoreFaults | None = None, native_ctx: _NativeRunContext | None = None) -> PhaseOutcome:
+        # Native startup/guard admission belongs to the future closed wrapper;
+        # this private seam is not an entrypoint or a qualification exemption.
+        if native_ctx is not None:
+            if type(native_ctx) is not _NativeRunContext:
+                raise PhaseError("ntfs.terminal_context_required")
+            native_ctx.start()
         timestamp = self._timestamp(request)
         evidence_root = self._check_root_separation(request)
         store = EvidenceStore(evidence_root, request.run_id)
+        if native_ctx is not None:
+            native_ctx.store = store
         evidence_root = store.evidence_root
         lifecycle: list[str] = []
         validator_results: list[dict[str, Any]] = []
@@ -743,7 +925,8 @@ class PhaseCore:
             idempotency_lock = None
             if key is not None:
                 lock_digest = profile_digest("idempotency-lock", {"key": key, "scope_digest": scope_digest})
-                idempotency_lock = _OperationalFileLock(operational_lock_path(store.operational_lock_root / "idempotency", lock_digest))
+                idempotency_path = operational_lock_path(store.operational_lock_root / "idempotency", lock_digest)
+                idempotency_lock = _OperationalFileLock(idempotency_path, _checked_release=native_ctx is not None)
             if idempotency_lock is None:
                 return self._run_after_idempotency_binding(
                     request,
@@ -763,6 +946,7 @@ class PhaseCore:
                     evidence_root,
                     execute,
                     active_faults,
+                    native_ctx,
                 )
             with idempotency_lock:
                 return self._run_after_idempotency_binding(
@@ -783,8 +967,13 @@ class PhaseCore:
                     evidence_root,
                     execute,
                     active_faults,
+                    native_ctx,
                 )
         except (PhaseError, OSError) as exc:
+            if native_ctx is not None and (native_ctx.inner_entered or native_ctx.preparation_attempted):
+                # Inner operation facts may exist even if draft serialization
+                # failed. Never replace them using this outer scope's None locals.
+                raise
             intent_digest = profile_digest("intent", intent) if intent is not None else None
             if effect_receipts and intent_digest is not None and contract is not None and plan is not None:
                 receipt = self._executed_receipt(
@@ -803,16 +992,12 @@ class PhaseCore:
                 validate_receipt(receipt, self.registry)
                 if not lifecycle or lifecycle[-1] != "receipt":
                     lifecycle.append("receipt")
-                return PhaseOutcome(
-                    request.run_id,
-                    receipt["exit_code"],
-                    receipt,
-                    intent,
-                    plan,
-                    tuple(lifecycle),
-                    None,
-                    plan_digest,
-                )
+                outcome = PhaseOutcome(
+                    request.run_id, receipt["exit_code"], receipt, intent, plan,
+                    tuple(lifecycle), None, plan_digest)
+                if native_ctx is not None:
+                    return _prepare_native_terminal(native_ctx, store, outcome)
+                return outcome
             if isinstance(exc, OSError):
                 try:
                     store.release_unpublished_run()
@@ -829,6 +1014,10 @@ class PhaseCore:
                 implementation_binding=intent["implementation_binding"] if intent is not None else None,
             )
             validate_receipt(receipt, self.registry)
+            if native_ctx is not None:
+                return _prepare_native_terminal(native_ctx, store, PhaseOutcome(
+                    request.run_id, receipt["exit_code"], receipt, intent, plan,
+                    tuple(lifecycle + ["receipt"]), None, plan_digest))
             try:
                 store.write_canonical("receipt.json", receipt)
             except OSError:
@@ -859,6 +1048,7 @@ class PhaseCore:
         evidence_root: Path,
         execute: bool,
         active_faults: CoreFaults,
+        native_ctx: _NativeRunContext | None = None,
     ) -> PhaseOutcome:
         plan: dict[str, Any] | None = None
         intent: dict[str, Any] | None = None
@@ -870,12 +1060,18 @@ class PhaseCore:
         interruption_code: str | None = None
         possible_dispatch = False
         runner = ValidatorRunner(self.registry)
+        if native_ctx is not None:
+            native_ctx.inner_entered = True
         try:
             reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute)
             if execute and reused is not None:
                 receipt = self._reused_receipt(request, [], timestamp, reused[0], reused[1])
                 validate_receipt(receipt, self.registry)
                 lifecycle.append("receipt")
+                if native_ctx is not None:
+                    return _prepare_native_terminal(native_ctx, store, PhaseOutcome(
+                        request.run_id, receipt["exit_code"], receipt, None, None,
+                        tuple(lifecycle), None, None))
                 store.write_canonical("receipt.json", receipt)
                 return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, None, None, tuple(lifecycle), profile_digest("receipt", receipt), None)
             lifecycle.append("validate")
@@ -909,6 +1105,10 @@ class PhaseCore:
                     receipt = self._reused_receipt(request, validator_results, timestamp, prior[0], prior[1])
                     validate_receipt(receipt, self.registry)
                     lifecycle.append("receipt")
+                    if native_ctx is not None:
+                        return _prepare_native_terminal(native_ctx, store, PhaseOutcome(
+                            request.run_id, receipt["exit_code"], receipt, None, None,
+                            tuple(lifecycle), None, None))
                     store.write_canonical("receipt.json", receipt)
                     return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, None, None, tuple(lifecycle), profile_digest("receipt", receipt), None)
             lifecycle.append("plan")
@@ -952,6 +1152,8 @@ class PhaseCore:
                 intent["evidence"]["pre_validator_results_digest"] = validators_digest
             validate_intent(intent, self.registry)
             lifecycle.append("intent")
+            if native_ctx is not None:
+                native_ctx.intent_recording_started = True
             intent_path, _ = store.write_canonical("intent.json", intent)
             intent_digest = profile_digest("intent", intent)
             if not execute:
@@ -975,6 +1177,8 @@ class PhaseCore:
 
                 record_progress([])
                 lifecycle.append("broker")
+                if native_ctx is not None:
+                    native_ctx.broker_entered = True
                 try:
                     broker_result = EffectBroker(
                         self.registry,
@@ -994,6 +1198,8 @@ class PhaseCore:
                 except BrokerExecutionInterrupted as interrupted:
                     effect_receipts = list(interrupted.effect_receipts)
                     possible_dispatch = interrupted.possible_dispatch
+                    if native_ctx is not None:
+                        native_ctx.possible_dispatch |= possible_dispatch
                     if interrupted.progress_digest is not None:
                         progress_digest = interrupted.progress_digest
                         latest_progress = self._ordered_progress(plan, effect_receipts)
@@ -1039,11 +1245,17 @@ class PhaseCore:
                 )
             validate_receipt(receipt, self.registry)
             lifecycle.append("receipt")
+            if native_ctx is not None:
+                return _prepare_native_terminal(native_ctx, store, PhaseOutcome(
+                    request.run_id, receipt["exit_code"], receipt, intent, plan,
+                    tuple(lifecycle), None, plan_digest))
             if not active_faults.fail_receipt_write:
                 store.write_canonical("receipt.json", receipt)
             receipt_digest = None if active_faults.fail_receipt_write else profile_digest("receipt", receipt)
             return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, intent, plan, tuple(lifecycle), receipt_digest, plan_digest)
         except (PhaseError, OSError) as exc:
+            if native_ctx is not None and native_ctx.preparation_attempted:
+                raise
             intent_digest = profile_digest("intent", intent) if intent is not None else None
             if (effect_receipts or possible_dispatch) and intent_digest is not None and contract is not None and plan is not None:
                 required_attachments_present = True
@@ -1092,6 +1304,10 @@ class PhaseCore:
                 if not lifecycle or lifecycle[-1] != "receipt":
                     lifecycle.append("receipt")
                 receipt_digest = None
+                if native_ctx is not None:
+                    return _prepare_native_terminal(native_ctx, store, PhaseOutcome(
+                        request.run_id, receipt["exit_code"], receipt, intent, plan,
+                        tuple(lifecycle), None, plan_digest))
                 try:
                     store.write_canonical("receipt.json", receipt)
                     receipt_digest = profile_digest("receipt", receipt)
@@ -1119,6 +1335,10 @@ class PhaseCore:
                 implementation_binding=intent["implementation_binding"] if intent is not None else None,
             )
             validate_receipt(receipt, self.registry)
+            if native_ctx is not None:
+                return _prepare_native_terminal(native_ctx, store, PhaseOutcome(
+                    request.run_id, receipt["exit_code"], receipt, intent, plan,
+                    tuple(lifecycle + ["receipt"]), None, plan_digest))
             try:
                 store.write_canonical("receipt.json", receipt)
             except OSError:
@@ -1300,9 +1520,9 @@ def _guard_native_original_intents(read_binding):
         # Purpose is fixed in code, never a request key/nonce/run/installation ID.
         lock_path=operational_lock_path(phase/'locks',digest_bytes(b'phase.native-original-intents.v1'))
         anchors[lock_path.parent]=safe_info(lock_path.parent,directory=True)
-        with _OperationalFileLock(lock_path) as lock:
+        with _OperationalFileLock(lock_path, _checked_release=True) as lock:
             try:
-                opened=os.fstat(lock._stream.fileno())
+                opened=os.fstat(lock.fileno())
                 lock_identity=(opened.st_dev,opened.st_ino)
                 def check_lock():
                     check_anchors()

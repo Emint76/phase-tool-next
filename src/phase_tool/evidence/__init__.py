@@ -443,6 +443,61 @@ class EvidenceStore:
         return path
 
 
+def _open_checked_operational_lock(path: Path) -> tuple[int, tuple[int, int], tuple[int, int]]:
+    """Open one owned control-lock leaf under its pinned existing parent.
+
+    This is the existing evidence IO boundary, not a target mutation API or
+    native admission. The caller owns the returned FD, takes the original flock
+    and checks namespace identity throughout that lifetime. No mkdir, overwrite,
+    truncation, retry, descriptor transfer or persistent lock index is provided.
+    """
+    if (os.name != 'posix' or not hasattr(os, 'O_NOFOLLOW')
+        or not hasattr(os, 'O_CLOEXEC') or not hasattr(os, 'O_DIRECTORY')
+        or not path.is_absolute()):
+        raise PhaseError("lock.checked_platform_unsupported")
+    _reject_existing_links(path.parent)
+    parent = path.parent.lstat()
+    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022):
+        raise PhaseError("lock.checked_parent_unsafe")
+    parent_identity = parent.st_dev, parent.st_ino
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = None
+    try:
+        pinned = os.fstat(parent_fd)
+        if (pinned.st_dev, pinned.st_ino) != parent_identity:
+            raise PhaseError("lock.checked_namespace_identity_changed")
+        descriptor = os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+            | os.O_CLOEXEC, 0o600, dir_fd=parent_fd)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise PhaseError("lock.checked_object_unsafe")
+        identity = info.st_dev, info.st_ino
+        _reject_existing_links(path.parent)
+        current_parent, named = path.parent.lstat(), path.lstat()
+        if ((current_parent.st_dev, current_parent.st_ino) != parent_identity
+            or current_parent.st_uid != os.geteuid() or current_parent.st_mode & 0o022
+            or not stat.S_ISDIR(current_parent.st_mode) or not stat.S_ISREG(named.st_mode)
+            or (named.st_dev, named.st_ino) != identity):
+            raise PhaseError("lock.checked_namespace_identity_changed")
+    except BaseException as primary:
+        if descriptor is not None:
+            try: os.close(descriptor)
+            except BaseException as error: primary.add_note("Checked lock open cleanup: " + str(error))
+        try: os.close(parent_fd)
+        except BaseException as error: primary.add_note("Checked lock parent cleanup: " + str(error))
+        raise
+    # Parent FD close is consumed once; on failure never return the lock FD.
+    try:
+        os.close(parent_fd)
+    except BaseException as primary:
+        try: os.close(descriptor)
+        except BaseException as error: primary.add_note("Checked lock open cleanup: " + str(error))
+        raise
+    return descriptor, parent_identity, identity
+
+
 def operational_lock_path(lock_root: Path, key_digest: str) -> Path:
     if not key_digest.startswith("sha256:") or len(key_digest) != 71:
         raise PhaseError("lock.invalid_digest", key_digest)

@@ -58,6 +58,14 @@ class NativeIntentSchemaTests(unittest.TestCase):
         self.assertTrue(verify_pre_validator_binding(self.intent,digest_bytes(b'[]')))
 
     def test_default_selection_and_descriptors_are_unchanged(self):
+        uri='https://phase-tool.local/'+SCHEMA
+        entries=[entry for entry in self.registry.to_document()['entries']
+            if entry.get('kind')=='schema' and entry.get('schema_ref')==uri]
+        self.assertEqual(len(entries),1)
+        self.assertIs(entries[0]['current'],True)
+        raw=BundledRegistry.resources()[SCHEMA]
+        self.assertEqual(digest_bytes(raw),'sha256:af15652c8073fb546b4b7b0496a1a40b6da4a97f822444102e49bcca1e8c647d')
+        self.assertEqual(self.registry.schema_document(uri),self.registry.schema_document(uri,digest_bytes(raw)))
         self.assertEqual(self.registry.contract_bindings()['file_create.v1@1.0.0']['package_digest'],OLD_PACKAGE)
         old=self.registry.resolve_contract('file_create.v1','1.0.0',OLD_PACKAGE,core_version='1.2.0-rc.1')
         new=self.registry.resolve_contract(**dict(identifier=self.intent['contract']['id'],version='1.0.0',

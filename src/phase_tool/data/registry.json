@@ -2802,7 +2802,7 @@
       "artifact": "schemas/phase-intent-1.2.schema.json",
       "artifact_digest": "sha256:af15652c8073fb546b4b7b0496a1a40b6da4a97f822444102e49bcca1e8c647d",
       "capability": "schema",
-      "current": false,
+      "current": true,
       "id": "schema.phase-intent.v1-2",
       "kind": "schema",
       "mutable": false,

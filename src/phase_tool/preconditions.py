@@ -8,11 +8,11 @@ from .errors import PhaseError
 
 
 def pre_validator_binding_required(intent: Mapping[str, Any]) -> bool:
-    """Classify only the two admitted intent formats; never exempt a new one."""
+    """Classify only the three schema-bound intent formats; never exempt a new one."""
     version = intent.get("phase_intent_version")
     if version == "1.0":
         return False
-    if version != "1.1":
+    if version not in ("1.1", "1.2"):
         raise PhaseError("preconditions.unsupported_intent_version")
     return True
 
@@ -21,7 +21,7 @@ def verify_pre_validator_binding(intent: Mapping[str, Any], actual_digest: str) 
     """Check the raw attachment digest, without upgrading historical guarantees.
 
     Intent 1.0 has no pre-validator binding; False denotes that absence, not a
-    verified binding. Intent 1.1 requires the exact saved bytes. Callers still
+    verified binding. Intents 1.1 and 1.2 require the exact saved bytes. Callers still
     own schema/canonical validation and any saved-result semantic checks.
     Unknown formats fail closed rather than inheriting the historical exemption.
     """

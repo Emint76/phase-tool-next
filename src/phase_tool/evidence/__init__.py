@@ -467,10 +467,12 @@ def operational_lock_path(lock_root: Path, key_digest: str) -> Path:
 
 def validate_intent(intent: dict[str, Any], registry: RegistrySnapshot) -> None:
     schema = registry.schema_document("https://phase-tool.local/schemas/phase-intent.schema.json")
-    if intent.get("phase_intent_version") == "1.1":
+    version = intent.get("phase_intent_version")
+    if version in ("1.1", "1.2"):
         binding = intent["contract"]
         contract = registry.resolve_contract(binding["id"], binding["version"], binding["package_digest"], core_version=intent["core"]["version"])
-        resource = "schemas/phase-intent-1.1.schema.json"
+        resource = {"1.1": "schemas/phase-intent-1.1.schema.json",
+                    "1.2": "schemas/phase-intent-1.2.schema.json"}[version]
         matches = [a["digest"] for a in contract.entry["package_artifacts"] if a["resource"] == resource]
         if len(matches) != 1:
             raise PhaseError("intent.schema_unbound")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "phase_tool"
 CORE = PACKAGE / "core.py"
@@ -26,6 +28,33 @@ def _call_name(call: ast.Call) -> str:
             parts.append(value.id)
         return ".".join(reversed(parts))
     return ""
+
+
+def _windows_control_pipe_write(relative: str, tree: ast.AST, node: ast.Call) -> bool:
+    """Inventory one reviewed transport call, never a whole module or generic fd."""
+    if relative != "mutation/ntfs/windows_pipe.py" or ast.unparse(node) != "os.write(fd, data[offset:offset + 65536])":
+        return False
+    owners = [function for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
+              and cls.name == "WindowsPipeFrames" for function in cls.body
+              if isinstance(function, ast.FunctionDef) and function.name == "_write"
+              and node in ast.walk(function)]
+    if len(owners) != 1 or [arg.arg for arg in owners[0].args.args] != ["self", "data", "deadline_ns", "progress"]:
+        return False
+    # No nested lexical scope or second write can inherit this one call site's
+    # inventory exception. This is not a general static data-flow verifier.
+    if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda))
+           for item in ast.walk(owners[0]) if item is not owners[0]):
+        return False
+    writes = [item for item in ast.walk(owners[0]) if isinstance(item, ast.Call) and _call_name(item) == "os.write"]
+    if len(writes) != 1:
+        return False
+    stores = [item for item in ast.walk(owners[0]) if isinstance(item, ast.Name)
+              and item.id == "fd" and isinstance(item.ctx, ast.Store)]
+    assignments = [item for item in ast.walk(owners[0]) if isinstance(item, ast.Assign)
+                   and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name)
+                   and item.targets[0].id == "fd"]
+    return (len(stores) == len(assignments) == 1
+            and ast.unparse(assignments[0].value) == "self._identity(1)")
 
 
 def _string_values(tree: ast.AST) -> set[str]:
@@ -95,7 +124,8 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
     hits: list[tuple[str, int, str]] = []
     for path in sorted(PACKAGE.rglob("*.py")):
         relative = path.relative_to(PACKAGE).as_posix()
-        for node in ast.walk(_tree(path)):
+        tree = _tree(path)
+        for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = _call_name(node)
@@ -116,7 +146,8 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                     and type(node.args[0].args[0].value) is int
                     and node.args[0].args[0].value == 1
                 )
-                if relative not in allowed_write_modules and not stdout_channel_write:
+                windows_pipe_write = _windows_control_pipe_write(relative, tree, node)
+                if relative not in allowed_write_modules and not stdout_channel_write and not windows_pipe_write:
                     hits.append((relative, node.lineno, name))
             if terminal == "open" and relative not in allowed_write_modules:
                 modes = [arg.value for arg in node.args[1:2] if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
@@ -128,6 +159,33 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                 if any(set(mode) & set("wax+") for mode in modes):
                     hits.append((relative, node.lineno, f"open:{modes[0]}"))
     assert hits == []
+
+
+@pytest.mark.parametrize("relative,binding,extra,argument,owner,expected", [
+    ("mutation/ntfs/windows_pipe.py", "self._identity(1)", "", "fd", "WindowsPipeFrames", True),
+    ("mutation/ntfs/other.py", "self._identity(1)", "", "fd", "WindowsPipeFrames", False),
+    ("mutation/ntfs/windows_pipe.py", "caller_fd", "", "fd", "WindowsPipeFrames", False),
+    ("mutation/ntfs/windows_pipe.py", "self._identity(1)", "fd = 42", "fd", "WindowsPipeFrames", False),
+    ("mutation/ntfs/windows_pipe.py", "self._identity(1)", "", "caller_fd", "WindowsPipeFrames", False),
+    ("mutation/ntfs/windows_pipe.py", "self._identity(1)", "", "fd", "Other", False),
+])
+def test_windows_pipe_inventory_rejects_generic_write(relative, binding, extra, argument, owner, expected):
+    # Parse synthetic source only: these strings never execute or acquire a fd.
+    tree = ast.parse(f"class {owner}:\n def _write(self, data, deadline_ns, progress):\n"
+                     f"  fd = {binding}\n  {extra}\n  os.write({argument}, data[offset:offset + 65536])\n")
+    node = next(item for item in ast.walk(tree) if isinstance(item, ast.Call) and _call_name(item) == "os.write")
+    assert _windows_control_pipe_write(relative, tree, node) is expected
+
+
+@pytest.mark.parametrize("body", [
+    "  def hidden(fd):\n   os.write(fd, data[offset:offset + 65536])\n",
+    "  os.write(fd, data[offset:offset + 65536])\n  os.write(fd, data[offset:offset + 65536])\n",
+])
+def test_windows_pipe_inventory_rejects_nested_or_duplicate_write(body):
+    tree = ast.parse("class WindowsPipeFrames:\n def _write(self, data, deadline_ns, progress):\n"
+                     "  fd = self._identity(1)\n" + body)
+    writes = [item for item in ast.walk(tree) if isinstance(item, ast.Call) and _call_name(item) == "os.write"]
+    assert writes and all(not _windows_control_pipe_write("mutation/ntfs/windows_pipe.py", tree, node) for node in writes)
 
 
 def test_no_shell_exec_subprocess_or_dynamic_module_loading() -> None:

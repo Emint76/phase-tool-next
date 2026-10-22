@@ -64,8 +64,21 @@ review findings before execution. The corrected parser checks immutable bounded
 prevalidator bytes and uses the exact existing saved-result vocabulary.
 New parser controls exercise rehashed malicious evidence, original hash domains,
 full native roots, installed expectations, content links and immutable outputs.
-Status before correctedHEAD CI: parser/shared-extraction controls NOT_RUN.
-All tests use synthetic structural claims; none grants native authority.
+First parser CI at4a0a72ad (workflow39763837068) FAILED on both Python versions:
+1031total/1029PASS/1FAIL/1SKIP. Fourteen schema methods,18parser methods and both
+previously failing registry-integrity checks passed. The remaining test failed
+before its three installed-binding mismatch assertions: deepcopy(args) tried
+to copy the registry's MappingProxyType and raised TypeError. Those subcases
+were NOT_VERIFIED. The correction changes only that test's dictionary copy to
+dict(args); decoded binding JSON is independent, assertions/product unchanged.
+The negative run is preserved and independently inspectable:
+`g-ci-4a0a72a-artifacts-1792666269046841100`, rawSHA256
+`049839cdf82c72c98e2555f07b9997ff87cba793ee1806c8f87c621a8b7b8750`, receipt
+`d9163502f0836ad463dfabbc27eef8751cb8976a8044d8f92b86c50231e9a0b5`.
+Workflow build/installed smoke and resource steps were skipped; no accepted
+package build resulted. First corrected-copy HEAD CI is PENDING. Older green
+results do not accept the new tests. All data is synthetic structural claims;
+none grants native authority or qualifies a Core route.
 
 Next required pieces reuse existing lifecycle: actual durable-buffer reading
 and trusted immutable installation/artifact selector, root-wide original

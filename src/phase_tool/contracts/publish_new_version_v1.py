@@ -60,26 +60,7 @@ def _classify_states(
 
 
 def _inspect_plan_state(plan: Mapping[str, Any], root_bindings: Mapping[str, Path]) -> str:
-    if plan.get("operation_intent") != "publish_new_version" or len(plan.get("effects", [])) != 1:
-        return "blocked"
-    effect = plan["effects"][0]
-    if effect.get("kind") != "publish_new_version":
-        return "blocked"
-    try:
-        root = Path(root_bindings[effect["target"]["root_binding"]])
-        current = _state(root, effect["target"]["relative_locator"])
-        archive = _state(root, effect["archive_target"]["relative_locator"])
-    except (KeyError, PhaseError):
-        return "blocked"
-    state = _classify_states(
-        current=current,
-        archive=archive,
-        before_digest=effect["archive_digest"],
-        before_length=effect["archive_length"],
-        after_digest=effect["content_digest"],
-        after_length=effect["content_length"],
-    )
-    return "blocked" if state == "conflict_or_partial_or_indeterminate" else state
+    return PublishNewVersionHook()._inspect_plan_state(plan, root_bindings)
 
 
 def validate_candidate(
@@ -116,34 +97,7 @@ def validate_candidate(
 
 
 def validate_preconditions(value: Mapping[str, Any], frozen: FrozenInput, root: Path) -> tuple[str, str, Any, Any, list[str]]:
-    locator = safe_relative_locator(str(value["target_locator"]))
-    expected = str(value["expected_current_digest"])
-    archive = archive_locator(expected)
-    try:
-        current_state = _state(root, locator)
-        archive_state = _state(root, archive)
-    except PhaseError as exc:
-        return "fail", exc.code, "safe_publish_paths", str(exc), [exc.code]
-    before_length = -1
-    if current_state["digest"] == expected:
-        before_length = int(current_state["length"])
-    elif archive_state["digest"] == expected:
-        before_length = int(archive_state["length"])
-    state = _classify_states(
-        current=current_state,
-        archive=archive_state,
-        before_digest=expected,
-        before_length=before_length,
-        after_digest=frozen.digest,
-        after_length=frozen.length,
-    )
-    if state == "no_effect_observed":
-        return "pass", "validation.pass", "current_before_archive_absent", {"current": current_state, "archive": archive_state}, []
-    if state == "archived_not_published":
-        return "pass", "validation.pass", "current_before_archive_exact", {"current": current_state, "archive": archive_state}, []
-    if state == "published_not_finalized":
-        return "pass", "validation.pass", "current_after_archive_exact", {"current": current_state, "archive": archive_state}, []
-    return "fail", "publish.state_conflict", "before_or_safe_continuation", {"current": current_state, "archive": archive_state}, ["publish.state_conflict"]
+    return PublishNewVersionHook()._validate_preconditions(value, frozen, root)
 
 
 def build_effects(contract: ResolvedContract, value: Mapping[str, Any], frozen: FrozenInput) -> list[dict[str, Any]]:
@@ -185,6 +139,72 @@ def build_effects(contract: ResolvedContract, value: Mapping[str, Any], frozen: 
 
 
 class PublishNewVersionHook:
+    def _observe_pair(
+        self, root: Path, current_locator: str, archive_target_locator: str,
+        *, allow_missing_root: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Two Host observations, not an atomic snapshot or native authority.
+
+        Keep every target read here so a future fixed native hook can supply
+        verified pair facts without duplicating version semantics. The public
+        factory has no observer/provider selector. No observation is cached.
+        Only planning preserves its historical missing-root skip.
+        """
+        if allow_missing_root and not root.exists():
+            return None
+        return _state(root, current_locator), _state(root, archive_target_locator)
+
+    def _inspect_plan_state(self, plan: Mapping[str, Any], root_bindings: Mapping[str, Path]) -> str:
+        if plan.get("operation_intent") != "publish_new_version" or len(plan.get("effects", [])) != 1:
+            return "blocked"
+        effect = plan["effects"][0]
+        if effect.get("kind") != "publish_new_version":
+            return "blocked"
+        try:
+            root = Path(root_bindings[effect["target"]["root_binding"]])
+            current, archive = self._observe_pair(
+                root, effect["target"]["relative_locator"], effect["archive_target"]["relative_locator"])
+        except (KeyError, PhaseError):
+            return "blocked"
+        state = _classify_states(
+            current=current,
+            archive=archive,
+            before_digest=effect["archive_digest"],
+            before_length=effect["archive_length"],
+            after_digest=effect["content_digest"],
+            after_length=effect["content_length"],
+        )
+        return "blocked" if state == "conflict_or_partial_or_indeterminate" else state
+
+    def _validate_preconditions(self, value: Mapping[str, Any], frozen: FrozenInput, root: Path) -> tuple[str, str, Any, Any, list[str]]:
+        locator = safe_relative_locator(str(value["target_locator"]))
+        expected = str(value["expected_current_digest"])
+        archive = archive_locator(expected)
+        try:
+            current_state, archive_state = self._observe_pair(root, locator, archive)
+        except PhaseError as exc:
+            return "fail", exc.code, "safe_publish_paths", str(exc), [exc.code]
+        before_length = -1
+        if current_state["digest"] == expected:
+            before_length = int(current_state["length"])
+        elif archive_state["digest"] == expected:
+            before_length = int(archive_state["length"])
+        state = _classify_states(
+            current=current_state,
+            archive=archive_state,
+            before_digest=expected,
+            before_length=before_length,
+            after_digest=frozen.digest,
+            after_length=frozen.length,
+        )
+        if state == "no_effect_observed":
+            return "pass", "validation.pass", "current_before_archive_absent", {"current": current_state, "archive": archive_state}, []
+        if state == "archived_not_published":
+            return "pass", "validation.pass", "current_before_archive_exact", {"current": current_state, "archive": archive_state}, []
+        if state == "published_not_finalized":
+            return "pass", "validation.pass", "current_after_archive_exact", {"current": current_state, "archive": archive_state}, []
+        return "fail", "publish.state_conflict", "before_or_safe_continuation", {"current": current_state, "archive": archive_state}, ["publish.state_conflict"]
+
     def idempotency_locator(self, value: Mapping[str, Any], frozen_inputs: Mapping[str, FrozenInput], *, default: Any) -> Any:
         try:
             return safe_relative_locator(str(value["target_locator"]))
@@ -207,9 +227,10 @@ class PublishNewVersionHook:
             raise PhaseError("input.required_missing", PAYLOAD_BINDING)
         effects = build_effects(contract, value, frozen)
         root = Path((root_bindings or {}).get(ROOT_BINDING, "."))
-        if root.exists():
-            current = _state(root, effects[0]["target"]["relative_locator"])
-            archive = _state(root, effects[0]["archive_target"]["relative_locator"])
+        states = self._observe_pair(root, effects[0]["target"]["relative_locator"],
+            effects[0]["archive_target"]["relative_locator"], allow_missing_root=True)
+        if states is not None:
+            current, archive = states
             if current["digest"] == value["expected_current_digest"]:
                 effects[0]["archive_length"] = current["length"]
             elif archive["digest"] == value["expected_current_digest"]:
@@ -234,7 +255,7 @@ class PublishNewVersionHook:
             frozen = frozen_inputs.get(PAYLOAD_BINDING)
             if frozen is None:
                 return "fail", "input.required_missing", PAYLOAD_BINDING, None, ["input.required_missing"]
-            return validate_preconditions(value, frozen, Path(root_bindings[ROOT_BINDING]))
+            return self._validate_preconditions(value, frozen, Path(root_bindings[ROOT_BINDING]))
         return None
 
     def before_effect(
@@ -253,7 +274,7 @@ class PublishNewVersionHook:
         frozen = frozen_inputs.get(PAYLOAD_BINDING)
         if frozen is None:
             raise PhaseError("input.required_missing", PAYLOAD_BINDING)
-        status, code, _expected, _actual, _blockers = validate_preconditions(value, frozen, target_root)
+        status, code, _expected, _actual, _blockers = self._validate_preconditions(value, frozen, target_root)
         if status != "pass":
             raise PhaseError(code)
 
@@ -270,8 +291,8 @@ class PublishNewVersionHook:
             return None
         effect = effect_plan["effects"][0]
         root = Path(root_bindings[effect["target"]["root_binding"]])
-        current = _state(root, effect["target"]["relative_locator"])
-        archive = _state(root, effect["archive_target"]["relative_locator"])
+        current, archive = self._observe_pair(
+            root, effect["target"]["relative_locator"], effect["archive_target"]["relative_locator"])
         ok = (
             current == {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]}
             and archive == {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]}
@@ -309,8 +330,8 @@ class PublishNewVersionHook:
             raise PhaseError("publish.receipt_effect_missing")
         if effect_receipt.get("status") != "applied_verified" or effect_receipt.get("attempted") is not True:
             raise PhaseError("inspection.effect_receipts_mismatch")
-        current = _state(root, effect["target"]["relative_locator"])
-        archive = _state(root, effect["archive_target"]["relative_locator"])
+        current, archive = self._observe_pair(
+            root, effect["target"]["relative_locator"], effect["archive_target"]["relative_locator"])
         if current != {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]}:
             raise PhaseError("inspection.target_mismatch", effect["target"]["relative_locator"])
         if archive != {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]}:
@@ -360,7 +381,7 @@ class PublishNewVersionHook:
             return "blocked"
         if intent.get("effect_plan_digest") != profile_digest("effect-plan", plan):
             return "blocked"
-        return _inspect_plan_state(plan, root_bindings)
+        return self._inspect_plan_state(plan, root_bindings)
 
     def inspect_missing_receipt_result(
         self,
@@ -369,7 +390,7 @@ class PublishNewVersionHook:
         registry: RegistrySnapshot,
     ) -> str:
         del registry
-        return _inspect_plan_state(plan, root_bindings)
+        return self._inspect_plan_state(plan, root_bindings)
 
 
 def create_contract_hook() -> PublishNewVersionHook:

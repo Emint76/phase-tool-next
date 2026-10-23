@@ -272,7 +272,9 @@ class _NativeWindowsParent:
                             and value['exit_code']==40,
                             'ntfs.parent_uncertainty_delivery_required')
                     self._finished=True
-                    self._pipe.seal()
+                    # Ingress is consumed. The retained process owner performs
+                    # the sole strict pipe seal after it establishes actual exit.
+                    # Sealing here would make that checked finalization fail.
                     return value
                 _require(not self._failed,'ntfs.parent_delivery_only')
                 try:

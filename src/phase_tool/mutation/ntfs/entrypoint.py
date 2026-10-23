@@ -116,7 +116,7 @@ def _deliver_linux_frame(value,identities):
 def run_native_core(launch):
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
-    from ...installation import (_native_connected_file_create_registry,
+    from ...installation import (_native_inspection_file_create_registry,
         _native_file_create_installation)
     from .uncertainty import _NativeLifecycleUnresolved
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
@@ -133,7 +133,7 @@ def run_native_core(launch):
         'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
     # admission still refuses the unqualified candidate, even empty requirements.
-    registry=_native_connected_file_create_registry()
+    registry=_native_inspection_file_create_registry()
     try:
         registry,installation=_native_file_create_installation(manifest_bytes=launch._manifest_bytes,
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,

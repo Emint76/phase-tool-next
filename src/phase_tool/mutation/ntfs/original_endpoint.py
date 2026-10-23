@@ -10,7 +10,7 @@ import re
 from ...canonical import canonical_bytes, parse_json_bytes
 from ...errors import PhaseError
 from ...installation import (_NativeFileCreateReadBinding,_native_qualified_profile,
-    _native_connected_file_create_registry,_resolve_native_file_create_read_binding)
+    _native_inspection_file_create_registry,_resolve_native_file_create_read_binding)
 from .native import _require
 
 
@@ -34,7 +34,7 @@ def native_original_query(launch,query):
         and (query['intent_digest'] is None or (type(query['intent_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
-    registry=_native_connected_file_create_registry()  # Fixed installed generation, never query-selected.
+    registry=_native_inspection_file_create_registry()  # Fixed installed generation, never query-selected.
     _native_qualified_profile(registry,registry.guarantee_profile_bindings().get(
         'phase.native.ntfs.authority.v1@1.0.0'))  # Candidate always refuses, even empty requirements.
     binding=_resolve_native_file_create_read_binding(manifest_bytes=launch._manifest_bytes,

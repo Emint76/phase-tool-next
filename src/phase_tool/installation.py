@@ -320,7 +320,7 @@ def _native_connected_file_create_registry():
 
 
 def _native_inspection_file_create_registry():
-    """Fixed new candidate generation; old snapshots and Host defaults unchanged."""
+    """Current fixed create/read candidate; old snapshots and Host defaults unchanged."""
     return _load_native_file_create_registry('registries/native-file-create-candidate-v4.json',
         'sha256:2af8bac33feb42a583a14d6bff7b403de2ab0b63be3a962acc45807634a6ecca',
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
@@ -463,8 +463,8 @@ def _native_file_create_installation(*, manifest_bytes, expected_manifest_digest
     from .mutation.ntfs.authority import _NativeFileCreateAuthority
     from .mutation.ntfs.channel_v2 import LinuxNativeChannelV2
     _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
-    registry = (_native_inspection_file_create_registry() if _inspection_only
-        else _native_connected_file_create_registry())
+    # Capability mode cannot select a different historical registry generation.
+    registry = _native_inspection_file_create_registry()
     exact = registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
     _require(exact is not None, 'ntfs.native_profile_not_qualified')
     profile = _native_qualified_profile(registry,exact)

@@ -294,3 +294,119 @@ class PublicationCandidateBindingTests(unittest.TestCase):
 
     def test_bundle_v2_request_only(self):
         self._case("bundle", "2.0", "request")
+
+
+@contextmanager
+def _boundary_fixture(case):
+    with _owned_root("boundary-" + case) as root:
+        for name in ("source", "target", "preparation", "evidence"):
+            (root / name).mkdir(mode=0o700)
+        _require({_linux_filesystem_type(root / name) for name in
+                 ("source", "target", "preparation", "evidence")} == {"ext4"},
+                 "exact Host/ext4 boundary unavailable")
+        _write_new(root / "source/input.bin", PAYLOAD)
+        _write_new(root / "target/canary.bin", CANARY)
+        candidate = {"operation_id": "boundary." + case,
+                     "idempotency_key": "boundary." + case,
+                     "input_binding": "payload", "target_locator": "requested.bin"}
+        arguments = dict(contract_binding="file_create.v1@1.0.0",
+            evidence_root=root / "evidence", run_id="boundary-" + case,
+            input_paths={"payload": root / "source/input.bin"},
+            root_bindings={"phase_result_root": root / "target"},
+            maximum_candidate_bytes=1024)
+        yield root, candidate, arguments
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "qualified Linux Host component test")
+class CandidateExpectationBoundaryTests(unittest.TestCase):
+    def _rejected(self, root, arguments, response, code, *, core_receipt=True):
+        self.assertFalse(response.payload["success"])
+        self.assertIs(response.payload["mutation_attempted"], False)
+        self.assertEqual(response.payload["error"], code)
+        self.assertEqual(_snapshot(root / "target"), {"canary.bin": {
+            "kind": "file", "length": len(CANARY), "sha256": hashlib.sha256(CANARY).hexdigest()}})
+        self.assertEqual((root / "source/input.bin").read_bytes(), PAYLOAD)
+        run = root / "evidence/.phase/runs" / arguments["run_id"]
+        self.assertFalse((run / "intent.json").exists())
+        if core_receipt:
+            receipt = parse_json_bytes((run / "receipt.json").read_bytes())
+            self.assertEqual(receipt["terminal_status"], "rejected")
+            self.assertEqual(receipt["execution_disposition"], "not_executed")
+            self.assertIs(receipt["mutation_attempted"], False)
+            self.assertEqual(receipt["effect_receipts"], [])
+            self.assertIsNone(receipt["evidence"]["intent_digest"])
+            self.assertEqual(receipt["blockers"], [code])
+        else:
+            self.assertFalse(run.exists())
+
+    def test_expected_bytes_reject_mutable_subclass_and_over_bound(self):
+        class BytesSubclass(bytes):
+            pass
+        for index, make in enumerate((lambda value: value.decode(), bytearray, memoryview,
+                                      BytesSubclass, lambda value: False,
+                                      lambda value: b"x" * 1025)):
+            with self.subTest(index=index), _boundary_fixture("invalid-" + str(index)) as (root, candidate, arguments):
+                encoded = encode_structured_input(candidate)
+                path = root / "preparation/candidate.json"
+                _write_new(path, encoded)
+                response = PhaseApplication().run("execute", candidate_path=path,
+                    _expected_candidate_bytes=make(encoded), **arguments)
+                self._rejected(root, arguments, response, "candidate.invalid_expected_content")
+
+    def test_path_without_expectation_preserves_capture_semantics(self):
+        with _boundary_fixture("raw-path") as (root, candidate, arguments):
+            candidate["target_locator"] = "direct.bin"
+            path = root / "preparation/candidate.json"
+            _write_new(path, encode_structured_input(candidate))
+            response = PhaseApplication().run("execute", candidate_path=path, **arguments)
+            self.assertTrue(response.payload["success"], response.payload)
+            self.assertEqual((root / "target/direct.bin").read_bytes(), PAYLOAD)
+            self.assertEqual((root / "target/canary.bin").read_bytes(), CANARY)
+
+    def test_canonical_expectation_accepts_raw_formatting(self):
+        with _boundary_fixture("formatting") as (root, candidate, arguments):
+            path = root / "preparation/candidate.json"
+            raw = (" \n" + json.dumps(candidate, indent=2) + "\n").encode()
+            encoded = encode_structured_input(candidate)
+            self.assertNotEqual(raw, encoded)
+            _write_new(path, raw)
+            response = PhaseApplication().run("execute", candidate_path=path,
+                _expected_candidate_bytes=encoded, **arguments)
+            self.assertTrue(response.payload["success"], response.payload)
+            self.assertEqual((root / "target/requested.bin").read_bytes(), PAYLOAD)
+            self.assertEqual((root / "target/canary.bin").read_bytes(), CANARY)
+
+    def test_value_substitution_rejected_before_effect(self):
+        from phase_tool import application as application_module
+        with _boundary_fixture("value-target") as (root, candidate, arguments):
+            real_capture = core.capture_structured
+            real_directory = application_module.TemporaryDirectory
+            captured = []
+            def owned_directory(*, prefix):
+                self.assertEqual(prefix, "phase-candidate-")
+                return real_directory(prefix=prefix, dir=root / "preparation")
+            def replace_then_capture(path, *, maximum_bytes):
+                self.assertFalse(captured)
+                self.assertEqual(parse_json_bytes(Path(path).read_bytes()), candidate)
+                replacement = dict(candidate, target_locator="changed.bin")
+                _replace_owned_candidate(path, root / "preparation", encode_structured_input(replacement))
+                actual = real_capture(path, maximum_bytes=maximum_bytes)
+                self.assertEqual(actual.canonical_bytes, canonical_bytes(replacement))
+                captured.append(replacement)
+                return actual
+            with patch.object(application_module, "TemporaryDirectory", side_effect=owned_directory), \
+                 patch.object(core, "capture_structured", side_effect=replace_then_capture):
+                response = PhaseApplication().run("execute", candidate=candidate, **arguments)
+            self.assertEqual(len(captured), 1)
+            self._rejected(root, arguments, response, "candidate.expected_content_mismatch")
+
+    def test_value_conflicting_expectation_rejected_before_materialization(self):
+        from phase_tool import application as application_module
+        with _boundary_fixture("value-conflict") as (root, candidate, arguments):
+            different = encode_structured_input(dict(candidate, target_locator="changed.bin"))
+            with patch.object(application_module, "TemporaryDirectory",
+                    side_effect=AssertionError("conflicting value must not materialize")) as materialize:
+                response = PhaseApplication().run("execute", candidate=candidate,
+                    _expected_candidate_bytes=different, **arguments)
+            materialize.assert_not_called()
+            self._rejected(root, arguments, response, "candidate.expected_content_mismatch", core_receipt=False)

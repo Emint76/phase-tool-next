@@ -97,15 +97,20 @@ def receive_initial():
 def main():
     # The fixed parent spawns ONLY these literal child roles. Role values never
     # select a module/function/command/provider/registry from request data.
-    need(len(sys.argv)==2 and sys.argv[1] in {'parent','inspect-parent','inspect-mcp','worker','core','inspect','original'})
+    need(len(sys.argv)==2 and sys.argv[1] in {'parent','inspect-parent','inspect-mcp','execute-mcp','worker','core','inspect','original'})
     role=sys.argv[1]
-    need((os.name=='nt') == (role in {'parent','inspect-parent','inspect-mcp','worker'}))
+    need((os.name=='nt') == (role in {'parent','inspect-parent','inspect-mcp','execute-mcp','worker'}))
     outer,config_raw,manifest_raw,launch_type=fixed_startup()
     from phase_tool.canonical import canonical_bytes
     from phase_tool.mutation.ntfs import entrypoint
     if role=='inspect-mcp':
         from phase_tool.mutation.ntfs.inspection_mcp import run_native_inspection_mcp
         return run_native_inspection_mcp(config_bytes=config_raw,
+            expected_config_digest=outer['config_digest'],manifest_bytes=manifest_raw,
+            expected_manifest_digest=outer['manifest_digest'])
+    if role=='execute-mcp':
+        from phase_tool.mutation.ntfs.inspection_mcp import run_native_prepared_mcp
+        return run_native_prepared_mcp(config_bytes=config_raw,
             expected_config_digest=outer['config_digest'],manifest_bytes=manifest_raw,
             expected_manifest_digest=outer['manifest_digest'])
     initial,initial_transport=receive_initial()

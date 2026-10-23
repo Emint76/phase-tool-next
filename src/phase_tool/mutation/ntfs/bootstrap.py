@@ -29,6 +29,20 @@ from .native import _require
 from .handoff import ParsedNativeFileCreate
 
 
+def _normalized_linux_contour(value,keys):
+    # Docker serializes its mount map in varying list order. Compare
+    # every field, keyed only by each unique Linux destination; never
+    # reduce entries to an allowlisted subset of mount properties.
+    _require(type(value) is dict and set(value)==keys
+        and type(value['mounts']) is list, 'ntfs.accepted_linux_contour_required')
+    mounts=value['mounts']
+    _require(all(type(row) is dict and type(row.get('Destination')) is str
+        and row['Destination'].startswith('/') and type(row.get('RW')) is bool
+        for row in mounts), 'ntfs.accepted_linux_contour_required')
+    _require(len({row['Destination'] for row in mounts})==len(mounts),
+        'ntfs.accepted_linux_contour_required')
+    return value|{'mounts':sorted(mounts,key=lambda row:row['Destination'])}
+
 class _NativeAcceptedLaunch:
     """One invocation from the fixed trusted launcher, never from operation JSON.
 
@@ -389,22 +403,9 @@ class _NativeAcceptedLaunch:
         _require(type(expected) is dict and set(expected)=={'core','original'}
             and config['core_container_id']!=config['reader_container_id'],
             'ntfs.accepted_linux_contour_required')
-        def normalized(value):
-            # Docker serializes its mount map in varying list order. Compare
-            # every field, keyed only by each unique Linux destination; never
-            # reduce entries to an allowlisted subset of mount properties.
-            _require(type(value) is dict and set(value)==keys
-                and type(value['mounts']) is list, 'ntfs.accepted_linux_contour_required')
-            mounts=value['mounts']
-            _require(all(type(row) is dict and type(row.get('Destination')) is str
-                and row['Destination'].startswith('/') and type(row.get('RW')) is bool
-                for row in mounts), 'ntfs.accepted_linux_contour_required')
-            _require(len({row['Destination'] for row in mounts})==len(mounts),
-                'ntfs.accepted_linux_contour_required')
-            return value|{'mounts':sorted(mounts,key=lambda row:row['Destination'])}
         template='{"id":{{json .Id}},"image":{{json .Image}},"user":{{json .Config.User}},"readonly_rootfs":{{json .HostConfig.ReadonlyRootfs}},"cap_drop":{{json .HostConfig.CapDrop}},"security_options":{{json .HostConfig.SecurityOpt}},"network_mode":{{json .HostConfig.NetworkMode}},"mounts":{{json .Mounts}},"pids_limit":{{json .HostConfig.PidsLimit}},"memory":{{json .HostConfig.Memory}},"nano_cpus":{{json .HostConfig.NanoCpus}},"running":{{json .State.Running}}}'
         for role,field in [('core','core_container_id'),('original','reader_container_id')]:
-            declared=normalized(expected[role])
+            declared=_normalized_linux_contour(expected[role],keys)
             _require(type(declared) is dict and set(declared)==keys
                 and declared['id']==config[field] and declared['image']==config['image_digest']
                 and declared['user']=='10001:10001' and declared['readonly_rootfs'] is True
@@ -422,5 +423,5 @@ class _NativeAcceptedLaunch:
                 timeout=30,check=True,creationflags=subprocess.CREATE_NO_WINDOW)
             _require(len(result.stdout)<=1024**2,'ntfs.accepted_linux_contour_required')
             actual=parse_json_bytes(result.stdout,maximum_bytes=1024**2)
-            _require(canonical_bytes(normalized(actual))==canonical_bytes(declared),'ntfs.accepted_linux_contour_mismatch')
+            _require(canonical_bytes(_normalized_linux_contour(actual,keys))==canonical_bytes(declared),'ntfs.accepted_linux_contour_mismatch')
         self._linux_contours_checked=True

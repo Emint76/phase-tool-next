@@ -115,6 +115,7 @@ class PhaseApplication:
         maximum_candidate_bytes: int = 1_048_576,
         contract_digest: str | None = None,
         expected_inputs: Mapping[str, tuple[str, int]] | None = None,
+        _expected_candidate_bytes: bytes | None = None,
     ) -> ApplicationResponse:
         try:
             from .installation import _NativeFileCreateInstallation
@@ -131,6 +132,11 @@ class PhaseApplication:
                         "candidate.too_large",
                         f"candidate exceeds {maximum_candidate_bytes} bytes",
                     )
+                if _expected_candidate_bytes is not None:
+                    if type(_expected_candidate_bytes) is not bytes or len(_expected_candidate_bytes) > maximum_candidate_bytes:
+                        raise PhaseError("candidate.invalid_expected_content")
+                    if _expected_candidate_bytes != candidate_bytes:
+                        raise PhaseError("candidate.expected_content_mismatch")
                 with TemporaryDirectory(prefix="phase-candidate-") as directory:
                     with NamedTemporaryFile(mode="wb", suffix=".json", dir=directory, delete=False) as temporary:
                         temporary.write(candidate_bytes)
@@ -147,6 +153,7 @@ class PhaseApplication:
                         maximum_candidate_bytes=maximum_candidate_bytes,
                         contract_digest=contract_digest,
                         expected_inputs=expected_inputs,
+                        _expected_candidate_bytes=candidate_bytes,
                     )
             assert candidate_path is not None
             binding = self._binding(contract_binding)
@@ -164,6 +171,7 @@ class PhaseApplication:
                 timestamp=timestamp,
                 maximum_candidate_bytes=maximum_candidate_bytes,
                 expected_inputs=expected_inputs,
+                _expected_candidate_bytes=_expected_candidate_bytes,
             )
             outcome = PhaseCore(self.registry, self.installation).run(
                 request,

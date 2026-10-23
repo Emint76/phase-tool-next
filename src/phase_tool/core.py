@@ -221,6 +221,7 @@ class PhaseRequest:
     timestamp: str | None = None
     maximum_candidate_bytes: int = 1_048_576
     expected_inputs: Mapping[str, tuple[str, int]] | None = None
+    _expected_candidate_bytes: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -886,6 +887,14 @@ class PhaseCore:
             required_guarantees = self._verify_contract_guarantees(contract, request.root_bindings)
             lifecycle.append("capture")
             candidate = capture_structured(Path(request.candidate_path), maximum_bytes=request.maximum_candidate_bytes)
+            # Bind a literal caller value to the actual capture before any hook
+            # or effect preparation. Path-only callers retain capture semantics.
+            expected_candidate = request._expected_candidate_bytes
+            if expected_candidate is not None:
+                if type(expected_candidate) is not bytes or len(expected_candidate) > request.maximum_candidate_bytes:
+                    raise PhaseError("candidate.invalid_expected_content")
+                if candidate.canonical_bytes != expected_candidate:
+                    raise PhaseError("candidate.expected_content_mismatch")
             hook = load_contract_hook(contract)
             if hook is not None and hasattr(hook, "normalize_candidate"):
                 normalized = hook.normalize_candidate(parse_json_bytes(candidate.canonical_bytes))

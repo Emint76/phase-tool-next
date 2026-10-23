@@ -230,10 +230,14 @@ class NativePreparedMCPTests(unittest.TestCase):
             branch=branches[role];self.assertLess(branch.lineno,receive)
             self.assertIsInstance(branch.body[-1],ast.Return)
             self.assertEqual(branch.body[-1].value.func.id,call)
-        windows=next(n for n in ast.walk(main) if isinstance(n,ast.Compare)
-            and isinstance(n.left,ast.Name) and n.left.id=='role' and isinstance(n.ops[0],ast.In))
-        self.assertIn('execute-mcp',ast.literal_eval(windows.comparators[0]))
-        self.assertIn(b"(os.name=='nt') == (role in",raw)
+        # ast.walk is breadth-first: the first role-In comparison belongs to
+        # a later parent branch. Bind the actual top-level Windows-only guard.
+        expected=ast.parse("need((os.name == 'nt') == (role in "
+            "{'parent','inspect-parent','inspect-mcp','execute-mcp','worker'}))").body[0]
+        guards=[n for n in main.body if ast.dump(n,include_attributes=False)==
+            ast.dump(expected,include_attributes=False)]
+        self.assertEqual(len(guards),1)
+        self.assertLess(guards[0].lineno,branches['execute-mcp'].lineno)
 
     def test_real_sdk_prepared_schema_rejects_coercion_and_selectors_before_startup(self):
         async def exchange():

@@ -163,6 +163,7 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     signatures={'_spawn':['self','args'],'_pipe':['self','process'],
         '_finalize_exited':['self','process','pipe'],'_check_linux_contours':['self'],
         '_linux_command':['self','role'],'spawn_core':['self'],'spawn_worker':['self'],
+        'spawn_inspection':['self'],
         '_query_original':['self','action','digest']}
     for name,args in signatures.items():
         found=[n for n in owner.body if isinstance(n,ast.FunctionDef) and n.name==name]
@@ -214,11 +215,12 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     if len(refs)!=1 or not isinstance(refs[0].ctx,ast.Load):return False
     spawn_expected={
       "self._spawn(self._linux_command('core'))":methods['spawn_core'],
+      "self._spawn(self._linux_command('inspect'))":methods['spawn_inspection'],
       "self._spawn([sys.executable, '-I', '-S', '-B', '-u', launcher, 'worker'])":methods['spawn_worker'],
       "self._spawn(self._linux_command('original'))":methods['_query_original']}
     refs=[n for n in ast.walk(tree) if isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name)
         and n.value.id=='self' and n.attr=='_spawn']
-    if len(refs)!=3:return False
+    if len(refs)!=4:return False
     for n in refs:
         call=parents.get(id(n))
         if not isinstance(call,ast.Call) or call.func is not n or ast.unparse(call) not in spawn_expected:return False
@@ -581,3 +583,15 @@ def test_bootstrap_subprocess_exception_never_exempts_runpy(tmp_path, monkeypatc
     path.write_text(changed,encoding='utf-8')
     monkeypatch.setitem(globals(),'PACKAGE',tmp_path)
     with pytest.raises(AssertionError):test_no_shell_exec_subprocess_or_dynamic_module_loading()
+
+
+@pytest.mark.parametrize('replacement',[
+    "self._spawn(request_command)",
+    "self._spawn(self._linux_command('core'))",
+    "self._spawn(self._linux_command(request_role))",
+])
+def test_native_inspection_spawn_inventory_rejects_nonliteral_or_wrong_role(replacement):
+    source=(PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')
+    old="self._spawn(self._linux_command('inspect'))"
+    assert source.count(old)==1
+    assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,replacement)))

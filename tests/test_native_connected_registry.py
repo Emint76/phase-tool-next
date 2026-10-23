@@ -66,12 +66,19 @@ class NativeConnectedRegistryTests(unittest.TestCase):
         profiles=registry.guarantee_profile_bindings()
         self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0',profiles)
         binding=profiles['phase.native.ntfs.candidate.authority.v1@1.0.0']
-        descriptor=registry.resolve_guarantee_profile(binding)
+        with self.assertRaisesRegex(PhaseError,'guarantee_profile.implementation_digest_mismatch'):
+            registry.resolve_guarantee_profile(binding)
+        descriptor=parse_json_bytes(BundledRegistry.resources()[
+            'descriptors/guarantee/phase.native.ntfs.candidate.authority.v1.json'])
         self.assertEqual(descriptor['classification'],'qualification_candidate')
         self.assertEqual(descriptor['provided_guarantees'],[])
         self.assertEqual(descriptor['conformance'],[])
         actual=package_resources.files('phase_tool').joinpath('mutation/ntfs/authority.py').read_bytes()
-        self.assertEqual(descriptor['implementation']['artifact_digest'],digest_bytes(actual))
+        # Historical candidate is immutable and bound to its matching old wheel.
+        # New current source must never be silently rebound to that profile.
+        self.assertEqual(descriptor['implementation']['artifact_digest'],
+            'sha256:e0e9b87d683364d6fbe7a0afb087d8d425e346cd6f3527dfece445d39a134ec4')
+        self.assertNotEqual(descriptor['implementation']['artifact_digest'],digest_bytes(actual))
         with self.assertRaisesRegex(PhaseError,'ntfs.native_profile_not_qualified'):
             _native_qualified_profile(registry,binding)
 
@@ -97,7 +104,7 @@ class NativeConnectedRegistryTests(unittest.TestCase):
         root=package_resources.files('phase_tool')
         raw=root.joinpath('data/native/native_phase_launcher.py.in').read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(),
-            'de6a39575fb2b0b9388dcd3a5590c275eaef3f8acaf2222c816ec4c4fb8a0fd0')
+            '2d800f471e146040c2dcd850af5001be225818510d027f7b11438285b23457e8')
         self.assertIn(b'qualified lifetime immutability',raw)
         self.assertNotIn(b'sys.meta_path.insert',raw)
 
@@ -113,7 +120,10 @@ class NativeConnectedRegistryTests(unittest.TestCase):
         with self.assertRaises(PhaseError) as caught:old.resolve_guarantee_profile(exact)
         self.assertEqual(caught.exception.code,'registry.entry_not_found')
         self.assertIn('mutation-guarantee-profile-1.1.schema.json',str(caught.exception))
-        descriptor=new.resolve_guarantee_profile(exact)
+        with self.assertRaisesRegex(PhaseError,'guarantee_profile.implementation_digest_mismatch'):
+            new.resolve_guarantee_profile(exact)
+        descriptor=parse_json_bytes(resources[
+            'descriptors/guarantee/phase.native.ntfs.candidate.authority.v1.json'])
         self.assertEqual(descriptor['classification'],'qualification_candidate')
         self.assertEqual(descriptor['provided_guarantees'],[])
         self.assertEqual(descriptor['conformance'],[])

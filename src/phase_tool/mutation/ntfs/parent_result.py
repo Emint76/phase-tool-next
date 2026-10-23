@@ -95,3 +95,47 @@ def validate_parent_finalization(reply, checked, *, grant_data, effect):
     _require(canonical_bytes(worker_after['native']) == canonical_bytes(observed['native']),
         'ntfs.worker_observer_mismatch')
     return observed
+
+
+def _require_command_run_binding(result: dict, run_id: str) -> None:
+    """Correlate fixed-delivery data; this does not authenticate its producer.
+
+    A null run can describe an early startup refusal or typed uncertainty. It
+    cannot identify a successful/receipt-bearing operation. Parent still owns
+    the separate actual no-dispatch check for the startup-refusal exception.
+    Full schemas remain checked by the existing command-result validator.
+    """
+    _require(type(result) is dict and type(run_id) is str and bool(run_id),
+        'ntfs.parent_command_binding_mismatch')
+    _require('run_id' in result, 'ntfs.parent_command_binding_mismatch')
+    reported = result['run_id']
+    if type(reported) is str and reported == run_id:
+        return
+    _require(reported is None, 'ntfs.parent_command_binding_mismatch')
+    version = result.get('stage3_command_result_version')
+    no_original_claim = all(key in result and result[key] is None for key in
+        ('terminal_status', 'execution_disposition', 'mutation_attempted',
+         'receipt_digest', 'target_verified'))
+    if version == '1.2':
+        # Preserve independently known intent/plan/dispatch/publication facts.
+        # Null here is uncertainty, never a no-effect or completion assertion.
+        allowed = (no_original_claim and result.get('success') is False
+            and type(result.get('exit_code')) is int and result['exit_code'] == 40
+            and result.get('inspection_required') is True
+            and result.get('retry_authorized') is False
+            and result.get('error') == 'ntfs.native_lifecycle_unresolved'
+            and result.get('blockers') == ['ntfs.native_lifecycle_unresolved'])
+    elif version == '1.0':
+        error = result.get('error')
+        allowed = (result.get('success') is False
+            and result.get('terminal_status') == 'rejected'
+            and result.get('execution_disposition') == 'not_executed'
+            and result.get('mutation_attempted') is False
+            and type(result.get('exit_code')) is int and result['exit_code'] == 10
+            and all(key in result and result[key] is None for key in
+                ('effect_plan_digest', 'intent_digest', 'receipt_digest', 'target_verified'))
+            and type(error) is str and bool(error)
+            and type(result.get('blockers')) is list and result['blockers'] == [error])
+    else:
+        allowed = False
+    _require(allowed, 'ntfs.parent_command_binding_mismatch')

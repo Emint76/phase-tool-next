@@ -19,7 +19,7 @@ from .worker import validate_worker_ready, validate_worker_completion, _grant
 from .process_witness import WindowsProcessWitness
 from .windows_pipe import WindowsPipeFrames
 from .file_create import observe_file
-from .parent_result import _observation
+from .parent_result import _observation, _require_command_run_binding
 
 _COMMON = {'protocol','version','channel_id','sequence','kind','run_id','intent_digest'}
 _DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
@@ -250,8 +250,15 @@ class _NativeWindowsParent:
                         and value['run_id']==self._launch.run_id
                         and type(value['result']) is dict and type(value['exit_code']) is int
                         and value['result'].get('exit_code')==value['exit_code']
-                        and value['result'].get('run_id') in {self._launch.run_id,None}
                         and canonical_bytes(value)==raw,'ntfs.parent_command_binding_mismatch')
+                    _require_command_run_binding(value['result'],self._launch.run_id)
+                    if (value['result'].get('run_id') is None
+                            and value['result'].get('stage3_command_result_version')=='1.0'):
+                        # Only THIS owner can establish no native worker/GO.
+                        # Even a finalized worker forbids an unscoped refusal.
+                        _require(self._spawn_attempted is False and self._go_attempted is False
+                            and self._worker is None and type(self._worker_count) is int
+                            and self._worker_count==0,'ntfs.parent_command_binding_mismatch')
                     if self._inspection_only:
                         _require(not self._failed and self._consumed
                             and not self._spawn_attempted and not self._go_attempted

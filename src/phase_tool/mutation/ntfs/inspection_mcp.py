@@ -19,6 +19,7 @@ from ...installation import _native_inspection_file_create_registry
 from .bootstrap import _NativeAcceptedLaunch
 from .entrypoint import run_native_parent
 from .native import _require
+from .parent_result import _require_command_run_binding
 
 
 def _prepared_request(candidate_path,input_paths,expected_inputs,maximum_candidate_bytes):
@@ -72,8 +73,9 @@ class _InspectionMCPCallOwner:
             result=response['result']
             validate_command_result(result,_native_inspection_file_create_registry())
             _require(result['command']==request['operation']
-                and result['run_id'] in {run_id,None} and result['exit_code']==response['exit_code'],
+                and result['exit_code']==response['exit_code'],
                 'ntfs.parent_command_binding_mismatch')
+            _require_command_run_binding(result,run_id)
             if (result.get('stage3_command_result_version')=='1.2'
                     or result.get('inspection_required') is True or result['exit_code']==40):
                 # Keep the SAME result and actual launch. A finalization attempt

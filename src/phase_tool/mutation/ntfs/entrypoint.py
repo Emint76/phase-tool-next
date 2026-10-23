@@ -49,6 +49,7 @@ def _close_worker_stdio(primary):
 def run_native_worker(launch,original,initial_pipe):
     """Only accepted Popen parent provides this owned stdin; no public service."""
     from .worker import run_file_create_worker
+    _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
     _require(type(original) is dict and set(original)=={'native_worker_original_version','context',
         'grant','effect','content_base64','timestamp','channel_id'}
@@ -118,6 +119,7 @@ def run_native_core(launch):
     from ...installation import (_native_connected_file_create_registry,
         _native_file_create_installation)
     from .uncertainty import _NativeLifecycleUnresolved
+    _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
     identities=_linux_stdio_identity()
     request=launch.invocation['request']
@@ -166,8 +168,65 @@ def run_native_core(launch):
     return response.exit_code
 
 
+def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root_bindings):
+    """Read invocation only: always revoke channel, preserve primary failure."""
+    primary=None
+    response=None
+    try:
+        response=application.inspect(evidence_root=evidence_root,run_id=run_id,root_bindings=root_bindings)
+    except BaseException as error:
+        primary=error
+    finally:
+        try:authority.seal(intent_digest=None)
+        except BaseException as error:
+            if primary is None:primary=error
+            else:
+                try:primary.add_note('Native inspection channel seal: '+type(error).__name__)
+                except BaseException:pass
+    if primary is not None:raise primary
+    return response
+
+
+def run_native_inspection(launch):
+    """One fresh read-only invocation through the existing application inspector.
+
+    Only the fixed accepted launcher selects this role. The request contains no
+    path/profile/registry/command selector. The manifest supplies all roots.
+    No Core.run, EvidenceStore, recovery, proof or receipt publication occurs.
+    """
+    from ...application import PhaseApplication
+    from ...command_result import validate_command_result
+    from ...installation import (_native_inspection_file_create_registry,
+        _native_file_create_installation)
+    launch.check_runtime()
+    _require(launch._inspection_only, 'ntfs.fixed_inspection_role_required')
+    identities=_linux_stdio_identity()
+    _require(launch.invocation['request']=={'operation':'inspect'},
+        'ntfs.fixed_native_request_required')
+    registry=_native_inspection_file_create_registry()
+    try:
+        registry,installation=_native_file_create_installation(manifest_bytes=launch._manifest_bytes,
+            expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
+            operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
+            _inspection_only=True)
+    except (PhaseError,OSError,ValueError) as error:
+        # Only pre-installation refusal: no channel/evidence/target read begun.
+        response=PhaseApplication(registry=registry)._failure('inspect',error)
+    else:
+        manifest=launch.manifest
+        response=_inspect_with_channel_seal(PhaseApplication(registry=registry,installation=installation),
+            installation.authority,evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
+            root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()})
+    validate_command_result(response.payload,registry)
+    launch.check_runtime()
+    _deliver_linux_frame({'protocol':'phase.native.command','version':'1.0','channel_id':launch.channel_id,
+        'run_id':launch.run_id,'result':response.payload,'exit_code':response.exit_code},identities)
+    return response.exit_code
+
+
 def run_native_original(launch):
     from .original_endpoint import native_original_query
+    _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
     identities=_linux_stdio_identity()
     # Existing reader/parser return only after their evidence FDs are closed.
@@ -181,7 +240,7 @@ def run_native_parent(launch):
     from .parent import _NativeWindowsParent
     from .process_witness import WindowsProcessWitness
     launch.check_runtime()
-    process=launch.spawn_core()
+    process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())
     witness=pipe=None
     response=fact=None
     primary=None

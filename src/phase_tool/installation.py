@@ -319,6 +319,13 @@ def _native_connected_file_create_registry():
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
 
 
+def _native_inspection_file_create_registry():
+    """Fixed new candidate generation; old snapshots and Host defaults unchanged."""
+    return _load_native_file_create_registry('registries/native-file-create-candidate-v4.json',
+        'sha256:2af8bac33feb42a583a14d6bff7b403de2ab0b63be3a962acc45807634a6ecca',
+        'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
+
+
 def _load_native_file_create_registry(resource, expected_digest, contract_digest):
     """Shared byte/trust resolver; only the two fixed factories select inputs.
 
@@ -381,6 +388,7 @@ class _NativeFileCreateInstallation:
         from .mutation.ntfs.native import _require
         _require(not self._admission_attempted, 'ntfs.native_installation_consumed')
         self._admission_attempted = True
+        self.authority._execution_required()
         _require(registry is self.read_binding.registry and type(execute) is bool
             and faults is None, 'ntfs.closed_native_installation_required')
         # No public caller-supplied registry/provider/profile override.
@@ -441,7 +449,7 @@ class _NativeFileCreateInstallation:
 
 
 def _native_file_create_installation(*, manifest_bytes, expected_manifest_digest,
-    run_id, operation_nonce, channel_id):
+    run_id, operation_nonce, channel_id, _inspection_only: bool = False):
     """Fixed trusted-startup seam, not a request-selected implementation.
 
     The packaged candidate snapshot deliberately has no qualified native profile:
@@ -454,7 +462,9 @@ def _native_file_create_installation(*, manifest_bytes, expected_manifest_digest
     from .mutation.ntfs.native import _require
     from .mutation.ntfs.authority import _NativeFileCreateAuthority
     from .mutation.ntfs.channel_v2 import LinuxNativeChannelV2
-    registry = _native_connected_file_create_registry()
+    _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
+    registry = (_native_inspection_file_create_registry() if _inspection_only
+        else _native_connected_file_create_registry())
     exact = registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
     _require(exact is not None, 'ntfs.native_profile_not_qualified')
     profile = _native_qualified_profile(registry,exact)
@@ -464,10 +474,10 @@ def _native_file_create_installation(*, manifest_bytes, expected_manifest_digest
     _require(manifest['authority']['profile'] == profile.as_dict()
         and manifest['native_read_installation_version'] == '1.1',
         'ntfs.original_implementation_mismatch')
-    channel = LinuxNativeChannelV2(channel_id=channel_id)
+    channel = LinuxNativeChannelV2(channel_id=channel_id, _inspection_only=_inspection_only)
     authority = _NativeFileCreateAuthority(binding, profile,
         canonical_bytes(manifest['root_projections']), channel,
-        run_id=run_id, operation_nonce=operation_nonce)
+        run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
     return registry, _NativeFileCreateInstallation(binding, authority)
 
 

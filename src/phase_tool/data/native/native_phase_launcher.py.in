@@ -97,19 +97,24 @@ def receive_initial():
 def main():
     # The fixed parent spawns ONLY these literal child roles. Role values never
     # select a module/function/command/provider/registry from request data.
-    need(len(sys.argv)==2 and sys.argv[1] in {'parent','worker','core','original'})
+    need(len(sys.argv)==2 and sys.argv[1] in {'parent','inspect-parent','inspect-mcp','worker','core','inspect','original'})
     role=sys.argv[1]
-    need((os.name=='nt') == (role in {'parent','worker'}))
+    need((os.name=='nt') == (role in {'parent','inspect-parent','inspect-mcp','worker'}))
     outer,config_raw,manifest_raw,launch_type=fixed_startup()
     from phase_tool.canonical import canonical_bytes
     from phase_tool.mutation.ntfs import entrypoint
+    if role=='inspect-mcp':
+        from phase_tool.mutation.ntfs.inspection_mcp import run_native_inspection_mcp
+        return run_native_inspection_mcp(config_bytes=config_raw,
+            expected_config_digest=outer['config_digest'],manifest_bytes=manifest_raw,
+            expected_manifest_digest=outer['manifest_digest'])
     initial,initial_transport=receive_initial()
-    if role=='parent':
+    if role in {'parent','inspect-parent'}:
         need(set(initial)=={'run_id','request'})
         import secrets
         invocation={'run_id':initial['run_id'],'request':initial['request'],
             'channel_id':secrets.token_hex(16),'operation_nonce':secrets.token_hex(16)}
-    elif role=='core':
+    elif role in {'core','inspect'}:
         invocation=initial
     elif role=='original':
         invocation={'run_id':initial['run_id'],'channel_id':initial['channel_id'],
@@ -119,9 +124,10 @@ def main():
             'operation_nonce':initial['context']['operation_nonce'],'request':initial}
     launch=launch_type(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
         manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
-        invocation_bytes=canonical_bytes(invocation))
+        invocation_bytes=canonical_bytes(invocation),
+        _inspection_only=role in {'inspect-parent','inspect'})
     launch.check_runtime()
-    if role=='parent':
+    if role in {'parent','inspect-parent'}:
         result=entrypoint.run_native_parent(launch)
         import time
         initial_transport.send_frame(canonical_bytes(result),time.perf_counter_ns()+30_000_000_000)
@@ -129,6 +135,7 @@ def main():
         return result['exit_code']
     if role=='worker':return entrypoint.run_native_worker(launch,initial,initial_transport)
     if role=='core':return entrypoint.run_native_core(launch)
+    if role=='inspect':return entrypoint.run_native_inspection(launch)
     return entrypoint.run_native_original(launch)
 
 

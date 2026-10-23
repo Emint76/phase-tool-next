@@ -49,7 +49,9 @@ class _NativeWindowsParent:
         self._launch,self._pipe=launch,core_pipe
         self._sequence=0
         self._failed=False
-        self._consumed=False
+        self._inspection_only=launch._inspection_only
+        _require(type(self._inspection_only) is bool,'ntfs.fixed_role_required')
+        self._consumed=self._inspection_only  # Read role has no unused GO slot.
         self._spawn_attempted=False
         self._go_attempted=False
         self._worker=None
@@ -76,6 +78,7 @@ class _NativeWindowsParent:
         # Irreversibly consume before parsing/binding/spawn/read failure. A
         # buffered/repeated GO or finish cannot restore an unused worker slot.
         if kind in {'execute_file_create','finish_without_execution'}:
+            _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
             _require(not self._consumed,'ntfs.parent_execution_consumed')
             self._consumed=True
         _require(_COMMON<=set(value) and value['protocol']=='phase.native.pipe'
@@ -126,6 +129,7 @@ class _NativeWindowsParent:
         return {key:value[key] for key in _COMMON},answer
 
     def _execute(self,intent_digest):
+        _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         _require(self._consumed and not self._spawn_attempted,
             'ntfs.parent_execution_consumed')
         parsed=self._launch.read_original(intent_digest)
@@ -248,6 +252,16 @@ class _NativeWindowsParent:
                         and value['result'].get('exit_code')==value['exit_code']
                         and value['result'].get('run_id') in {self._launch.run_id,None}
                         and canonical_bytes(value)==raw,'ntfs.parent_command_binding_mismatch')
+                    if self._inspection_only:
+                        _require(not self._failed and self._consumed
+                            and not self._spawn_attempted and not self._go_attempted
+                            and self._worker is None and self._worker_count==0,
+                            'ntfs.inspection_delivery_unresolved')
+                        _require(value['result'].get('command')=='inspect',
+                            'ntfs.parent_command_binding_mismatch')
+                        from ...command_result import validate_command_result
+                        from ...installation import _native_inspection_file_create_registry
+                        validate_command_result(value['result'],_native_inspection_file_create_registry())
                     if self._failed or (self._spawn_attempted and not self._worker_finalized):
                         result=value['result']
                         _require(result.get('stage3_command_result_version')=='1.2'

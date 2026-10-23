@@ -15,15 +15,19 @@ from .native import _require
 class LinuxNativeChannelV2(LinuxNativeChannel):
     _PROTOCOL_VERSION = '1.1'
 
-    def __init__(self, channel_id: str):
+    def __init__(self, channel_id: str, *, _inspection_only: bool = False):
         # Base consumes its initialization attempt before any fallible pipe
         # check. A repeat fails before this subclass resets its terminal flag.
         super().__init__(channel_id)
+        _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
+        self._inspection_only = _inspection_only
         self._finish_attempted = False
 
     def _request(self, kind, run_id, intent_digest, payload):
         # Executed under the same inherited owner/thread and nonreentrant gate.
         # Any rejection poisons the channel in the existing _exchange handler.
+        _require(not self._inspection_only or kind == 'observe_file',
+            'ntfs.inspection_only_operation_forbidden')
         _require(not self._finish_attempted, 'ntfs.channel_terminal_consumed')
         if kind != 'finish_without_execution':
             return super()._request(kind, run_id, intent_digest, payload)

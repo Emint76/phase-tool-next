@@ -39,10 +39,12 @@ class _NativeAcceptedLaunch:
     into a running container or assumes docker CLI exit means Linux-exec exit.
     """
     def __init__(self, *, config_bytes, expected_config_digest, manifest_bytes,
-                 expected_manifest_digest, invocation_bytes):
+                 expected_manifest_digest, invocation_bytes, _inspection_only: bool = False):
         _require(not getattr(self,'_initialization_attempted',False),
             'ntfs.bootstrap_initialization_consumed')
         self._initialization_attempted=True
+        _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
+        self._inspection_only=_inspection_only
         _require(type(config_bytes) is bytes and type(manifest_bytes) is bytes
             and type(expected_config_digest) is str and type(expected_manifest_digest) is str
             and digest_bytes(config_bytes)==expected_config_digest
@@ -232,7 +234,7 @@ class _NativeAcceptedLaunch:
         return process
 
     def _linux_command(self,role):
-        _require(role in {'core','original'},'ntfs.fixed_linux_role_required')
+        _require(role in {'core','original','inspect'},'ntfs.fixed_linux_role_required')
         config=self._config
         container=config['core_container_id' if role=='core' else 'reader_container_id']
         _require(type(container) is str and re.fullmatch('[0-9a-f]{64}',container) is not None
@@ -246,11 +248,20 @@ class _NativeAcceptedLaunch:
             '-I','-S','-B','-u',config['linux_launcher'],role]
 
     def spawn_core(self):
+        _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         _require(not self._core_spawn_attempted,'ntfs.core_spawn_consumed')
         self._core_spawn_attempted=True
         return self._spawn(self._linux_command('core'))
 
+    def spawn_inspection(self):
+        _require(self._inspection_only,'ntfs.fixed_inspection_role_required')
+        _require(not self._core_spawn_attempted,'ntfs.core_spawn_consumed')
+        self._core_spawn_attempted=True
+        # Existing identified RO reader contour; no new container or mount.
+        return self._spawn(self._linux_command('inspect'))
+
     def spawn_worker(self):
+        _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         _require(not self._spawn_attempted,'ntfs.parent_execution_consumed')
         self._spawn_attempted=True
         launcher=self._config['windows_launcher']
@@ -309,6 +320,7 @@ class _NativeAcceptedLaunch:
             raise primary
 
     def _query_original(self,action,digest):
+        _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         from .process_witness import WindowsProcessWitness
         self._windows_required()
         _require(not self._original_query_attempted,'ntfs.original_query_consumed')

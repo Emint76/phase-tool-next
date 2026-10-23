@@ -34,14 +34,18 @@ class _NativeFileCreateAuthority:
     """
 
     def __init__(self, read_binding, profile: GuaranteeProfileBinding,
-                 root_projections: bytes, channel: LinuxNativeChannelV2, *, run_id: str, operation_nonce: str):
+                 root_projections: bytes, channel: LinuxNativeChannelV2, *, run_id: str, operation_nonce: str,
+                 _inspection_only: bool = False):
         _require(not getattr(self, '_initialization_attempted', False),
             'ntfs.native_role_initialization_consumed')
         self._initialization_attempted = True
+        _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
+        self._inspection_only = _inspection_only
         from ...installation import _NativeFileCreateReadBinding
         _require(type(read_binding) is _NativeFileCreateReadBinding
             and type(profile) is GuaranteeProfileBinding and type(channel) is LinuxNativeChannelV2,
             'ntfs.closed_native_installation_required')
+        _require(channel._inspection_only is _inspection_only, 'ntfs.fixed_role_mismatch')
         self.read_binding, self.profile, self.channel = read_binding, profile, channel
         self._manifest = parse_json_bytes(read_binding.manifest_bytes)
         from ...evidence import validate_run_id
@@ -128,13 +132,18 @@ class _NativeFileCreateAuthority:
         return verify_guarantee_coverage(contract.document['operation']['required_guarantees'],
             mechanisms, self.profile, self.registry)
 
+    def _execution_required(self):
+        _require(not self._inspection_only, 'ntfs.inspection_only_operation_forbidden')
+
     def implementation_binding(self, plan):
+        self._execution_required()
         self._usable()
         _require(plan['mechanism'] == self._manifest['mechanism'], 'ntfs.original_implementation_mismatch')
         return parse_json_bytes(canonical_bytes({'authority': self._manifest['authority'],
             'mechanism': plan['mechanism'], 'effect_plan_digest': profile_digest('effect-plan', plan)}))
 
     def native_binding(self):
+        self._execution_required()
         self._usable()
         return parse_json_bytes(canonical_bytes({'native_binding_version': '1.0', 'installation': {
             'id': self._manifest['installation_id'], 'descriptor_digest': self.read_binding.manifest_digest},
@@ -142,6 +151,7 @@ class _NativeFileCreateAuthority:
             'operation_nonce': self._operation_nonce}))
 
     def idempotency(self, contract, candidate, frozen, roots):
+        self._execution_required()
         self.require_contract(contract)
         self.require_request_roots(roots, Path(self._manifest['evidence_root']))
         value = parse_json_bytes(candidate.canonical_bytes)
@@ -151,6 +161,7 @@ class _NativeFileCreateAuthority:
             root_identity_profile='native-root-identity-v1')
 
     def plan(self, contract, candidate, frozen, results, *, roots, run_id, timestamp, request_digest):
+        self._execution_required()
         self.require_contract(contract)
         self.require_request_roots(roots, Path(self._manifest['evidence_root']))
         plan = _build_static_plan_after_root_checks(contract, candidate, frozen, results,
@@ -165,7 +176,10 @@ class _NativeFileCreateAuthority:
         grant = parse_json_bytes(self._grant_bytes)
         _require(root_binding == grant['root_binding'], 'ntfs.effect_grant_mismatch')
         locator = safe_relative_locator(locator)
-        slot = ('post_operation' if self._dispatch_attempted else 'pre_operation') if run_id == self._run_id else None
+        # Independent inspection can revisit current and reused historical runs.
+        # These reads are not causal slots for a new executing invocation.
+        slot = (('post_operation' if self._dispatch_attempted else 'pre_operation')
+            if not self._inspection_only and run_id == self._run_id else None)
         _require(slot is None or slot not in self._observations, 'ntfs.duplicate_current_observation')
         reply = self.channel.observe_file(run_id=run_id, root_binding=root_binding,
             locator=locator, expected_identity=expected_identity)
@@ -179,6 +193,7 @@ class _NativeFileCreateAuthority:
 
     def execute(self, plan, contract, frozen_inputs, roots, intent_path, *, timestamp, receipt_validator, expected_intent_digest):
         """Only EffectBroker invokes this after selecting the exact closed role."""
+        self._execution_required()
         from ..broker import BrokerExecutionInterrupted, BrokerExecutionResult
         self.require_contract(contract)
         self.require_request_roots(roots, Path(self._manifest['evidence_root']))
@@ -258,6 +273,7 @@ class _NativeFileCreateAuthority:
             raise BrokerExecutionInterrupted(error, validated_receipts, None, possible_dispatch=self.channel.possible_dispatch) from error
 
     def expected_after_identity(self, effect):
+        self._execution_required()
         self._usable()
         if not self._parent_safety_established or self._response_bytes is None:
             return None
@@ -277,6 +293,16 @@ class _NativeFileCreateAuthority:
         self._seal_attempted = True
         self._sealed = True
         _require(self._owner == (os.getpid(), threading.get_ident()), 'ntfs.native_role_owner_changed')
+        if self._inspection_only:
+            # Read role started with consumed parent GO. No original-query,
+            # executing nonce, finish exchange or mutation proof is applicable.
+            # Failed channel cannot deliver even a rendered positive inspect.
+            self.channel._usable()
+            _require(not self._dispatch_attempted and not self.channel.possible_dispatch,
+                'ntfs.inspection_only_operation_forbidden')
+            self.channel.seal()
+            self._channel_sealed = True
+            return
         if not self._parent_safety_established:
             _require(not self._dispatch_attempted and not self.channel.possible_dispatch,
                 'ntfs.native_parent_completion_unresolved')
@@ -300,6 +326,7 @@ class _NativeFileCreateAuthority:
 
     def prepared_physical_proof(self):
         """Exact transient facts for the existing Core evidence owner."""
+        self._execution_required()
         _require(self._seal_attempted, 'ntfs.native_role_seal_not_attempted')
         return {'parent_response': None if self._response_bytes is None else parse_json_bytes(self._response_bytes),
             'run_id': self._run_id,

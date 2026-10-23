@@ -268,13 +268,27 @@ class _NativeRunContext:
     possible_dispatch: bool = False
     store: EvidenceStore | None = None
     prepared_bytes: bytes | None = None
+    native_authority: object | None = None
+    original_intent_digest: str | None = None
+    idempotency_enter_started: bool = False
+    idempotency_entered: bool = False
+    idempotency_finalized: bool = False
+    common_guard_finalized: bool = False
+    proof_publication_attempted: bool = False
+    native_failure_publication_attempted: bool = False
+    native_failure_publication_confirmed: bool = False
+    broker_interruption: BaseException | None = None
 
     def start(self) -> None:
         # Consume BEFORE EvidenceStore reservation, never after possible effects.
         if (self.started or self.inner_entered or self.intent_recording_started
             or self.broker_entered or self.preparation_attempted
             or self.publication_attempted or self.possible_dispatch
-            or self.store is not None or self.prepared_bytes is not None):
+            or self.store is not None or self.prepared_bytes is not None or self.original_intent_digest is not None
+            or self.idempotency_enter_started or self.idempotency_entered
+            or self.idempotency_finalized or self.common_guard_finalized or self.proof_publication_attempted
+            or self.native_failure_publication_attempted or self.native_failure_publication_confirmed
+            or self.broker_interruption is not None):
             raise PhaseError("ntfs.terminal_context_consumed")
         self.started = True
 
@@ -367,6 +381,7 @@ class PhaseCore:
         root_bindings: Mapping[str, Path],
         *,
         execute: bool,
+        _native_authority: object | None = None,
     ) -> tuple[dict[str, Any], str] | None:
         if key is None:
             return None
@@ -390,7 +405,7 @@ class PhaseCore:
                     if intent.get("execution_requested") is False:
                         continue
                     try:
-                        inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings)
+                        inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings, _native_authority=_native_authority)
                     except (PhaseError, ValidationError) as exc:
                         raise PhaseError("idempotency.prior_inspection_required", str(exc)) from exc
                     if inspected.get("state_classification") in {"no_effect_observed", "archived_not_published", "published_not_finalized"}:
@@ -406,7 +421,7 @@ class PhaseCore:
                     raise PhaseError("idempotency.prior_inspection_required", path.parent.name)
                 if receipt.get("terminal_status") != "succeeded_verified":
                     try:
-                        inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings)
+                        inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings, _native_authority=_native_authority)
                     except (PhaseError, ValidationError) as exc:
                         raise PhaseError("idempotency.prior_inspection_required", str(exc)) from exc
                     if inspected.get("state_classification") in {"no_effect_observed", "archived_not_published", "published_not_finalized"}:
@@ -415,7 +430,7 @@ class PhaseCore:
                 if receipt.get("evidence", {}).get("finalization_status") != "finalized":
                     raise PhaseError("idempotency.prior_inspection_required", path.parent.name)
                 try:
-                    inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings)
+                    inspected = inspect_run(store.evidence_root, path.parent.name, registry, root_bindings=root_bindings, _native_authority=_native_authority)
                 except (PhaseError, ValidationError) as exc:
                     raise PhaseError("idempotency.prior_result_changed", str(exc)) from exc
                 if inspected.get("target_verified") is not True:
@@ -477,6 +492,9 @@ class PhaseCore:
     def _implementation_binding(self, plan: Mapping[str, Any]) -> dict[str, Any]:
         mechanism = dict(plan["mechanism"])
         effect_plan_digest = profile_digest("effect-plan", plan)
+        from .installation import _NativeFileCreateInstallation
+        if type(self.installation) is _NativeFileCreateInstallation:
+            return self.installation.authority.implementation_binding(plan)
         if mechanism_authority_usage(mechanism) == "mechanism_managed":
             authority = {"usage": "mechanism_managed", "profile": None, "provider": None}
         else:
@@ -508,6 +526,11 @@ class PhaseCore:
         contract: ResolvedContract,
         root_bindings: Mapping[str, Path],
     ) -> dict[str, Any]:
+        from .installation import _NativeFileCreateInstallation
+        if type(self.installation) is _NativeFileCreateInstallation:
+            self.installation.authority.require_request_roots(
+                root_bindings, self.installation.read_binding.check_evidence_root())
+            return self.installation.authority.require_contract(contract)
         requirements = contract.document["operation"].get("required_guarantees")
         if not isinstance(requirements, Mapping):
             raise PhaseError("contract.guarantee_requirements_missing")
@@ -764,47 +787,10 @@ class PhaseCore:
         interruption_code: str | None = None,
         possible_dispatch: bool = False,
     ) -> dict[str, Any]:
-        if type(possible_dispatch) is not bool:
-            raise PhaseError("broker.invalid_dispatch_disposition")
-        result_effect = plan["effects"][-1]
-        failed_receipts = [receipt for receipt in effect_receipts if receipt["status"] != "applied_verified"]
-        status = failed_receipts[0]["status"] if failed_receipts else ("applied_verified" if len(effect_receipts) == len(plan["effects"]) else "failed_no_effect")
-        post_verified = all(
-            result["status"] == "pass"
-            for result in validator_results
-            if result["phase"] == "post_operation" and result["blocking"]
-        )
-        mapping = {
-            "failed_no_effect": ("failed_no_effect", "verified_no_effect", 20, False),
-            "failed_partial": ("failed_partial", "known_partial", 30, True),
-            "applied_unverified": ("committed_unverified", "committed_unverified", 40, True),
-            "indeterminate": ("indeterminate", "indeterminate", 50, True),
-        }
-        all_effects_verified = status == "applied_verified" and len(effect_receipts) == len(plan["effects"])
-        if possible_dispatch:
-            terminal, result_state, exit_code, recovery = "indeterminate", "indeterminate", 50, True
-        elif all_effects_verified and post_verified and not finalization_failed:
-            terminal, result_state, exit_code, recovery = "succeeded_verified", "verified_result", 0, False
-        elif all_effects_verified:
-            terminal, result_state, exit_code, recovery = "committed_unverified", "committed_unverified", 40, True
-        else:
-            if any(receipt["status"] == "failed_partial" for receipt in effect_receipts):
-                terminal, result_state, exit_code, recovery = mapping["failed_partial"]
-            elif failed_receipts:
-                terminal, result_state, exit_code, recovery = mapping[status]
-                if len(effect_receipts) > 1 and any(receipt["after"].get("exists") is True for receipt in effect_receipts[:-1]):
-                    terminal, result_state, exit_code, recovery = "failed_partial", "known_partial", 30, True
-            elif effect_receipts and any(receipt["status"] == "applied_verified" for receipt in effect_receipts):
-                terminal, result_state, exit_code, recovery = "failed_partial", "known_partial", 30, True
-            else:
-                terminal, result_state, exit_code, recovery = "failed_no_effect", "verified_no_effect", 20, False
-        error = failed_receipts[0].get("error") if failed_receipts else None
-        blockers = [] if terminal == "succeeded_verified" else [
-            interruption_code
-            or ("evidence.finalization_failed" if finalization_failed else (error["code"] if error else "verification.incomplete"))
-        ]
-        if possible_dispatch:
-            blockers = sorted(set(blockers + ["broker.dispatch_outcome_unknown"]))
+        terminal,result_state,exit_code,recovery,blockers = _classify_effect_outcome(
+            plan,validator_results,effect_receipts,finalization_failed=finalization_failed,
+            interruption_code=interruption_code,possible_dispatch=possible_dispatch)
+        result_effect = plan['effects'][-1]
         return self._base_receipt(request, validator_results, timestamp) | {
             "terminal_status": terminal,
             "execution_disposition": "executed",
@@ -844,6 +830,10 @@ class PhaseCore:
         }
 
     def run(self, request: PhaseRequest, *, execute: bool = False, faults: CoreFaults | None = None) -> PhaseOutcome:
+        from .installation import _NativeFileCreateInstallation
+        if type(self.installation) is _NativeFileCreateInstallation:
+            from .mutation.ntfs.lifecycle import _run_native_file_create
+            return _run_native_file_create(self, request, execute=execute, faults=faults)
         return self._run_lifecycle(request, execute=execute, faults=faults)
 
     def _run_lifecycle(self, request: PhaseRequest, *, execute: bool = False,
@@ -855,7 +845,16 @@ class PhaseCore:
                 raise PhaseError("ntfs.terminal_context_required")
             native_ctx.start()
         timestamp = self._timestamp(request)
-        evidence_root = self._check_root_separation(request)
+        from .installation import _NativeFileCreateInstallation
+        if type(self.installation) is _NativeFileCreateInstallation:
+            if (type(native_ctx) is not _NativeRunContext
+                or native_ctx.native_authority is not self.installation.authority):
+                raise PhaseError("ntfs.closed_native_installation_required")
+            evidence_root = self.installation.check_request(request)
+        else:
+            if native_ctx is not None and native_ctx.native_authority is not None:
+                raise PhaseError("ntfs.closed_native_installation_required")
+            evidence_root = self._check_root_separation(request)
         store = EvidenceStore(evidence_root, request.run_id)
         if native_ctx is not None:
             native_ctx.store = store
@@ -916,12 +915,12 @@ class PhaseCore:
                 item = frozen.get(binding_id)
                 if item is None or (item.digest, item.length) != expected:
                     raise PhaseError("freeze.expected_content_mismatch", binding_id)
-            scope_digest, request_digest, key, root_identity_digest, root_identities = build_idempotency_digests(
-                contract,
-                candidate,
-                frozen,
-                request.root_bindings,
-            )
+            if native_ctx is not None and native_ctx.native_authority is not None:
+                identity_result = native_ctx.native_authority.idempotency(
+                    contract, candidate, frozen, request.root_bindings)
+            else:
+                identity_result = build_idempotency_digests(contract, candidate, frozen, request.root_bindings)
+            scope_digest, request_digest, key, root_identity_digest, root_identities = identity_result
             idempotency_lock = None
             if key is not None:
                 lock_digest = profile_digest("idempotency-lock", {"key": key, "scope_digest": scope_digest})
@@ -948,8 +947,12 @@ class PhaseCore:
                     active_faults,
                     native_ctx,
                 )
+            if native_ctx is not None:
+                native_ctx.idempotency_enter_started = True
             with idempotency_lock:
-                return self._run_after_idempotency_binding(
+                if native_ctx is not None:
+                    native_ctx.idempotency_entered = True
+                locked_outcome = self._run_after_idempotency_binding(
                     request,
                     store,
                     contract,
@@ -969,6 +972,9 @@ class PhaseCore:
                     active_faults,
                     native_ctx,
                 )
+            if native_ctx is not None:
+                native_ctx.idempotency_finalized = True
+            return locked_outcome
         except (PhaseError, OSError) as exc:
             if native_ctx is not None and (native_ctx.inner_entered or native_ctx.preparation_attempted):
                 # Inner operation facts may exist even if draft serialization
@@ -1059,11 +1065,13 @@ class PhaseCore:
         latest_progress: dict[str, Any] | None = None
         interruption_code: str | None = None
         possible_dispatch = False
-        runner = ValidatorRunner(self.registry)
+        native_authority = None if native_ctx is None else native_ctx.native_authority
+        runner = (ValidatorRunner(self.registry) if native_authority is None else
+            ValidatorRunner(self.registry, _native_authority=native_authority))
         if native_ctx is not None:
             native_ctx.inner_entered = True
         try:
-            reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute)
+            reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute, _native_authority=native_authority)
             if execute and reused is not None:
                 receipt = self._reused_receipt(request, [], timestamp, reused[0], reused[1])
                 validate_receipt(receipt, self.registry)
@@ -1112,17 +1120,15 @@ class PhaseCore:
                     store.write_canonical("receipt.json", receipt)
                     return PhaseOutcome(request.run_id, receipt["exit_code"], receipt, None, None, tuple(lifecycle), profile_digest("receipt", receipt), None)
             lifecycle.append("plan")
-            plan = build_static_plan(
-                contract,
-                candidate,
-                frozen,
-                validator_results,
-                root_bindings=request.root_bindings,
-                run_id=request.run_id,
-                generated_at=timestamp,
-                request_digest=request_digest,
-            )
-            validate_static_plan(plan, contract, request.root_bindings, self.registry)
+            if native_authority is not None:
+                plan = native_authority.plan(contract, candidate, frozen, validator_results,
+                    roots=request.root_bindings, run_id=request.run_id, timestamp=timestamp,
+                    request_digest=request_digest)
+            else:
+                plan = build_static_plan(contract, candidate, frozen, validator_results,
+                    root_bindings=request.root_bindings, run_id=request.run_id, generated_at=timestamp,
+                    request_digest=request_digest)
+                validate_static_plan(plan, contract, request.root_bindings, self.registry)
             self._verify_plan_guarantees(required_guarantees, plan)
             content_blob_digests = self._publish_append_blobs(store, plan)
             _, plan_attachment_digest = store.write_canonical("attachments/effect-plan.json", plan)
@@ -1147,12 +1153,17 @@ class PhaseCore:
                 content_blob_digests,
                 execute,
             )
-            if contract.document["identity"]["id"] == "bundle_create.v2":
+            if native_authority is not None:
+                intent["phase_intent_version"] = "1.2"
+                intent["native_binding"] = native_authority.native_binding()
+                intent["evidence"]["pre_validator_results_digest"] = validators_digest
+            elif contract.document["identity"]["id"] == "bundle_create.v2":
                 intent["phase_intent_version"] = "1.1"
                 intent["evidence"]["pre_validator_results_digest"] = validators_digest
             validate_intent(intent, self.registry)
             lifecycle.append("intent")
             if native_ctx is not None:
+                native_ctx.original_intent_digest = profile_digest('intent', intent)
                 native_ctx.intent_recording_started = True
             intent_path, _ = store.write_canonical("intent.json", intent)
             intent_digest = profile_digest("intent", intent)
@@ -1182,8 +1193,9 @@ class PhaseCore:
                 try:
                     broker_result = EffectBroker(
                         self.registry,
-                        self.installation.authority_provider,
+                        self.installation.authority_provider if native_authority is None else None,
                         self.installation.authority_profile_binding,
+                        **({} if native_authority is None else {"_native_authority": native_authority}),
                     ).execute(
                         plan,
                         contract,
@@ -1194,12 +1206,14 @@ class PhaseCore:
                         evidence_root=evidence_root,
                         timestamp=timestamp,
                         faults=active_faults.broker,
+                        **({} if native_authority is None else {"_native_intent_digest": intent_digest}),
                     )
                 except BrokerExecutionInterrupted as interrupted:
                     effect_receipts = list(interrupted.effect_receipts)
                     possible_dispatch = interrupted.possible_dispatch
                     if native_ctx is not None:
                         native_ctx.possible_dispatch |= possible_dispatch
+                        native_ctx.broker_interruption=interrupted.cause
                     if interrupted.progress_digest is not None:
                         progress_digest = interrupted.progress_digest
                         latest_progress = self._ordered_progress(plan, effect_receipts)
@@ -1256,9 +1270,26 @@ class PhaseCore:
         except (PhaseError, OSError) as exc:
             if native_ctx is not None and native_ctx.preparation_attempted:
                 raise
+            if (native_ctx is not None and native_ctx.broker_interruption is not None
+                and native_authority is not None and native_authority._failure_bytes is not None):
+                try:
+                    from .evidence import _write_native_parent_failure
+                    if native_ctx.native_failure_publication_attempted:
+                        raise PhaseError('ntfs.native_failure_publication_consumed')
+                    native_ctx.native_failure_publication_attempted=True
+                    failure=parse_json_bytes(native_authority._failure_bytes,maximum_bytes=2*1024**2)
+                    _,failure_digest=_write_native_parent_failure(store,
+                        self.installation.read_binding,failure)
+                    native_ctx.native_failure_publication_confirmed=True
+                    attachment_digests.append(failure_digest)
+                except BaseException as secondary:
+                    try:exc.add_note('Native parent diagnostic publication: '+type(secondary).__name__)
+                    except BaseException:pass
             intent_digest = profile_digest("intent", intent) if intent is not None else None
             if (effect_receipts or possible_dispatch) and intent_digest is not None and contract is not None and plan is not None:
-                required_attachments_present = True
+                required_attachments_present = not (native_ctx is not None
+                    and native_ctx.native_failure_publication_attempted
+                    and not native_ctx.native_failure_publication_confirmed)
                 try:
                     _, effects_digest = store.write_or_verify_canonical("attachments/effect-receipts.json", effect_receipts)
                     if effects_digest not in attachment_digests:
@@ -1359,7 +1390,9 @@ def _guard_native_original_intents(read_binding):
     reservation and hold it through dispatch, retained-worker quiescence and
     final evidence. Every overlapping root must share this physical evidence
     root and lock. Normal Core.run/Host routes do not select this helper.
-    No native executed original can yet be discharged, including by a receipt.
+    Executed originals require the exact native terminal attachment and full
+    current immutable dependency durability confirmation under this SAME lock.
+    Legacy executed originals without that proof remain blocking.
     """
     import re
     import stat
@@ -1466,6 +1499,69 @@ def _guard_native_original_intents(read_binding):
             and receipt['evidence']['required_attachments_present']==bool(actual),
             'ntfs.original_attachment_mismatch')
 
+    def native_closure(run, receipt, visited=frozenset()):
+        from .mutation.ntfs.proof import verify_native_terminal_proof
+        from .evidence import _confirm_native_immutable_files_durable
+        _require(type(receipt) is dict and receipt.get('run_id') == run.name,
+            'ntfs.original_receipt_binding_mismatch')
+        digest = profile_digest('receipt',receipt)
+        _require(digest not in visited, 'inspection.prior_receipt_cycle')
+        checked = verify_native_terminal_proof(read_binding,run,receipt)
+        _require(receipt['evidence']['finalization_status'] == 'finalized'
+            and receipt['recovery_required'] is False
+            and 'broker.dispatch_outcome_unknown' not in receipt['blockers'],
+            'ntfs.original_history_unresolved')
+        physical = checked['proof']['physical']
+        status,disposition = receipt['terminal_status'],receipt['execution_disposition']
+        if status == 'succeeded_verified':
+            _require(receipt['evidence']['required_attachments_present'] is True
+                and receipt['canonical_result'] is not None and receipt['exit_code'] == 0
+                and receipt['blockers'] == [], 'ntfs.original_history_unresolved')
+            if disposition == 'reused_existing':
+                _require(physical['no_dispatch_safety_established'] is True,
+                    'ntfs.original_history_unresolved')
+                from .inspection import _prior_receipt_run_id
+                prior = _prior_receipt_run_id(runs,run.name,receipt['prior_verified_receipt_digest'])
+                prior_receipt,_ = control(runs/prior/'receipt.json')
+                _require(prior_receipt['terminal_status'] == 'succeeded_verified'
+                    and prior_receipt['contract'] == receipt['contract']
+                    and canonical_bytes(prior_receipt['canonical_result']) == canonical_bytes(receipt['canonical_result'])
+                    and prior_receipt.get('implementation_binding') == receipt.get('implementation_binding'),
+                    'inspection.prior_receipt_mismatch')
+                native_closure(runs/prior,prior_receipt,visited|{digest})
+            else:
+                _require(disposition == 'executed' and physical['parent_safety_established'] is True,
+                    'ntfs.original_history_unresolved')
+        elif status == 'failed_no_effect':
+            _require(disposition == 'executed' and physical['parent_safety_established'] is True
+                and receipt['evidence']['required_attachments_present'] is True
+                and receipt['canonical_result'] is None,
+                'ntfs.original_history_unresolved')
+        elif status == 'validated_planned':
+            original,_ = control(run/'intent.json')
+            _require(original['execution_requested'] is False and disposition == 'not_executed'
+                and physical['no_dispatch_safety_established'] is True
+                and receipt['evidence']['required_attachments_present'] is True,
+                'ntfs.original_history_unresolved')
+        else:
+            # Preserve the old pre-intent rejection scope. Never use a degraded
+            # or unknown-quiescence receipt to discharge an execution original.
+            _require(status == 'rejected' and disposition == 'not_executed'
+                and physical['no_dispatch_safety_established'] is True
+                and receipt['evidence']['intent_digest'] is None
+                and 'intent.json' not in {entry.name for entry in run.iterdir()}
+                and receipt['canonical_result'] is None and receipt['effect_receipts'] == []
+                and receipt['prior_verified_receipt_digest'] is None
+                and receipt['retry_disposition'] == 'forbidden' and receipt['exit_code'] == 10
+                and bool(receipt['blockers']), 'ntfs.original_history_unresolved')
+        # Not an observation-only shortcut: sync all exact immutable bytes and
+        # directories, check namespace and consume each close once. No new marker
+        # is written and no native target operation/retry is authorized here.
+        check_anchors()
+        _confirm_native_immutable_files_durable(root,(identity['device'],identity['inode']),
+            run.name,checked['immutable_files'])
+        check_anchors()
+
     def check_history():
         with os.scandir(runs) as entries:
             for entry in entries:
@@ -1480,6 +1576,11 @@ def _guard_native_original_intents(read_binding):
                 validate_run_id(entry.name)
                 _require('intent.json' in names or 'receipt.json' in names,
                     'ntfs.original_history_unresolved')
+                if 'native-terminal-proof.json' in attachments:
+                    _require('receipt.json' in names, 'ntfs.original_history_unresolved')
+                    terminal,_ = control(run/'receipt.json')
+                    native_closure(run,terminal)
+                    continue
                 if 'intent.json' not in names:
                     receipt,_=control(run/'receipt.json')
                     no_effect_receipt(receipt,entry.name,attachments,planned=False)
@@ -1549,3 +1650,53 @@ def _guard_native_original_intents(read_binding):
         if isinstance(error,OSError) and not yielded:
             raise PhaseError('ntfs.original_evidence_unavailable') from error
         raise
+
+
+def _classify_effect_outcome(plan, validator_results, effect_receipts, *,
+    finalization_failed, interruption_code=None, possible_dispatch=False):
+    """Existing pure Core classifier, reused by native historical verification.
+
+    No capture, lifecycle, provider, target observation, write or retry permission.
+    """
+    if type(possible_dispatch) is not bool:
+        raise PhaseError("broker.invalid_dispatch_disposition")
+    result_effect = plan["effects"][-1]
+    failed_receipts = [receipt for receipt in effect_receipts if receipt["status"] != "applied_verified"]
+    status = failed_receipts[0]["status"] if failed_receipts else ("applied_verified" if len(effect_receipts) == len(plan["effects"]) else "failed_no_effect")
+    post_verified = all(
+        result["status"] == "pass"
+        for result in validator_results
+        if result["phase"] == "post_operation" and result["blocking"]
+    )
+    mapping = {
+        "failed_no_effect": ("failed_no_effect", "verified_no_effect", 20, False),
+        "failed_partial": ("failed_partial", "known_partial", 30, True),
+        "applied_unverified": ("committed_unverified", "committed_unverified", 40, True),
+        "indeterminate": ("indeterminate", "indeterminate", 50, True),
+    }
+    all_effects_verified = status == "applied_verified" and len(effect_receipts) == len(plan["effects"])
+    if possible_dispatch:
+        terminal, result_state, exit_code, recovery = "indeterminate", "indeterminate", 50, True
+    elif all_effects_verified and post_verified and not finalization_failed:
+        terminal, result_state, exit_code, recovery = "succeeded_verified", "verified_result", 0, False
+    elif all_effects_verified:
+        terminal, result_state, exit_code, recovery = "committed_unverified", "committed_unverified", 40, True
+    else:
+        if any(receipt["status"] == "failed_partial" for receipt in effect_receipts):
+            terminal, result_state, exit_code, recovery = mapping["failed_partial"]
+        elif failed_receipts:
+            terminal, result_state, exit_code, recovery = mapping[status]
+            if len(effect_receipts) > 1 and any(receipt["after"].get("exists") is True for receipt in effect_receipts[:-1]):
+                terminal, result_state, exit_code, recovery = "failed_partial", "known_partial", 30, True
+        elif effect_receipts and any(receipt["status"] == "applied_verified" for receipt in effect_receipts):
+            terminal, result_state, exit_code, recovery = "failed_partial", "known_partial", 30, True
+        else:
+            terminal, result_state, exit_code, recovery = "failed_no_effect", "verified_no_effect", 20, False
+    error = failed_receipts[0].get("error") if failed_receipts else None
+    blockers = [] if terminal == "succeeded_verified" else [
+        interruption_code
+        or ("evidence.finalization_failed" if finalization_failed else (error["code"] if error else "verification.incomplete"))
+    ]
+    if possible_dispatch:
+        blockers = sorted(set(blockers + ["broker.dispatch_outcome_unknown"]))
+    return terminal,result_state,exit_code,recovery,blockers

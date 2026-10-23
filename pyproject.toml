@@ -45,7 +45,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-phase_tool = ["data/**/*.json"]
+phase_tool = ["data/**/*.json", "data/native/*.py.in"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

@@ -9,7 +9,7 @@ Root-wide unresolved scanning/locks, guarantee admission, fresh observations,
 possible-dispatch/GO, worker exit and Core receipts remain mandatory outside.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from .handoff import ParsedNativeFileCreate
 from jsonschema import Draft202012Validator, FormatChecker
 from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes, profile_digest
 from ...evidence import validate_intent
@@ -25,15 +25,6 @@ _EFFECT_FIELDS={'effect_id','kind','target','input_binding','content_source','co
  'content_length','preconditions','lock_scope','durability_policy_id','on_failure'}
 
 
-@dataclass(frozen=True)
-class ParsedNativeFileCreate:
-    """Immutable structural bytes, not a target authority or permission to GO."""
-    context_bytes: bytes
-    grant_bytes: bytes
-    effect_bytes: bytes
-    content_bytes: bytes
-    timestamp: str
-
 
 def _canonical(raw: bytes):
     _require(type(raw) is bytes,'ntfs.original_immutable_bytes_required')
@@ -42,11 +33,11 @@ def _canonical(raw: bytes):
     return value
 
 
-def parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
+def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
     pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
     expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
     installed_native_binding: bytes, installed_root_grants: bytes,
-    installed_implementation_binding: bytes) -> ParsedNativeFileCreate:
+    installed_implementation_binding: bytes, _execution_requested: bool) -> ParsedNativeFileCreate:
     """Validate exact buffers before a future installation-owned handoff.
 
     Installed buffers are supplied by the FUTURE closed selector, not a broker
@@ -62,7 +53,7 @@ def parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
     validate_intent(intent,registry)
     _require(intent['run_id']==expected_run_id and profile_digest('intent',intent)==expected_intent_digest,
         'ntfs.original_intent_mismatch')
-    _require(intent['registry_snapshot_digest']==registry.digest and intent['execution_requested'] is True,
+    _require(intent['registry_snapshot_digest']==registry.digest and intent['execution_requested'] is _execution_requested,
         'ntfs.original_execution_binding_mismatch')
     for key,expected in (('core',installed_core_binding),('native_binding',installed_native_binding),
                          ('implementation_binding',installed_implementation_binding)):
@@ -136,3 +127,29 @@ def parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
         'operation_nonce':native['operation_nonce']}
     return ParsedNativeFileCreate(canonical_bytes(_context(context)),canonical_bytes(grants[0].as_dict()),
         canonical_bytes(effect),blob_bytes,intent['created_at'])
+
+
+def parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes) -> ParsedNativeFileCreate:
+    """Executing original only; never accept planned data for worker handoff."""
+    return _parse_original_file_create(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
+        blob_bytes=blob_bytes,registry=registry,expected_run_id=expected_run_id,
+        expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
+        installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
+        installed_implementation_binding=installed_implementation_binding,_execution_requested=True)
+
+
+def validate_planned_file_create_original(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes) -> None:
+    """Same semantic parser for planned-only historical closure; returns no GO data."""
+    _parse_original_file_create(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
+        blob_bytes=blob_bytes,registry=registry,expected_run_id=expected_run_id,
+        expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
+        installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
+        installed_implementation_binding=installed_implementation_binding,_execution_requested=False)

@@ -23,7 +23,13 @@ from ..append_codec import StreamObservation, observe_stream
 class ValidatorRunner:
     """Runs only the fixed validator declarations already admitted by the registry."""
 
-    def __init__(self, registry: RegistrySnapshot) -> None:
+    def __init__(self, registry: RegistrySnapshot, *, _native_authority: object | None = None) -> None:
+        if _native_authority is not None:
+            from ..mutation.ntfs.authority import _NativeFileCreateAuthority
+            if type(_native_authority) is not _NativeFileCreateAuthority or _native_authority.registry is not registry:
+                raise PhaseError("ntfs.closed_native_installation_required")
+            _native_authority._usable()
+        self._native_authority = _native_authority
         self.registry = registry
         self._result_schema = registry.schema_document("https://phase-tool.local/schemas/validator-result.schema.json")
         self._result_validator = Draft202012Validator(self._result_schema, format_checker=FormatChecker())
@@ -82,6 +88,8 @@ class ValidatorRunner:
         run_id: str,
         timestamp: str,
     ) -> dict[str, Any]:
+        if self._native_authority is not None:
+            self._native_authority.require_contract(contract)
         declaration = next(item for item in contract.document["validators"] if item["phase"] == "candidate")
         outcome = self._candidate_validation(contract, candidate)
         return self._result(
@@ -151,7 +159,10 @@ class ValidatorRunner:
         frozen_inputs: Mapping[str, FrozenInput],
         root_bindings: Mapping[str, Path],
         evidence_root: Path | None,
+        *, _native_run_id: str | None = None,
     ) -> tuple[str, str, Any, Any, list[str]]:
+        if self._native_authority is not None:
+            self._native_authority.require_contract(contract)
         value = parse_json_bytes(candidate.canonical_bytes)
         if identifier == "validator.exact_binding_v1":
             return "pass", "validation.pass", "exact_registry_binding", "exact_registry_binding", []
@@ -211,8 +222,15 @@ class ValidatorRunner:
                 return "fail", exc.code, frozen.digest, "mismatch", [exc.code]
             return "pass", "validation.pass", frozen.digest, frozen.digest, []
         if identifier == "validator.destination_absent_v1":
-            root = self._target_root(contract, root_bindings)
-            target, exists = self._inspect_target(root, value["target_locator"])
+            if self._native_authority is not None:
+                self._native_authority.require_contract(contract)
+                observation = self._native_authority.observe(run_id=_native_run_id,
+                    root_binding=contract.document["canonical_result"]["root_binding"],
+                    locator=value["target_locator"])
+                exists = observation["state"]["exists"]
+            else:
+                root = self._target_root(contract, root_bindings)
+                target, exists = self._inspect_target(root, value["target_locator"])
             if exists:
                 return "fail", "target.destination_exists", "absent", "present", ["target.destination_exists"]
             return "pass", "validation.pass", "absent", "absent", []
@@ -291,6 +309,8 @@ class ValidatorRunner:
         timestamp: str,
         forced_unknown: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        if self._native_authority is not None:
+            self._native_authority.require_contract(contract)
         roots = root_bindings or {}
         unknown = forced_unknown or set()
         blocked = False
@@ -303,7 +323,8 @@ class ValidatorRunner:
                 blockers = ["validator.unknown"] if declaration["blocking"] else []
                 outcome = ("unknown", "validator.unknown", "known_result", None, blockers)
             else:
-                outcome = self._run_builtin(identifier, contract, candidate, frozen_inputs, roots, evidence_root)
+                outcome = self._run_builtin(identifier, contract, candidate, frozen_inputs, roots, evidence_root,
+                    **({} if self._native_authority is None else {"_native_run_id": run_id}))
             result = self._result(
                 declaration,
                 run_id=run_id,
@@ -333,6 +354,8 @@ class ValidatorRunner:
         ordered_progress: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Re-run declared post validators against actual target bytes."""
+        if self._native_authority is not None:
+            self._native_authority.require_contract(contract)
         completed = list(prior_results)
         declarations = list(contract.document["validators"])
         for index, declaration in enumerate(declarations):
@@ -461,8 +484,19 @@ class ValidatorRunner:
                 locator = effect["target"]["relative_locator"]
                 expected.append({"locator": locator, "digest": effect["content_digest"], "length": effect["content_length"]})
                 try:
-                    path = contained_read_path(root, locator)
-                    if effect["kind"] == "append_record":
+                    if self._native_authority is not None:
+                        self._native_authority.require_contract(contract)
+                        observed = self._native_authority.observe(run_id=run_id, root_binding=root_id,
+                            locator=locator, expected_identity=self._native_authority.expected_after_identity(effect))
+                        state = observed['state']
+                        if state['exists'] is not True or state['digest'] is None:
+                            raise PhaseError('verification.target_unavailable')
+                        observation = {'locator': locator, 'digest': state['digest'], 'length': state['length']}
+                        if observation['digest'] != effect['content_digest'] or observation['length'] != effect['content_length']:
+                            blockers.append('verification.result_mismatch')
+                    else:
+                        path = contained_read_path(root, locator)
+                    if self._native_authority is None and effect["kind"] == "append_record":
                         encoded = effect.get("content_bytes_b64")
                         record = base64.b64decode(encoded.encode("ascii"), validate=True) if isinstance(encoded, str) else b""
                         stream_observation = self._observe_append_target(path, tail_bytes=len(record))
@@ -473,7 +507,7 @@ class ValidatorRunner:
                         }
                         if not record or stream_observation.tail != record:
                             blockers.append("verification.result_mismatch")
-                    else:
+                    elif self._native_authority is None:
                         digest, length = self._digest_target(path)
                         observation = {"locator": locator, "digest": digest, "length": length}
                         if observation["digest"] != effect["content_digest"] or observation["length"] != effect["content_length"]:

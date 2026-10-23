@@ -12,6 +12,7 @@ from .candidate import encode_structured_input
 from .canonical import profile_digest
 from .core import PhaseCore, PhaseRequest
 from .errors import PhaseError
+from .mutation.ntfs.uncertainty import _NativeLifecycleUnresolved
 from .inspection import inspect_run
 from .installation import Installation, host_installation
 from .registry import BundledRegistry, RegistrySnapshot
@@ -116,6 +117,11 @@ class PhaseApplication:
         expected_inputs: Mapping[str, tuple[str, int]] | None = None,
     ) -> ApplicationResponse:
         try:
+            from .installation import _NativeFileCreateInstallation
+            if type(self.installation) is _NativeFileCreateInstallation and candidate is not None:
+                # Fixed native startup accepts only already prepared ext4 paths.
+                # No application TemporaryDirectory cleanup may follow publication.
+                raise PhaseError('ntfs.materialized_candidate_required')
             if (candidate_path is None) == (candidate is None):
                 raise PhaseError("application.exactly_one_candidate_input_required")
             if candidate is not None:
@@ -163,23 +169,59 @@ class PhaseApplication:
                 request,
                 execute=operation == "execute",
             )
-            blockers = outcome.receipt["blockers"]
-            payload = self._command_payload(
-                operation,
-                success=outcome.exit_code == 0,
-                run_id=outcome.run_id,
-                terminal_status=outcome.receipt["terminal_status"],
-                execution_disposition=outcome.receipt["execution_disposition"],
-                mutation_attempted=outcome.receipt["mutation_attempted"],
-                effect_plan_digest=outcome.effect_plan_digest,
-                intent_digest=profile_digest("intent", outcome.intent) if outcome.intent is not None else None,
-                receipt_digest=outcome.receipt_digest,
-                target_verified=None,
-                blockers=blockers,
-                error=None if outcome.exit_code == 0 else blockers[0],
-                exit_code=outcome.exit_code,
-            )
-            return ApplicationResponse(payload, outcome.exit_code)
+            try:
+                blockers = outcome.receipt["blockers"]
+                payload = self._command_payload(
+                    operation,
+                    success=outcome.exit_code == 0,
+                    run_id=outcome.run_id,
+                    terminal_status=outcome.receipt["terminal_status"],
+                    execution_disposition=outcome.receipt["execution_disposition"],
+                    mutation_attempted=outcome.receipt["mutation_attempted"],
+                    effect_plan_digest=outcome.effect_plan_digest,
+                    intent_digest=profile_digest("intent", outcome.intent) if outcome.intent is not None else None,
+                    receipt_digest=outcome.receipt_digest,
+                    target_verified=None,
+                    blockers=blockers,
+                    error=None if outcome.exit_code == 0 else blockers[0],
+                    exit_code=outcome.exit_code,
+                )
+                return ApplicationResponse(payload, outcome.exit_code)
+            except BaseException as rendering_error:
+                if type(self.installation) is not _NativeFileCreateInstallation:
+                    raise
+                # The closed native wrapper returned only AFTER its one proof,
+                # receipt publication and required resource exits. Preserve
+                # these actual control-flow facts through later rendering faults.
+                # Unknown data stays nullable; no fallible read precedes them.
+                from types import SimpleNamespace
+                delivery=SimpleNamespace(intent_recording_started=None,
+                    publication_attempted=True,proof_publication_attempted=True,
+                    common_guard_finalized=True,original_intent_digest=None,prepared=outcome)
+                try:
+                    delivery.intent_recording_started=outcome.intent is not None
+                    if outcome.intent is not None:
+                        delivery.original_intent_digest=profile_digest('intent',outcome.intent)
+                except BaseException:
+                    pass
+                raise _NativeLifecycleUnresolved(request=request,context=delivery,
+                    authority=self.installation.authority,primary=rendering_error) from rendering_error
+        except _NativeLifecycleUnresolved as exc:
+            if type(exc) is not _NativeLifecycleUnresolved:
+                raise  # Never fall through to the false-rejection handler.
+            from .command_result import validate_command_result
+            try:
+                payload = exc.command_result(operation)
+                validate_command_result(payload, self.registry)
+            except BaseException as reporting_error:
+                # Native entrypoint must report delivery uncertainty using this
+                # same exact installation, never the ordinary default CLI writer.
+                try:
+                    exc.add_note('Native diagnostic delivery validation failed; original cause retained')
+                except BaseException:
+                    pass
+                raise exc  # Preserve lifecycle's original __cause__.
+            return ApplicationResponse(payload, 40)
         except (PhaseError, OSError, ValueError) as exc:
             return self._failure(operation, exc)
 
@@ -226,7 +268,11 @@ class PhaseApplication:
         root_bindings: Mapping[str, Path],
     ) -> ApplicationResponse:
         try:
-            inspected = inspect_run(evidence_root, run_id, self.registry, root_bindings=root_bindings)
+            from .installation import _NativeFileCreateInstallation
+            native = (self.installation.authority
+                if type(self.installation) is _NativeFileCreateInstallation else None)
+            inspected = inspect_run(evidence_root, run_id, self.registry,
+                root_bindings=root_bindings, _native_authority=native)
             payload = self._command_payload(
                 "inspect",
                 success=True,

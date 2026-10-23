@@ -51,6 +51,8 @@ class LinuxNativeChannel:
     The 30 s deadline bounds waiting in this single-file control protocol; it
     neither cancels accepted OS work nor establishes a hard process deadline.
     """
+    _PROTOCOL_VERSION = '1.0'  # Closed implementation generation; never request selected.
+
     def __init__(self, channel_id: str):
         _require(not getattr(self, '_initialization_attempted', False), 'ntfs.channel_initialization_consumed')
         self._initialization_attempted = True
@@ -164,7 +166,7 @@ class LinuxNativeChannel:
             self._usable()
             self._request(kind, run_id, intent_digest, payload)
             _require(kind != 'execute_file_create' or not self._possible_dispatch, 'ntfs.channel_execution_consumed')
-            common = {'protocol': 'phase.native.pipe', 'version': '1.0', 'channel_id': self.channel_id,
+            common = {'protocol': 'phase.native.pipe', 'version': self._PROTOCOL_VERSION, 'channel_id': self.channel_id,
                       'sequence': self._sequence + 1, 'kind': kind, 'run_id': run_id, 'intent_digest': intent_digest}
             raw = canonical_bytes(common | payload)
             _require(0 < len(raw) <= _MAX_FRAME, 'ntfs.channel_frame_limit')
@@ -210,6 +212,15 @@ class LinuxNativeChannel:
                         possible_dispatch=self._possible_dispatch,
                         details={'primary': None if primary is None else _primary(primary),
                                  'finalization': _primary(finalization)}) from primary
+        if primary is None:
+            try:
+                # A real release/signal callback may have sealed or poisoned the
+                # channel after the in-gate check. Never return a positive ACK
+                # over newly failed owner/sticky state; no wire retry is allowed.
+                self._usable()
+            except BaseException as error:
+                self._failed = True
+                primary = error
         if primary is not None:
             raise NativeChannelError('ntfs.channel_exchange_unknown', possible_dispatch=self._possible_dispatch,
                 details={'request_digest': None if raw is None else digest_bytes(raw), 'sequence': self._sequence,

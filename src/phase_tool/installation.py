@@ -119,6 +119,25 @@ class _NativeFileCreateReadBinding:
     manifest_digest: str
     registry: object
 
+    def check_evidence_root(self):
+        """Current qualified ext4 identity, shared by readonly native consumers."""
+        import stat
+        from .canonical import parse_json_bytes, canonical_bytes
+        from .mutation.ntfs.native import _require
+        from .mutation.ntfs.reader import _evidence_identity
+        manifest = parse_json_bytes(self.manifest_bytes, maximum_bytes=2*1024**2)
+        expected = _evidence_identity(canonical_bytes(manifest['evidence_identity']))
+        root = Path(manifest['evidence_root'])
+        qualify_host_authority_roots({'phase_evidence_root':root})
+        _require(_linux_filesystem_type(root) == 'ext4', 'ntfs.original_ext4_evidence_required')
+        info = root.lstat()
+        _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+            and not info.st_mode & 0o022
+            and (info.st_dev, info.st_ino) == (expected['device'],expected['inode']),
+            'ntfs.original_evidence_identity_mismatch')
+        _require_native_no_descendant_mounts(root)
+        return root
+
     def read(self, *, run_id: str, intent_digest: str):
         from .canonical import canonical_bytes, canonical_digest, parse_json_bytes
         from .mutation.ntfs.intent import parse_original_file_create
@@ -136,6 +155,21 @@ class _NativeFileCreateReadBinding:
         return parse_original_file_create(intent_bytes=original, plan_bytes=plan,
             pre_validator_bytes=pre, blob_bytes=content, registry=self.registry,
             expected_run_id=run_id, expected_intent_digest=intent_digest,
+            **self._parser_bindings(intent))
+
+    def validate_planned(self, *, run_id, intent_digest):
+        from .canonical import parse_json_bytes, canonical_bytes
+        from .mutation.ntfs.reader import read_original_file_create_buffers
+        from .mutation.ntfs.intent import validate_planned_file_create_original
+        manifest = parse_json_bytes(self.manifest_bytes, maximum_bytes=2*1024**2)
+        original,plan,pre,content = read_original_file_create_buffers(
+            evidence_root=Path(manifest['evidence_root']),
+            installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),
+            registry=self.registry,run_id=run_id,expected_intent_digest=intent_digest)
+        intent = parse_json_bytes(original, maximum_bytes=2*1024**2)
+        validate_planned_file_create_original(intent_bytes=original,plan_bytes=plan,
+            pre_validator_bytes=pre,blob_bytes=content,registry=self.registry,
+            expected_run_id=run_id,expected_intent_digest=intent_digest,
             **self._parser_bindings(intent))
 
     def _parser_bindings(self, intent: dict) -> dict[str, bytes]:
@@ -211,7 +245,7 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
     native = schema['$defs']['nativeBinding']['properties']
     implementation = schema['properties']['implementation_binding']['properties']
     properties = {
-        'native_read_installation_version': {'const': '1.0'},
+        'native_read_installation_version': {'const': manifest.get('native_read_installation_version')},
         'installation_id': native['installation']['properties']['id'],
         'core': schema['properties']['core'], 'contract': schema['properties']['contract'],
         'registry_snapshot_digest': {'$ref': '#/$defs/digest'},
@@ -219,6 +253,17 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         'composition': native['composition'], 'evidence_identity': native['evidence_identity'],
         'root_grants': schema['properties']['idempotency']['properties']['root_identities'],
         'evidence_root': {'type': 'string', 'minLength': 1}}
+    version = manifest.get('native_read_installation_version')
+    _require(type(version) is str and version in {'1.0', '1.1'},
+        'ntfs.original_installation_version_unsupported')
+    if version == '1.1':
+        # New static generation binds MIX preparation and opaque projections.
+        # Historical 1.0 keys/semantics and intent1.2 bytes remain unchanged.
+        properties.update({
+            'preparation_root': {'type': 'string', 'minLength': 1},
+            'preparation_identity': native['evidence_identity'],
+            'root_projections': {'type': 'object', 'minProperties': 1,
+                'additionalProperties': {'type': 'string', 'minLength': 1}}})
     Draft202012Validator({'$schema': schema['$schema'], '$defs': schema['$defs'],
         'type': 'object', 'properties': properties, 'required': sorted(properties), 'additionalProperties': False},
         registry=registry.schema_registry(), format_checker=FormatChecker()).validate(manifest)
@@ -234,6 +279,25 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
     _require(len(grants) == 1 and {grants[0].binding} == {row['binding_id'] for row in scope['roots']}
         and grants[0].binding == contract.document['canonical_result']['root_binding']
         and grants[0].binding not in scope['forbidden_root_bindings'], 'ntfs.original_root_binding_mismatch')
+    if version == '1.1':
+        preparation = PurePosixPath(manifest['preparation_root'])
+        _require(preparation.is_absolute() and str(preparation) == manifest['preparation_root']
+            and str(preparation) != '/' and '..' not in preparation.parts
+            and not preparation.is_relative_to(root) and not root.is_relative_to(preparation),
+            'ntfs.original_preparation_root_required')
+        _evidence_identity(canonical_bytes(manifest['preparation_identity']))
+        _require((manifest['preparation_identity']['device'],manifest['preparation_identity']['inode'])
+            != (manifest['evidence_identity']['device'],manifest['evidence_identity']['inode']),
+            'evidence.overlaps_preparation_root')
+        projections = manifest['root_projections']
+        _require(set(projections) == {grants[0].binding}, 'ntfs.installed_root_projections_required')
+        for value in projections.values():
+            projection = PurePosixPath(value)
+            _require(projection.is_absolute() and str(projection) == value
+                and str(projection) != '/' and '..' not in projection.parts
+                and not projection.is_relative_to(root) and not root.is_relative_to(projection)
+                and not projection.is_relative_to(preparation) and not preparation.is_relative_to(projection),
+                'ntfs.installed_root_projections_required')
     return _NativeFileCreateReadBinding(manifest_bytes, expected_manifest_digest, registry)
 
 
@@ -242,12 +306,24 @@ _NATIVE_FILE_CREATE_REGISTRY_DIGEST = "sha256:fa2a9aff5f576d15b5a71574a11bd3a7a9
 
 
 def _native_file_create_candidate_registry():
-    """Load one code-selected structural snapshot, never native authority.
+    """Preserve the previous fixed unadmitted candidate generation."""
+    return _load_native_file_create_registry(_NATIVE_FILE_CREATE_REGISTRY_RESOURCE,
+        _NATIVE_FILE_CREATE_REGISTRY_DIGEST,
+        'sha256:734cf6905eba9e513c01654555d0a97edf05cd6e7da6cd2ec468e926cdbe8b09')
 
-    A future authenticated composition may select this unadmitted candidate.
-    Requests, intents, environment and external paths do not select the resource
-    or its digest. The ordinary Host factory and default registry are unchanged.
-    Loading it does not qualify roots, supply a profile or clear old evidence.
+
+def _native_connected_file_create_registry():
+    """Connected generation, code-selected only; it grants NO native authority."""
+    return _load_native_file_create_registry('registries/native-file-create-candidate-v2.json',
+        'sha256:fd7e6f78790491d59f97820fa23132a95cdd89678548e441464cca728605ca2f',
+        'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
+
+
+def _load_native_file_create_registry(resource, expected_digest, contract_digest):
+    """Shared byte/trust resolver; only the two fixed factories select inputs.
+
+    This helper is not an installation, qualifier, provider or request route.
+    Environment, operation data and original intents cannot select a registry.
     """
     from . import __version__
     from .canonical import canonical_bytes, digest_bytes, parse_json_bytes
@@ -255,17 +331,17 @@ def _native_file_create_candidate_registry():
 
     resources = BundledRegistry.resources()
     try:
-        raw = resources[_NATIVE_FILE_CREATE_REGISTRY_RESOURCE]
+        raw = resources[resource]
     except KeyError as exc:
         raise PhaseError("ntfs.native_registry_missing") from exc
-    if digest_bytes(raw) != _NATIVE_FILE_CREATE_REGISTRY_DIGEST:
+    if digest_bytes(raw) != expected_digest:
         raise PhaseError("ntfs.native_registry_digest_mismatch")
     document = parse_json_bytes(raw, maximum_bytes=256*1024)
     if canonical_bytes(document) != raw:
         raise PhaseError("ntfs.native_registry_noncanonical")
     registry = RegistrySnapshot.from_document(document, resources)
     expected = {"id": "file_create.v1", "version": "1.0.0",
-        "package_digest": "sha256:734cf6905eba9e513c01654555d0a97edf05cd6e7da6cd2ec468e926cdbe8b09"}
+        "package_digest": contract_digest}
     if registry.contract_bindings().get("file_create.v1@1.0.0") != expected:
         raise PhaseError("ntfs.native_registry_selection_mismatch")
     # The existing resolver checks trust, exact artifacts, dependencies, schemas
@@ -273,3 +349,186 @@ def _native_file_create_candidate_registry():
     registry.resolve_contract(expected["id"], expected["version"],
         expected["package_digest"], core_version=__version__)
     return registry
+
+
+class _NativeFileCreateInstallation:
+    """Closed one-operation MIX composition; no alternate lifecycle or store.
+
+    The accepted fixed bootstrap owns construction, process/pipe provenance and
+    the complete immutable executable graph. This data class cannot authenticate
+    that bootstrap. Its factory refuses the unqualified candidate before channel
+    construction, target I/O, operational lock or evidence reservation.
+    """
+
+    def __init__(self, read_binding, authority):
+        from .mutation.ntfs.authority import _NativeFileCreateAuthority
+        from .mutation.ntfs.native import _require
+        from .canonical import parse_json_bytes
+        _require(not getattr(self, '_initialization_attempted', False),
+            'ntfs.native_installation_initialization_consumed')
+        self._initialization_attempted = True
+        _require(type(read_binding) is _NativeFileCreateReadBinding
+            and type(authority) is _NativeFileCreateAuthority
+            and authority.read_binding is read_binding, 'ntfs.closed_native_installation_required')
+        manifest = parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
+        _require(manifest['native_read_installation_version'] == '1.1',
+            'ntfs.original_preparation_root_required')
+        self.read_binding, self.authority = read_binding, authority
+        self.authority_profile_binding = authority.profile
+        self._admission_attempted = False
+
+    def admit(self, registry, request, *, execute, faults):
+        from .mutation.ntfs.native import _require
+        _require(not self._admission_attempted, 'ntfs.native_installation_consumed')
+        self._admission_attempted = True
+        _require(registry is self.read_binding.registry and type(execute) is bool
+            and faults is None, 'ntfs.closed_native_installation_required')
+        # No public caller-supplied registry/provider/profile override.
+        self.authority._usable()
+        _require(request.run_id == self.authority._run_id,
+            'ntfs.original_current_invocation_mismatch')
+        from . import __version__
+        contract = registry.resolve_contract(request.contract_id, request.contract_version,
+            request.contract_digest, core_version=__version__)
+        self.authority.require_contract(contract)
+        self.check_request(request)
+
+    def check_request(self, request):
+        from .canonical import parse_json_bytes
+        from .mutation.ntfs.native import _require
+        import stat
+        manifest = parse_json_bytes(self.read_binding.manifest_bytes, maximum_bytes=2*1024**2)
+        self.authority.require_request_roots(request.root_bindings, request.evidence_root)
+        _require(type(request.maximum_candidate_bytes) is int
+            and 0 < request.maximum_candidate_bytes <= 1024**2,
+            'candidate.too_large')
+        for name, identity in [('evidence_root', manifest['evidence_identity']),
+                               ('preparation_root', manifest['preparation_identity'])]:
+            root = Path(manifest[name])
+            qualify_host_authority_roots({name: root})
+            _require(_linux_filesystem_type(root) == 'ext4', 'ntfs.original_ext4_evidence_required')
+            info = root.lstat()
+            _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                and not info.st_mode & 0o022
+                and (info.st_dev, info.st_ino) == (identity['device'], identity['inode']),
+                'ntfs.original_evidence_identity_mismatch')
+        _require_native_no_descendant_mounts(Path(manifest['preparation_root']))
+        _require_native_mixed_roots_disjoint(Path(manifest['evidence_root']),
+            Path(manifest['preparation_root']))
+        preparation = Path(manifest['preparation_root'])
+        # Existing Core capture/freeze owns all bytes and their stable read checks.
+        # This is admission of prepared paths, never a copy-out or target reader.
+        for path in (Path(request.candidate_path), *map(Path, request.input_paths.values())):
+            _require(path.is_absolute() and path == Path(os.path.abspath(path)),
+                'ntfs.prepared_input_outside_root')
+            try:
+                relative = path.relative_to(preparation)
+            except ValueError as error:
+                raise PhaseError('ntfs.prepared_input_outside_root') from error
+            _require(bool(relative.parts), 'ntfs.prepared_input_outside_root')
+            current = preparation
+            for index, part in enumerate(relative.parts):
+                current = current / part
+                info = current.lstat()
+                last = index == len(relative.parts)-1
+                _require((stat.S_ISREG(info.st_mode) if last else stat.S_ISDIR(info.st_mode))
+                    and info.st_uid == os.geteuid() and not info.st_mode & 0o022,
+                    'ntfs.prepared_input_unsafe')
+                if last:
+                    _require(info.st_nlink == 1 and info.st_size <= 1024**2,
+                        'ntfs.prepared_input_unsafe')
+        return Path(manifest['evidence_root'])
+
+
+def _native_file_create_installation(*, manifest_bytes, expected_manifest_digest,
+    run_id, operation_nonce, channel_id):
+    """Fixed trusted-startup seam, not a request-selected implementation.
+
+    The packaged candidate snapshot deliberately has no qualified native profile:
+    this factory fails closed before constructing a channel or authority. A later
+    qualified immutable generation must be separately accepted and code-selected;
+    neither environment nor request data can replace the bundled snapshot.
+    Successful static checks do not authenticate a launcher or remote container.
+    """
+    from .canonical import canonical_bytes, parse_json_bytes
+    from .mutation.ntfs.native import _require
+    from .mutation.ntfs.authority import _NativeFileCreateAuthority
+    from .mutation.ntfs.channel_v2 import LinuxNativeChannelV2
+    registry = _native_connected_file_create_registry()
+    exact = registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
+    _require(exact is not None, 'ntfs.native_profile_not_qualified')
+    profile = _native_qualified_profile(registry,exact)
+    binding = _resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest, registry=registry)
+    manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    _require(manifest['authority']['profile'] == profile.as_dict()
+        and manifest['native_read_installation_version'] == '1.1',
+        'ntfs.original_implementation_mismatch')
+    channel = LinuxNativeChannelV2(channel_id=channel_id)
+    authority = _NativeFileCreateAuthority(binding, profile,
+        canonical_bytes(manifest['root_projections']), channel,
+        run_id=run_id, operation_nonce=operation_nonce)
+    return registry, _NativeFileCreateInstallation(binding, authority)
+
+
+def _require_native_mixed_roots_disjoint(evidence, preparation):
+    """Kernel mount roots expose physical overlap hidden by bind aliases.
+
+    Both roots were already qualified as ext4. The accepted Docker daemon/mount
+    namespace is trusted; mount topology cannot be changed during this call.
+    No NTFS access, mount change, registry override or new storage adapter.
+    """
+    from pathlib import PurePosixPath
+    from .mutation.ntfs.native import _require
+    table = Path('/proc/self/mountinfo').read_bytes()
+    def unescape(value):
+        return re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1),8)), value)
+    def projection(path):
+        selected = None
+        resolved = str(_resolved_existing_root(path))
+        for line in table.decode('utf-8').splitlines():
+            left,separator,right = line.partition(' - ')
+            fields = left.split()
+            if not separator or len(fields) < 6:continue
+            mount,source = unescape(fields[4]),unescape(fields[3])
+            if resolved == mount or resolved.startswith(mount.rstrip('/')+'/'):
+                value = (len(mount),fields[2],source,mount,right.split()[0])
+                if selected is None or value[0] > selected[0]:selected = value
+        _require(selected is not None and selected[4] == 'ext4', 'guarantee.profile_scope_unsupported')
+        _,device,source,mount,_ = selected
+        relative = PurePosixPath(resolved).relative_to(PurePosixPath(mount))
+        return device,PurePosixPath(source)/relative
+    left,right = projection(evidence),projection(preparation)
+    _require(left[0] != right[0] or (not left[1].is_relative_to(right[1])
+        and not right[1].is_relative_to(left[1])), 'evidence.overlaps_preparation_root')
+    _require(table == Path('/proc/self/mountinfo').read_bytes(), 'ntfs.native_mount_topology_changed')
+
+
+def _native_qualified_profile(registry, exact):
+    """ONE pure native admission check shared by factory, role and inspector."""
+    from .mutation.ntfs.native import _require
+    current = registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
+    _require(exact is not None and exact == current, 'ntfs.native_profile_not_qualified')
+    descriptor = registry.resolve_guarantee_profile(exact)
+    # Mandatory even when contract requirements are empty.
+    _require(descriptor['descriptor_version'] == '1.1'
+        and descriptor['classification'] == 'production'
+        and bool(descriptor['provided_guarantees']) and bool(descriptor['conformance']),
+        'ntfs.native_profile_not_qualified')
+    implementation = descriptor['implementation']
+    _require(implementation['artifact'] == 'phase_tool/mutation/ntfs/authority.py',
+        'guarantee.profile_implementation_mismatch')
+    return GuaranteeProfileBinding(exact['id'],exact['version'],exact['descriptor_digest'],
+        implementation['id'],implementation['version'],implementation['artifact_digest'])
+
+
+def _require_native_no_descendant_mounts(root):
+    """Fixed native evidence/preparation contour excludes nested mount aliases."""
+    from .mutation.ntfs.native import _require
+    resolved = str(_resolved_existing_root(root))
+    for line in Path('/proc/self/mountinfo').read_text('utf-8').splitlines():
+        left,separator,right = line.partition(' - ')
+        fields = left.split()
+        _require(bool(separator) and len(fields) >= 6, 'ntfs.native_mount_topology_unavailable')
+        mount = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1),8)),fields[4])
+        _require(not mount.startswith(resolved.rstrip('/')+'/'), 'ntfs.native_descendant_mount_forbidden')

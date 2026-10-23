@@ -82,7 +82,11 @@ def read_original_file_create_buffers(*, evidence_root: Path,
     _require(type(blob_digest) is str and _DIGEST.fullmatch(blob_digest) is not None,
         'ntfs.original_frozen_input_required')
     plan=read_bounded_file(run/'attachments'/'effect-plan.json',_CONTROL_LIMIT)
-    pre=read_bounded_file(run/'attachments'/'pre-validator-results.json',_CONTROL_LIMIT)
+    # Core already stores planned results under validator-results.json. Do not
+    # manufacture an executing pre-validator attachment for a planned original.
+    pre_name = ('pre-validator-results.json' if intent['execution_requested']
+        else 'validator-results.json')
+    pre=read_bounded_file(run/'attachments'/pre_name,_CONTROL_LIMIT)
     blob=read_bounded_file(run/'blobs'/blob_digest.removeprefix('sha256:'),_CONTENT_LIMIT)
     _require(digest_bytes(plan)==intent['evidence']['effect_plan_attachment_digest']
         and digest_bytes(pre)==intent['evidence']['pre_validator_results_digest']

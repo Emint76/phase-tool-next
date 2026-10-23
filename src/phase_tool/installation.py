@@ -314,8 +314,8 @@ def _native_file_create_candidate_registry():
 
 def _native_connected_file_create_registry():
     """Connected generation, code-selected only; it grants NO native authority."""
-    return _load_native_file_create_registry('registries/native-file-create-candidate-v2.json',
-        'sha256:fd7e6f78790491d59f97820fa23132a95cdd89678548e441464cca728605ca2f',
+    return _load_native_file_create_registry('registries/native-file-create-candidate-v3.json',
+        'sha256:c5fe3be5e03d3be6b390135cb72e52559081c62feccb52e7db0788d8f705088b',
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
 
 

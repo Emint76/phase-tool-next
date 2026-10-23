@@ -78,7 +78,10 @@ class StaticNativeReadBindingTests(unittest.TestCase):
             ('descriptor_digest','sha256:'+'0'*64),('command',['arbitrary'])]:
             with self.subTest(key=key):
                 self.manifest=deepcopy(original);self.manifest[key]=value
-                with self.assertRaises(ValidationError):self.resolve()
+                if key=='native_read_installation_version':
+                    self.assert_code('ntfs.original_installation_version_unsupported')
+                else:
+                    with self.assertRaises(ValidationError):self.resolve()
         self.manifest=deepcopy(original);del self.manifest['installation_id']
         with self.assertRaises(ValidationError):self.resolve()
 

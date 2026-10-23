@@ -13,7 +13,7 @@ from phase_tool.installation import (_native_file_create_candidate_registry,
     _native_connected_file_create_registry, _native_file_create_installation,
     _native_qualified_profile)
 from phase_tool.mutation.ntfs.channel_v2 import LinuxNativeChannelV2
-from phase_tool.registry import BundledRegistry
+from phase_tool.registry import BundledRegistry, RegistrySnapshot
 
 
 class NativeConnectedRegistryTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class NativeConnectedRegistryTests(unittest.TestCase):
         prior=_native_file_create_candidate_registry()
         connected=_native_connected_file_create_registry()
         self.assertEqual(prior.digest,'sha256:fa2a9aff5f576d15b5a71574a11bd3a7a994a38346540ff6d7e7a74335cfa2c7')
-        self.assertEqual(connected.digest,'sha256:fd7e6f78790491d59f97820fa23132a95cdd89678548e441464cca728605ca2f')
+        self.assertEqual(connected.digest,'sha256:c5fe3be5e03d3be6b390135cb72e52559081c62feccb52e7db0788d8f705088b')
         old=prior.to_document()
         expected=deepcopy(old)
         for entry in expected['entries']:
@@ -31,7 +31,7 @@ class NativeConnectedRegistryTests(unittest.TestCase):
                 entry['current']=False
         new=connected.to_document()
         self.assertEqual(new['entries'][:len(expected['entries'])],expected['entries'])
-        self.assertEqual(len(new['entries'])-len(expected['entries']),5)
+        self.assertEqual(len(new['entries'])-len(expected['entries']),6)
         self.assertEqual(new['trust_roots'],old['trust_roots'])
         for pin in ['sha256:e3231b5f97bb49c499a82fd1d003ddde081c9cbe31b7b10b87435526c1e15870',
                 'sha256:734cf6905eba9e513c01654555d0a97edf05cd6e7da6cd2ec468e926cdbe8b09']:
@@ -100,3 +100,20 @@ class NativeConnectedRegistryTests(unittest.TestCase):
             'de6a39575fb2b0b9388dcd3a5590c275eaef3f8acaf2222c816ec4c4fb8a0fd0')
         self.assertIn(b'qualified lifetime immutability',raw)
         self.assertNotIn(b'sys.meta_path.insert',raw)
+
+
+    def test_previous_connected_registry_bytes_and_missing_schema_failure_are_retained(self):
+        resources=BundledRegistry.resources()
+        raw=resources['registries/native-file-create-candidate-v2.json']
+        self.assertEqual(digest_bytes(raw),'sha256:fd7e6f78790491d59f97820fa23132a95cdd89678548e441464cca728605ca2f')
+        old=RegistrySnapshot.from_document(parse_json_bytes(raw),resources)
+        new=_native_connected_file_create_registry()
+        self.assertEqual(new.to_document()['entries'][:-1],old.to_document()['entries'])
+        exact=old.guarantee_profile_bindings()['phase.native.ntfs.candidate.authority.v1@1.0.0']
+        with self.assertRaises(PhaseError) as caught:old.resolve_guarantee_profile(exact)
+        self.assertEqual(caught.exception.code,'registry.entry_not_found')
+        self.assertIn('mutation-guarantee-profile-1.1.schema.json',str(caught.exception))
+        descriptor=new.resolve_guarantee_profile(exact)
+        self.assertEqual(descriptor['classification'],'qualification_candidate')
+        self.assertEqual(descriptor['provided_guarantees'],[])
+        self.assertEqual(descriptor['conformance'],[])

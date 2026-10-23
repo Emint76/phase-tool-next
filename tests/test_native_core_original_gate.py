@@ -241,7 +241,7 @@ class NativeCoreOriginalGateExt4Tests(unittest.TestCase):
 
     def test_false_planned_original_does_not_bypass_unavailable_profile_coverage(self):
         self.intent['execution_requested']=False;run=self.save_original();self.planned_receipt(run)
-        self.refused('registry.entry_not_found')
+        self.refused('inspection.native_installation_required')
 
     def test_corrupt_noncanonical_and_linked_originals_never_reach_body(self):
         run=self.run_root()

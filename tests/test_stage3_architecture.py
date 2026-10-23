@@ -547,7 +547,9 @@ def test_native_process_inventory_rejects_extra_process_authority(mutation):
  ("'exec', '-i'","'run', '-i'"),
 ])
 def test_native_process_inventory_rejects_changed_spawn_shape(old,new):
-    source=(PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')
+    # Normalize ONLY synthetic mutation input; keep historical parameter IDs.
+    # No source is executed and the inventory still evaluates the mutated AST.
+    source=ast.unparse(ast.parse((PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')))
     assert old in source
     assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,new)))
 

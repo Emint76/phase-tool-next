@@ -104,7 +104,7 @@ class NativeConnectedRegistryTests(unittest.TestCase):
         root=package_resources.files('phase_tool')
         raw=root.joinpath('data/native/native_phase_launcher.py.in').read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(),
-            '2d800f471e146040c2dcd850af5001be225818510d027f7b11438285b23457e8')
+            '284d540d98e34b835e8cd0a0d84db419a44b44ca8a9f357bbb2b6ca8983f42ca')
         self.assertIn(b'qualified lifetime immutability',raw)
         self.assertNotIn(b'sys.meta_path.insert',raw)
 

@@ -247,7 +247,7 @@ class NativeInspectionParentTests(unittest.TestCase):
         result = PhaseApplication()._failure('inspect', PhaseError('synthetic.refused')).payload
         p = self.parent(result)
         self.assertEqual(p.serve()['result'], result)
-        self.assertTrue(p._finished); p._pipe.seal.assert_called_once_with()
+        self.assertTrue(p._finished); p._pipe.seal.assert_not_called()
 
 
 class NativeInspectionMCPTests(unittest.TestCase):

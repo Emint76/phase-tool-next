@@ -10,7 +10,7 @@ from phase_tool import __version__, evidence, installation
 from phase_tool.canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from phase_tool.errors import PhaseError
 from phase_tool.installation import (_native_file_create_candidate_registry,
-    _native_connected_file_create_registry, _native_file_create_installation,
+    _native_connected_file_create_registry, _native_inspection_file_create_registry, _native_file_create_installation,
     _native_qualified_profile)
 from phase_tool.mutation.ntfs.channel_v2 import LinuxNativeChannelV2
 from phase_tool.registry import BundledRegistry, RegistrySnapshot
@@ -84,8 +84,8 @@ class NativeConnectedRegistryTests(unittest.TestCase):
 
     def test_factory_refuses_even_empty_inputs_before_channel_or_evidence_reservation(self):
         # These sentinels detect forbidden calls; neither grants qualification.
-        with (patch.object(installation,'_native_connected_file_create_registry',
-                wraps=_native_connected_file_create_registry) as selected,
+        with (patch.object(installation,'_native_inspection_file_create_registry',
+                wraps=_native_inspection_file_create_registry) as selected,
                 patch.object(LinuxNativeChannelV2,'__init__',side_effect=AssertionError('channel reached')) as channel,
                 patch.object(evidence.EvidenceStore,'__init__',side_effect=AssertionError('evidence reached')) as store):
             with self.assertRaisesRegex(PhaseError,'ntfs.native_profile_not_qualified'):

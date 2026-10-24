@@ -55,6 +55,11 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
             raise PhaseError('bundle.unsupported_version')
         selected_binding = 'bundle_create.v2@1.1.0' if publication_version == '2.0' else CONTRACT_BINDING
         result.contract_binding = selected_binding
+        # Host adapters resolve/lock POSIX targets and own scratch cleanup.
+        # Native publication needs prepared Core input and a fresh read-only inspector.
+        from .installation import _NativeFileCreateInstallation
+        if type(getattr(application, 'installation', None)) is _NativeFileCreateInstallation:
+            raise PhaseError('ntfs.high_level_publication_unavailable')
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:
             raise PhaseError("bundle.invalid_request_id")

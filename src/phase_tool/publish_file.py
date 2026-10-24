@@ -102,6 +102,11 @@ def publish_file(
         capture = copy_and_hash_stream if publication_version == "2.0" else copy_and_hash
         maximum_bytes = FILE_LIMIT if publication_version == "2.0" else MAX_BYTES
         result.contract_binding = contract_binding
+        # Host adapters resolve/lock POSIX targets and own scratch cleanup.
+        # Native publication needs prepared Core input and a fresh read-only inspector.
+        from .installation import _NativeFileCreateInstallation
+        if type(getattr(application, 'installation', None)) is _NativeFileCreateInstallation:
+            raise PhaseError('ntfs.high_level_publication_unavailable')
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:
             raise PhaseError("publish_file.invalid_request_id")

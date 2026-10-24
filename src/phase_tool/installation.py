@@ -628,4 +628,3 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
     factory = _native_file_create_installation if version == '1.1' else _native_lifecycle_installation
     return factory(manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest,
         run_id=run_id,operation_nonce=operation_nonce,channel_id=channel_id,_inspection_only=_inspection_only)
-

@@ -201,11 +201,14 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
     completion = None
     try:
         try:
-            handshake_deadline = (time.perf_counter_ns()+30_000_000_000
-                if _handshake_deadline_ns is None else _handshake_deadline_ns)
-            _require(type(handshake_deadline) is int
-                and 0 < handshake_deadline-time.perf_counter_ns() <= 30_000_000_000,
-                'ntfs.worker_go_deadline')
+            if _version1:
+                handshake_deadline = _handshake_deadline_ns
+                _require(type(handshake_deadline) is int
+                    and 0 < handshake_deadline-time.perf_counter_ns() <= 30_000_000_000,
+                    'ntfs.worker_go_deadline')
+            else:
+                # Preserve the original file1 READY/GO/completion clock order.
+                handshake_deadline = time.perf_counter_ns()+30_000_000_000
             binding = _version1_context(context) if _version1 else _context(context)
             grant = _grant(grant_data)
             _require(type(content) is bytes and len(content) <= (16*1024**2 if _version1 else 1024**2), 'mechanism.content_too_large')

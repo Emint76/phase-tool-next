@@ -51,7 +51,8 @@ class LinuxNativeChannel:
     The 30 s deadline bounds waiting in this single-file control protocol; it
     neither cancels accepted OS work nor establishes a hard process deadline.
     """
-    _PROTOCOL_VERSION = '1.0'  # Closed implementation generation; never request selected.
+    _PROTOCOL_VERSION = '1.0'
+    _EXECUTE_KINDS = frozenset({'execute_file_create'})  # Closed implementation generation; never request selected.
 
     def __init__(self, channel_id: str):
         _require(not getattr(self, '_initialization_attempted', False), 'ntfs.channel_initialization_consumed')
@@ -165,7 +166,7 @@ class LinuxNativeChannel:
             acquired = True
             self._usable()
             self._request(kind, run_id, intent_digest, payload)
-            _require(kind != 'execute_file_create' or not self._possible_dispatch, 'ntfs.channel_execution_consumed')
+            _require(kind not in self._EXECUTE_KINDS or not self._possible_dispatch, 'ntfs.channel_execution_consumed')
             common = {'protocol': 'phase.native.pipe', 'version': self._PROTOCOL_VERSION, 'channel_id': self.channel_id,
                       'sequence': self._sequence + 1, 'kind': kind, 'run_id': run_id, 'intent_digest': intent_digest}
             raw = canonical_bytes(common | payload)
@@ -173,7 +174,7 @@ class LinuxNativeChannel:
             deadline = time.monotonic() + 30.0
             self._sequence += 1
             # Conservative and sticky, before any possible mutating frame write.
-            if kind == 'execute_file_create':
+            if kind in self._EXECUTE_KINDS:
                 self._possible_dispatch = True
             self._write(f'{len(raw):08x}\n'.encode('ascii') + raw + b'\n', deadline)
             header = self._read(9, deadline)

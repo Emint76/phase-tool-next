@@ -44,6 +44,7 @@ class WindowsPipeFrames:
         self._initialization_attempted = True
         self._failed = True
         self._sealed = False
+        self._eof_attempted = False
         self._owner = os.getpid(), threading.get_ident()
         self._gate = threading.Lock()
         self._streams = reader, writer  # Strong refs; lifetime remains owner's duty.
@@ -214,6 +215,66 @@ class WindowsPipeFrames:
         # A consumer may only reduce the control bound; reject length from the
         # header before reading or allocating its body. Terminal errors stay so.
         return self._frame(False, None, deadline_ns, maximum_bytes)
+
+    def _expect_eof(self, deadline_ns: int) -> dict:
+        """Finite trailing-byte check; actual peer HANDLE exit is separate.
+
+        Only a real empty binary read is accepted, never a frame exception or
+        a producer end token. Existing full descriptor/mode checks stay strict;
+        unavailable metadata after disconnect is failure, not inferred EOF.
+        This consumes the read attempt and admits no replacement/second stream.
+        """
+        from .uncertainty import _diagnostic
+        acquired,primary = False,None
+        try:
+            self._usable()
+            _require(not self._eof_attempted,'ntfs.pipe_eof_attempt_consumed')
+            self._eof_attempted = True
+            acquired = self._gate.acquire(blocking=False)
+            _require(acquired,'ntfs.pipe_reentrant')
+            _require(type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 30_000_000_000,
+                'ntfs.pipe_invalid_deadline')
+            while True:
+                self._time(deadline_ns)
+                fd = self._identity(0)
+                self._identity(1)
+                self._time(deadline_ns)
+                try:
+                    data = os.read(fd,1)
+                except OSError as error:
+                    if error.errno not in (errno.EAGAIN,errno.EWOULDBLOCK):
+                        raise
+                    self._pause(deadline_ns)
+                    continue
+                self._usable()
+                self._time(deadline_ns)
+                _require(type(data) is bytes and data == b'','ntfs.pipe_trailing_bytes')
+                self._identity(0)
+                self._identity(1)
+                self._time(deadline_ns)
+                break
+        except BaseException as error:
+            self._failed,primary = True,error
+        finally:
+            if acquired:
+                try:self._gate.release()
+                except BaseException as error:
+                    self._failed = True
+                    raise PhaseError('ntfs.pipe_finalization_unknown',details={
+                        'primary':None if primary is None else _diagnostic(primary),
+                        'finalization':_diagnostic(error)}) from primary
+        if primary is None:
+            try:
+                self._identity(0)
+                self._identity(1)
+                self._usable()
+                self._time(deadline_ns)
+            except BaseException as error:
+                self._failed,primary = True,error
+        if primary is not None:
+            raise PhaseError('ntfs.pipe_eof_unverified',details={'primary':_diagnostic(primary),
+                'peer_exit_established':False,'effect_success_established':False}) from primary
+        return {'eof_observed':True,'peer_exit_established':False,'effect_success_established':False}
 
     def seal(self) -> None:
         was_sealed = self._sealed

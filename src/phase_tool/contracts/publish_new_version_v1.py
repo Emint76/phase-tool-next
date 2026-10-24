@@ -293,20 +293,7 @@ class PublishNewVersionHook:
         root = Path(root_bindings[effect["target"]["root_binding"]])
         current, archive = self._observe_pair(
             root, effect["target"]["relative_locator"], effect["archive_target"]["relative_locator"])
-        ok = (
-            current == {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]}
-            and archive == {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]}
-        )
-        return (
-            "pass" if ok else "fail",
-            "validation.pass" if ok else "verification.result_mismatch",
-            {
-                "current": {"locator": effect["target"]["relative_locator"], "digest": effect["content_digest"], "length": effect["content_length"]},
-                "archive": {"locator": effect["archive_target"]["relative_locator"], "digest": effect["archive_digest"], "length": effect["archive_length"]},
-            },
-            {"current": current, "archive": archive},
-            [] if ok else ["verification.result_mismatch"],
-        )
+        return _postcondition_result(effect,current,archive)
 
     def inspect_receipt_result(
         self,
@@ -391,6 +378,65 @@ class PublishNewVersionHook:
     ) -> str:
         del registry
         return self._inspect_plan_state(plan, root_bindings)
+
+
+def _postcondition_result(effect, current, archive):
+    ok = (
+        current == {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]}
+        and archive == {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]}
+    )
+    return (
+        "pass" if ok else "fail",
+        "validation.pass" if ok else "verification.result_mismatch",
+        {
+            "current": {"locator": effect["target"]["relative_locator"], "digest": effect["content_digest"], "length": effect["content_length"]},
+            "archive": {"locator": effect["archive_target"]["relative_locator"], "digest": effect["archive_digest"], "length": effect["archive_length"]},
+        },
+        {"current": current, "archive": archive},
+        [] if ok else ["verification.result_mismatch"],
+    )
+
+
+def _saved_precondition_expectation(identifier: str, item: Mapping[str, Any], plan: Mapping[str, Any]) -> tuple[Any, Any]:
+    """Pure saved claim vocabulary, never a fresh target observation or retry grant.
+
+    Reuse the contract's existing classifier. The original semantic parser still
+    checks exact candidate/plan/frozen/native/installation bindings before this
+    function is useful; matching saved claims do not authenticate their producer.
+    """
+    if identifier == 'publish_new_version.candidate_v1':
+        return 'publish_candidate_valid','publish_candidate_valid'
+    if identifier == 'publish_new_version.result_v1':
+        return 'prior_phases_pass',None
+    if identifier != 'publish_new_version.preconditions_v1':
+        raise ValueError('unsupported version1 saved validator')
+    if len(plan['effects']) != 1 or plan['effects'][0]['kind'] != 'publish_new_version':
+        raise ValueError('version1 saved effect mismatch')
+    effect = plan['effects'][0]
+    actual = item['actual']
+    if type(actual) is not dict or set(actual) != {'current','archive'}:
+        raise ValueError('version1 saved states shape')
+    for state in actual.values():
+        if (type(state) is not dict or set(state) != {'exists','digest','length'}
+            or type(state['exists']) is not bool):
+            raise ValueError('version1 saved state shape')
+        if state['exists']:
+            digest = state['digest']
+            if (type(state['length']) is not int or not 0 <= state['length'] <= 16*1024**2
+                or type(digest) is not str or not digest.startswith('sha256:')
+                or len(digest) != 71 or any(c not in '0123456789abcdef' for c in digest[7:])):
+                raise ValueError('version1 saved present state')
+        elif state['digest'] is not None or state['length'] is not None:
+            raise ValueError('version1 saved absent state')
+    state = _classify_states(current=actual['current'],archive=actual['archive'],
+        before_digest=effect['archive_digest'],before_length=effect['archive_length'],
+        after_digest=effect['content_digest'],after_length=effect['content_length'])
+    expected = {'no_effect_observed':'current_before_archive_absent',
+        'archived_not_published':'current_before_archive_exact',
+        'published_not_finalized':'current_after_archive_exact'}.get(state)
+    if expected is None:
+        raise ValueError('version1 saved state conflict')
+    return expected,actual
 
 
 def create_contract_hook() -> PublishNewVersionHook:

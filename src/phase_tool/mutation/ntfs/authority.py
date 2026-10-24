@@ -18,6 +18,7 @@ from ...paths import safe_relative_locator
 from ...planning import _build_static_plan_after_root_checks, _idempotency_from_root_records, _validate_logical_plan
 from ..guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from .channel_v2 import LinuxNativeChannelV2
+from .channel_v3 import LinuxNativeChannelV3
 from .native import NativeIdentity, _require
 from .worker import _grant
 from .parent_result import _observation, validate_parent_completion, validate_parent_finalization
@@ -43,11 +44,17 @@ class _NativeFileCreateAuthority:
         self._inspection_only = _inspection_only
         from ...installation import _NativeFileCreateReadBinding
         _require(type(read_binding) is _NativeFileCreateReadBinding
-            and type(profile) is GuaranteeProfileBinding and type(channel) is LinuxNativeChannelV2,
+            and type(profile) is GuaranteeProfileBinding and type(channel) in (LinuxNativeChannelV2,LinuxNativeChannelV3),
             'ntfs.closed_native_installation_required')
         _require(channel._inspection_only is _inspection_only, 'ntfs.fixed_role_mismatch')
         self.read_binding, self.profile, self.channel = read_binding, profile, channel
         self._manifest = parse_json_bytes(read_binding.manifest_bytes)
+        self._version1 = self._manifest['contract']['id'] == 'publish_new_version.v1'
+        _require((not self._version1 or self._manifest['native_read_installation_version'] == '1.2')
+            and (type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1
+                if self._manifest['native_read_installation_version'] == '1.2'
+                else type(channel) is LinuxNativeChannelV2 and not self._version1),
+            'ntfs.fixed_role_mismatch')
         from ...evidence import validate_run_id
         validate_run_id(run_id)
         self._run_id = run_id
@@ -66,6 +73,7 @@ class _NativeFileCreateAuthority:
         self._dispatch_attempted = False
         self._parent_safety_established = False
         self._observations = {}
+        self._version1_post_attempted = False
         projections = parse_json_bytes(root_projections)
         _require(type(root_projections) is bytes and canonical_bytes(projections) == root_projections
             and type(projections) is dict, 'ntfs.installed_root_projections_required')
@@ -119,12 +127,13 @@ class _NativeFileCreateAuthority:
 
     def require_contract(self, contract):
         self._usable()
-        _require({'id': contract.document['identity']['id'], 'version': contract.document['identity']['version'],
-            'package_digest': contract.package_digest} == self._manifest['contract']
-            and contract.document['operation']['intent'] == 'create'
-            and contract.document['operation']['maximum_effects'] == 1
-            and contract.document['operation']['allowed_effects'] == ['exclusive_create']
-            and contract.document['operation']['mechanism'] == self._manifest['mechanism'],
+        operation = contract.document['operation']
+        _require({'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
+            'package_digest':contract.package_digest} == self._manifest['contract']
+            and operation['intent'] == ('publish_new_version' if self._version1 else 'create')
+            and operation['maximum_effects'] == 1
+            and operation['allowed_effects'] == (['publish_new_version'] if self._version1 else ['exclusive_create'])
+            and operation['mechanism'] == self._manifest['mechanism'],
             'ntfs.original_single_effect_required')
         mechanisms = [contract.document['operation']['mechanism']]
         _require(not contract.document['operation'].get('effect_mechanisms'),
@@ -165,14 +174,16 @@ class _NativeFileCreateAuthority:
         self.require_contract(contract)
         self.require_request_roots(roots, Path(self._manifest['evidence_root']))
         plan = _build_static_plan_after_root_checks(contract, candidate, frozen, results,
-            root_bindings=roots, run_id=run_id, generated_at=timestamp, request_digest=request_digest)
+            root_bindings=roots, run_id=run_id, generated_at=timestamp, request_digest=request_digest,
+            _native_authority=self)
         _validate_logical_plan(plan, contract, self.registry)
-        _require(len(plan['effects']) == 1 and plan['effects'][0]['content_length'] <= 1024**2,
+        _require(len(plan['effects']) == 1 and plan['effects'][0]['content_length'] <= (16*1024**2 if self._version1 else 1024**2),
             'mechanism.content_too_large')
         return plan
 
     def observe(self, *, run_id, root_binding, locator, expected_identity=None):
         self._usable()
+        _require(not self._version1,'ntfs.original_closed_role_required')
         grant = parse_json_bytes(self._grant_bytes)
         _require(root_binding == grant['root_binding'], 'ntfs.effect_grant_mismatch')
         locator = safe_relative_locator(locator)
@@ -190,6 +201,52 @@ class _NativeFileCreateAuthority:
         if slot is not None:
             self._observations[slot] = canonical_bytes({'run_id': run_id, 'observation': value})
         return value
+
+    def hook_root_binding(self, root):
+        self._usable()
+        projections = parse_json_bytes(self._projections_bytes)
+        matches = [key for key,value in projections.items() if str(root) == value]
+        _require(len(matches) == 1,'ntfs.installed_root_projection_mismatch')
+        return matches[0]
+
+    def observe_advisory(self, *, root_binding, locator, expected_identity=None):
+        self._usable()
+        _require(self._version1,'ntfs.original_closed_role_required')
+        grant = parse_json_bytes(self._grant_bytes)
+        _require(root_binding == grant['root_binding'],'ntfs.effect_grant_mismatch')
+        locator = safe_relative_locator(locator)
+        from .version1_observation import validate_version1_observation
+        reply = self.channel.observe_file(run_id=self._run_id,root_binding=root_binding,
+            locator=locator,expected_identity=expected_identity)
+        value = validate_version1_observation(reply,grant,locator)
+        if expected_identity is not None:
+            _require(value['native']['exists'] is True
+                and value['native']['native_identity'] == expected_identity,'ntfs.observer_identity_mismatch')
+        # Never enter a causal slot: planning, prechecks, prior classification,
+        # before-effect and independent inspect each obtain their own samples.
+        return value
+
+    def observe_version1_post_pair(self, *, run_id, effect):
+        self._execution_required()
+        self._usable()
+        _require(self._version1 and run_id == self._run_id and self._dispatch_attempted
+            and self._parent_safety_established and not self._version1_post_attempted,
+            'ntfs.native_parent_completion_unresolved')
+        # Consume before any fallible expected-ID check/read/validation. A
+        # failed pair has no positive record and can never obtain a new slot.
+        self._version1_post_attempted = True
+        expected = self.expected_after_identity(effect)
+        _require(type(expected) is dict and set(expected) == {'current','archive'},
+            'ntfs.worker_observer_mismatch')
+        pair = {'observation_pair_version':'1.0',
+            'current':self.observe_advisory(root_binding=effect['target']['root_binding'],
+                locator=effect['target']['relative_locator'],expected_identity=expected['current']),
+            'archive':self.observe_advisory(root_binding=effect['archive_target']['root_binding'],
+                locator=effect['archive_target']['relative_locator'],expected_identity=expected['archive'])}
+        from .parent_result import validate_version1_pair
+        pair = validate_version1_pair(pair,parse_json_bytes(self._grant_bytes),effect)
+        self._observations['post_operation'] = canonical_bytes({'run_id':run_id,'observation':pair})
+        return pair
 
     def execute(self, plan, contract, frozen_inputs, roots, intent_path, *, timestamp, receipt_validator, expected_intent_digest):
         """Only EffectBroker invokes this after selecting the exact closed role."""
@@ -215,14 +272,24 @@ class _NativeFileCreateAuthority:
         frozen = frozen_inputs.get(effect['input_binding'])
         _require(frozen is not None and frozen.digest == digest_bytes(parsed.content_bytes)
             and frozen.length == len(parsed.content_bytes), 'ntfs.original_content_binding_mismatch')
+        if self._version1:
+            from ...contracts import load_contract_hook
+            hook = load_contract_hook(contract,_native_authority=self)
+            hook.before_effect(parsed_intent['candidate']['storage']['value'],contract,effect,
+                frozen_inputs,roots[effect['target']['root_binding']],Path(self._manifest['evidence_root']),
+                root_bindings=roots)
         self._dispatch_attempted = True
+        from .parent_result import validate_version1_parent_completion,validate_version1_parent_finalization
+        completion_check = validate_version1_parent_completion if self._version1 else validate_parent_completion
+        finalization_check = validate_version1_parent_finalization if self._version1 else validate_parent_finalization
         validated_receipts = []
         try:
-            reply = self.channel.execute_file_create(run_id=plan['run_id'], intent_digest=intent_digest)
+            execute = self.channel.execute_version1 if self._version1 else self.channel.execute_file_create
+            reply = execute(run_id=plan['run_id'],intent_digest=intent_digest)
             # Retain exact response BEFORE any validation that could fail. The
             # Core wrapper, not this role, owns the single proof attachment.
             self._response_bytes = canonical_bytes(reply)
-            checked = validate_parent_completion(reply, context=context,
+            checked = completion_check(reply, context=context,
                 grant_data=parse_json_bytes(parsed.grant_bytes), effect=effect)
             receipt = checked['effect_receipt']
             receipt_validator.validate(receipt)
@@ -232,7 +299,7 @@ class _NativeFileCreateAuthority:
             # observation/owner failures. possible_dispatch still forces the
             # existing Core to classify interruption as indeterminate.
             validated_receipts.append(receipt)
-            validate_parent_finalization(reply, checked,
+            finalization_check(reply, checked,
                 grant_data=parse_json_bytes(parsed.grant_bytes), effect=effect)
             self._parent_safety_established = True
             self._server_ingress_sealed = True
@@ -260,7 +327,7 @@ class _NativeFileCreateAuthority:
                         # independently schema/context-valid partial receipt.
                         partial=remote['details']['parent_partial']
                         self._response_bytes=canonical_bytes(partial)
-                        checked=validate_parent_completion(partial,context=context,
+                        checked=completion_check(partial,context=context,
                             grant_data=parse_json_bytes(parsed.grant_bytes),effect=effect)
                         receipt=checked['effect_receipt']
                         receipt_validator.validate(receipt)
@@ -282,6 +349,19 @@ class _NativeFileCreateAuthority:
         _require(physical['effect_id'] == effect['effect_id']
             and physical['locator'] == effect['target']['relative_locator'],
             'ntfs.worker_observer_mismatch')
+        if self._version1:
+            _require(physical['archive_locator'] == effect['archive_target']['relative_locator'],
+                'ntfs.worker_observer_mismatch')
+            from .native import NativeIdentity
+            current,archive = physical['after'],physical['archive_after']
+            _require(type(current) is dict and type(archive) is dict,
+                'ntfs.worker_observer_mismatch')
+            current_id = NativeIdentity.parse(current['native_identity']) if current['exists'] else None
+            archive_id = NativeIdentity.parse(archive['native_identity']) if archive['exists'] else None
+            _require(current_id is None or archive_id is None or current_id != archive_id,
+                'ntfs.version1_current_archive_alias')
+            return {'current':None if current_id is None else current_id.as_dict(),
+                'archive':None if archive_id is None else archive_id.as_dict()}
         after = physical['after']
         return None if after is None else after['native_identity']
 

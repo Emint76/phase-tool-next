@@ -26,7 +26,7 @@ import zipimport
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
 from .native import _require
-from .handoff import ParsedNativeFileCreate
+from .handoff import ParsedNativeFileCreate,ParsedNativeVersion1
 
 
 def _normalized_linux_contour(value,keys):
@@ -80,7 +80,7 @@ class _NativeAcceptedLaunch:
             and invocation['run_id'] not in {'.','..'}
             and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
                 for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version')=='1.1'
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2'}
             and type(manifest.get('root_grants')) is list and len(manifest['root_grants'])==1,
             'ntfs.accepted_launch_binding_required')
         self._owner=os.getpid(),threading.get_ident()
@@ -112,6 +112,12 @@ class _NativeAcceptedLaunch:
     def installation_digest(self):return self._manifest_digest
     @property
     def root_grant(self):return self.manifest['root_grants'][0]
+
+    @property
+    def _version1(self):
+        manifest = self.manifest
+        return (manifest['native_read_installation_version'] == '1.2'
+            and manifest['contract']['id'] == 'publish_new_version.v1')
 
     def check_runtime(self):
         _require(self._owner==(os.getpid(),threading.get_ident())
@@ -287,10 +293,17 @@ class _NativeAcceptedLaunch:
         _require(process is self._worker,'ntfs.owned_creation_process_required')
         return self._pipe(process)
 
-    def send_worker_original(self,pipe,parsed):
+    def send_worker_original(self,pipe,parsed,*,_handshake_deadline_ns=None):
         from .windows_pipe import WindowsPipeFrames
-        _require(type(pipe) is WindowsPipeFrames and type(parsed) is ParsedNativeFileCreate,
-            'ntfs.original_parsed_data_required')
+        _require(type(pipe) is WindowsPipeFrames,'ntfs.original_parsed_data_required')
+        if self._version1:
+            from .original_transfer import original_version1_frames
+            _require(type(parsed) is ParsedNativeVersion1 and type(_handshake_deadline_ns) is int,
+                'ntfs.version1_owned_deadline_required')
+            for raw in original_version1_frames(parsed,channel_id=self.channel_id,leg='worker',query_digest=None):
+                pipe.send_frame(raw,_handshake_deadline_ns)
+            return
+        _require(type(parsed) is ParsedNativeFileCreate,'ntfs.original_parsed_data_required')
         value={'native_worker_original_version':'1.0','channel_id':self.channel_id,'context':parse_json_bytes(parsed.context_bytes),
             'grant':parse_json_bytes(parsed.grant_bytes),'effect':parse_json_bytes(parsed.effect_bytes),
             'content_base64':base64.b64encode(parsed.content_bytes).decode('ascii'),'timestamp':parsed.timestamp}
@@ -349,12 +362,17 @@ class _NativeAcceptedLaunch:
             request={'native_original_query_version':'1.0','action':action,'run_id':self.run_id,
                 'intent_digest':digest,'operation_nonce':self.operation_nonce,'channel_id':self.channel_id,
                 'installation_digest':self.installation_digest}
-            pipe.send_frame(canonical_bytes(request),time.perf_counter_ns()+30_000_000_000)
-            raw,_=pipe.receive_frame(time.perf_counter_ns()+30_000_000_000)
-            answer=parse_json_bytes(raw,maximum_bytes=2*1024**2)
-            _require(type(answer) is dict and set(answer)=={'query','value','required_evidence_reads_finalized'}
-                and answer['query']==request and answer['required_evidence_reads_finalized'] is True
-                and canonical_bytes(answer)==raw,'ntfs.original_query_binding_mismatch')
+            deadline = time.perf_counter_ns()+30_000_000_000
+            pipe.send_frame(canonical_bytes(request),deadline)
+            if self._version1 and action == 'read_executing':
+                answer = _receive_version1_original(self,pipe,request,deadline)
+            else:
+                raw,_=pipe.receive_frame(time.perf_counter_ns()+30_000_000_000)
+                answer=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+            if type(answer) is not ParsedNativeVersion1:
+                _require(type(answer) is dict and set(answer)=={'query','value','required_evidence_reads_finalized'}
+                    and answer['query']==request and answer['required_evidence_reads_finalized'] is True
+                    and canonical_bytes(answer)==raw,'ntfs.original_query_binding_mismatch')
         except BaseException as error:
             primary=error
         finally:
@@ -371,10 +389,13 @@ class _NativeAcceptedLaunch:
                     except BaseException:pass
         if primary is not None:raise primary
         self.check_runtime()
-        return answer['value']
+        return answer if type(answer) is ParsedNativeVersion1 else answer['value']
 
     def read_original(self,intent_digest):
         value=self._query_original('read_executing',intent_digest)
+        if self._version1:
+            _require(type(value) is ParsedNativeVersion1,'ntfs.original_version1_tuple_required')
+            return value
         _require(type(value) is dict and set(value)=={'context','grant','effect','content_base64','timestamp'},
             'ntfs.original_query_shape')
         content=base64.b64decode(value['content_base64'],validate=True)
@@ -425,3 +446,19 @@ class _NativeAcceptedLaunch:
             actual=parse_json_bytes(result.stdout,maximum_bytes=1024**2)
             _require(canonical_bytes(_normalized_linux_contour(actual,keys))==canonical_bytes(declared),'ntfs.accepted_linux_contour_mismatch')
         self._linux_contours_checked=True
+
+def _receive_version1_original(launch,pipe,request,deadline):
+    from .original_transfer import _Version1OriginalDecoder
+    decoder = _Version1OriginalDecoder(channel_id=launch.channel_id,leg='reader',
+        query_digest=digest_bytes(canonical_bytes(request)),
+        expected_context={name:request[name] for name in
+            ('run_id','intent_digest','operation_nonce','installation_digest')},
+        expected_grant=canonical_bytes(launch.root_grant))
+    while not decoder.ended:
+        raw,_ = pipe.receive_frame(deadline)
+        decoder.feed(raw)
+    parsed = decoder.finish()
+    # A valid end token alone is insufficient. The caller additionally waits
+    # on the same retained actual process HANDLE and finalizes all owners.
+    pipe._expect_eof(deadline)
+    return parsed

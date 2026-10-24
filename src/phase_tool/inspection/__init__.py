@@ -235,9 +235,17 @@ def _inspect_missing_receipt_state(
     contract: ResolvedContract,
     root_bindings: Mapping[str, Path],
     registry: RegistrySnapshot,
+    *, _native_authority: object | None = None,
 ) -> str | None:
     try:
-        validate_static_plan(plan, contract, root_bindings, registry)
+        if _native_authority is None:
+            validate_static_plan(plan, contract, root_bindings, registry)
+        else:
+            _native_authority.require_contract(contract)
+            _native_authority.require_request_roots(root_bindings,
+                Path(parse_json_bytes(_native_authority.read_binding.manifest_bytes)['evidence_root']))
+            from ..planning import _validate_logical_plan
+            _validate_logical_plan(plan,contract,registry)
         return hook.inspect_missing_receipt_result(plan, root_bindings, registry)
     except PhaseError as exc:
         if exc.code != "plan.root_unavailable":
@@ -250,7 +258,13 @@ def _inspect_missing_receipt_state(
 def _resolved_hook_roots(
     contract: ResolvedContract,
     root_bindings: Mapping[str, Path],
+    *, _native_authority: object | None = None,
 ) -> dict[str, Path]:
+    if _native_authority is not None:
+        _native_authority.require_contract(contract)
+        _native_authority.require_request_roots(root_bindings,
+            Path(parse_json_bytes(_native_authority.read_binding.manifest_bytes)['evidence_root']))
+        return dict(root_bindings)  # Opaque lexical projections, never POSIX target roots.
     resolved = dict(root_bindings)
     for declaration in contract.document["write_scope"]["roots"]:
         binding_id = declaration["binding_id"]
@@ -348,7 +362,7 @@ def inspect_run(
         _verify_bound_pre_validators(run_root, intent)
         _verify_intent_blobs(run_root, intent, plan)
         state_classification = None
-        hook = load_contract_hook(contract)
+        hook = load_contract_hook(contract,**({} if _native_authority is None else {'_native_authority':_native_authority}))
         if hook is not None and hasattr(hook, "inspect_missing_receipt_result"):
             state_classification = _inspect_missing_receipt_state(
                 hook,
@@ -356,6 +370,7 @@ def inspect_run(
                 contract,
                 root_bindings or {},
                 registry,
+                **({} if _native_authority is None else {'_native_authority':_native_authority}),
             )
         from .recovered import inspect_missing_recovery
         recovery = ({'inspection_status': 'indeterminate',
@@ -484,7 +499,8 @@ def inspect_run(
         if attachment_digests != claimed:
             raise PhaseError("inspection.attachment_set_mismatch")
         _verify_intent_blobs(run_root, intent, plan)
-        hook_for_plan = load_contract_hook(contract_for_plan)
+        hook_for_plan = load_contract_hook(contract_for_plan,
+            **({} if _native_authority is None else {'_native_authority':_native_authority}))
         needs_state_classification = (
             receipt["terminal_status"] not in {"succeeded_verified", "validated_planned"}
             or receipt["evidence"]["finalization_status"] != "finalized"
@@ -496,6 +512,7 @@ def inspect_run(
                 contract_for_plan,
                 root_bindings or {},
                 registry,
+                **({} if _native_authority is None else {'_native_authority':_native_authority}),
             )
     canonical_result = receipt["canonical_result"]
     if canonical_result is not None:
@@ -540,8 +557,16 @@ def inspect_run(
             if _native_authority is not None:
                 if appended is not None or native_proof is None:
                     raise PhaseError('inspection.native_binding_mismatch')
-                observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
-                    locator=canonical_result['locator'], expected_identity=native_proof['target_identity'])
+                if contract.document['identity']['id'] == 'publish_new_version.v1':
+                    targets = native_proof['target_identity']
+                    if receipt['execution_disposition'] != 'reused_existing' and (
+                            type(targets) is not dict or set(targets) != {'current','archive'}):
+                        raise PhaseError('inspection.native_identity_mismatch')
+                    observation = _native_authority.observe_advisory(root_binding=root_id,
+                        locator=canonical_result['locator'],expected_identity=None if targets is None else targets['current'])
+                else:
+                    observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
+                        locator=canonical_result['locator'], expected_identity=native_proof['target_identity'])
                 streamed_state = observation['state']
                 native_target_identity = observation['native']['native_identity']
             else:
@@ -628,44 +653,56 @@ def inspect_run(
                     raise PhaseError('inspection.native_identity_mismatch')
             contract_result = prior.get("contract_result")
         else:
-            hook = load_contract_hook(contract)
+            native_context = {} if _native_authority is None else {'_native_authority':_native_authority}
+            if (_native_authority is not None and contract.document['identity']['id'] == 'publish_new_version.v1'):
+                if native_proof is None or native_proof['target_identity'] is None:
+                    raise PhaseError('inspection.native_identity_mismatch')
+                native_context['_native_expected_targets'] = canonical_bytes(native_proof['target_identity'])
+            hook = load_contract_hook(contract,**native_context)
             if hook is not None:
                 setattr(hook, "_registry", registry)
-                hook_roots = _resolved_hook_roots(contract, root_bindings or {})
+                hook_roots = _resolved_hook_roots(contract, root_bindings or {},
+                    **({} if _native_authority is None else {'_native_authority':_native_authority}))
                 try:
-                    if data is None:
-                        if not hasattr(hook, "inspect_stream_result"):
-                            raise PhaseError("contract.hook_invalid")
-                        contract_result = hook.inspect_stream_result(
-                            stream_observation,
-                            state["digest"],
-                            target_root,
-                            receipt_digest,
-                            registry,
-                            evidence_root=root,
-                        )
+                    if _native_authority is not None:
+                        if not hasattr(hook,'inspect_native_result'):
+                            raise PhaseError('contract.hook_invalid')
+                        contract_result = hook.inspect_native_result(receipt,plan,target_root,registry,root,
+                            root_bindings=hook_roots)
                     else:
-                        contract_result = hook.inspect_result(
-                            data,
-                            state["digest"],
-                            target_root,
-                            receipt_digest,
-                            registry,
-                            evidence_root=root,
-                        )
-                    if hasattr(hook, "inspect_receipt_result"):
-                        receipt_result = hook.inspect_receipt_result(
-                            receipt,
-                            plan,
-                            target_root,
-                            registry,
-                            root,
-                            root_bindings=hook_roots,
-                        )
-                        if isinstance(contract_result, dict) and isinstance(receipt_result, dict):
-                            contract_result = dict(contract_result) | receipt_result
+                        if data is None:
+                            if not hasattr(hook, "inspect_stream_result"):
+                                raise PhaseError("contract.hook_invalid")
+                            contract_result = hook.inspect_stream_result(
+                                stream_observation,
+                                state["digest"],
+                                target_root,
+                                receipt_digest,
+                                registry,
+                                evidence_root=root,
+                            )
                         else:
-                            contract_result = receipt_result
+                            contract_result = hook.inspect_result(
+                                data,
+                                state["digest"],
+                                target_root,
+                                receipt_digest,
+                                registry,
+                                evidence_root=root,
+                            )
+                        if hasattr(hook, "inspect_receipt_result"):
+                            receipt_result = hook.inspect_receipt_result(
+                                receipt,
+                                plan,
+                                target_root,
+                                registry,
+                                root,
+                                root_bindings=hook_roots,
+                            )
+                            if isinstance(contract_result, dict) and isinstance(receipt_result, dict):
+                                contract_result = dict(contract_result) | receipt_result
+                            else:
+                                contract_result = receipt_result
                 except OSError as exc:
                     raise PhaseError("inspection.target_unavailable") from exc
         target_verified = True

@@ -163,6 +163,7 @@ def _build_static_plan_after_root_checks(
     run_id: str,
     generated_at: str,
     request_digest: str | None = None,
+    _native_authority: object | None = None,
 ) -> dict[str, Any]:
     """Construct the same plan once; callers retain root and logical checks.
 
@@ -252,7 +253,8 @@ def _build_static_plan_after_root_checks(
             "durability_policy_id": "file_data_synced",
             "on_failure": "stop_and_classify",
         })
-    elif (hook := load_contract_hook(contract)) is not None:
+    elif (hook := load_contract_hook(contract, **({} if _native_authority is None else
+        {"_native_authority":_native_authority}))) is not None:
         try:
             hook_effects = hook.build_effects(
                 contract,

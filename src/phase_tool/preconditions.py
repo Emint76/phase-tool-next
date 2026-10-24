@@ -69,16 +69,25 @@ def verify_saved_precondition_results(registry, contract, intent: dict, plan: di
             raise ValueError('result binding')
         # These exact builtins emit no external observations/attachments.
         identifier = expected_binding['id']
-        expected = {'validator.exact_binding_v1': 'exact_registry_binding',
-                    'fixture.create.candidate_v1': 'schema_valid',
-                    'bundle.candidate_v1': 'schema_valid',
-                    'validator.frozen_blob_v1': content_digest,
-                    'validator.destination_absent_v1': 'absent',
-                    'validator.result_digest_v1': 'prior_phases_pass',
-                    'bundle.result_v1': 'prior_phases_pass'}[identifier]
         post = declaration['phase'] == 'post_operation'
+        if (contract.document['identity']['id'] == 'publish_new_version.v1'
+            and identifier in {'publish_new_version.candidate_v1','publish_new_version.preconditions_v1',
+                'publish_new_version.result_v1'}):
+            # The existing contract owns its saved-state semantics. This pure
+            # delegation supplies no native context, target access or recovery.
+            from .contracts.publish_new_version_v1 import _saved_precondition_expectation
+            expected,actual = _saved_precondition_expectation(identifier,item,plan)
+        else:
+            expected = {'validator.exact_binding_v1': 'exact_registry_binding',
+                        'fixture.create.candidate_v1': 'schema_valid',
+                        'bundle.candidate_v1': 'schema_valid',
+                        'validator.frozen_blob_v1': content_digest,
+                        'validator.destination_absent_v1': 'absent',
+                        'validator.result_digest_v1': 'prior_phases_pass',
+                        'bundle.result_v1': 'prior_phases_pass'}[identifier]
+            actual = None if post else expected
         if (item['status'] != ('not_reached' if post else 'pass')
             or item['code'] != ('validation.not_reached' if post else 'validation.pass')
-            or item['expected'] != expected or item['actual'] != (None if post else expected)):
+            or item['expected'] != expected or item['actual'] != actual):
             raise ValueError('result content')
     return digest_bytes(data)

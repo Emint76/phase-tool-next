@@ -46,11 +46,13 @@ def _close_worker_stdio(primary):
         raise primary
 
 
-def run_native_worker(launch,original,initial_pipe):
+def run_native_worker(launch,original,initial_pipe,*,_transfer_deadline_ns=None):
     """Only accepted Popen parent provides this owned stdin; no public service."""
     from .worker import run_file_create_worker
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
+    if launch._version1:
+        return _run_version1_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
     _require(type(original) is dict and set(original)=={'native_worker_original_version','context',
         'grant','effect','content_base64','timestamp','channel_id'}
         and original['native_worker_original_version']=='1.0'
@@ -87,7 +89,7 @@ def _linux_stdio_identity():
     return tuple(LinuxNativeChannel._pipe(fd) for fd in (0,1))
 
 
-def _deliver_linux_frame(value,identities):
+def _deliver_linux_frame(value,identities,*,_deadline=None):
     """Delivery only after the authority's irreversible seal; cannot dispatch.
 
     Reuses existing frame shape/readiness/pipeline checks without reopening a
@@ -99,7 +101,9 @@ def _deliver_linux_frame(value,identities):
     _require(0<len(raw)<=2*1024**2,'ntfs.channel_frame_limit')
     wire=f'{len(raw):08x}\n'.encode('ascii')+raw+b'\n'
     offset=0
-    deadline=time.monotonic()+30
+    deadline=time.monotonic()+30 if _deadline is None else _deadline
+    _require(type(deadline) is float and 0 < deadline-time.monotonic() <= 30,
+        'ntfs.channel_deadline_expired')
     while offset<len(wire):
         _require(tuple(LinuxNativeChannel._pipe(fd) for fd in (0,1))==identities,
             'ntfs.channel_descriptor_changed')
@@ -116,8 +120,8 @@ def _deliver_linux_frame(value,identities):
 def run_native_core(launch):
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
-    from ...installation import (_native_inspection_file_create_registry,
-        _native_file_create_installation)
+    from ...installation import (_native_registry_for_manifest,
+        _native_installation_for_manifest)
     from .uncertainty import _NativeLifecycleUnresolved
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
@@ -133,9 +137,9 @@ def run_native_core(launch):
         'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
     # admission still refuses the unqualified candidate, even empty requirements.
-    registry=_native_inspection_file_create_registry()
+    registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
     try:
-        registry,installation=_native_file_create_installation(manifest_bytes=launch._manifest_bytes,
+        registry,installation=_native_installation_for_manifest(manifest_bytes=launch._manifest_bytes,
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id)
     except (PhaseError,OSError,ValueError) as error:
@@ -196,16 +200,16 @@ def run_native_inspection(launch):
     """
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
-    from ...installation import (_native_inspection_file_create_registry,
-        _native_file_create_installation)
+    from ...installation import (_native_registry_for_manifest,
+        _native_installation_for_manifest)
     launch.check_runtime()
     _require(launch._inspection_only, 'ntfs.fixed_inspection_role_required')
     identities=_linux_stdio_identity()
     _require(launch.invocation['request']=={'operation':'inspect'},
         'ntfs.fixed_native_request_required')
-    registry=_native_inspection_file_create_registry()
+    registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
     try:
-        registry,installation=_native_file_create_installation(manifest_bytes=launch._manifest_bytes,
+        registry,installation=_native_installation_for_manifest(manifest_bytes=launch._manifest_bytes,
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
             _inspection_only=True)
@@ -232,7 +236,15 @@ def run_native_original(launch):
     # Existing reader/parser return only after their evidence FDs are closed.
     # Delivery stdio is not evidence ownership and cannot authorize mutation.
     response=native_original_query(launch,launch.invocation['request'])
-    _deliver_linux_frame(response,identities)
+    if launch._version1 and launch.invocation['request']['action'] == 'read_executing':
+        from .original_transfer import original_version1_frames
+        from ...canonical import digest_bytes
+        deadline=time.monotonic()+30
+        for raw in original_version1_frames(response,channel_id=launch.channel_id,leg='reader',
+                query_digest=digest_bytes(canonical_bytes(launch.invocation['request']))):
+            _deliver_linux_frame(parse_json_bytes(raw),identities,_deadline=deadline)
+    else:
+        _deliver_linux_frame(response,identities)
     return 0
 
 
@@ -267,3 +279,30 @@ def run_native_parent(launch):
     # This HANDLE belongs to Docker CLI, NOT Linux exec. No Linux-process exit
     # or original closure proof is derived from it; server ingress is consumed.
     return response
+
+def _run_version1_worker_transfer(launch,original,pipe,deadline):
+    from .windows_pipe import WindowsPipeFrames
+    from .original_transfer import _Version1OriginalDecoder
+    from .worker import run_version1_worker
+    _require(type(pipe) is WindowsPipeFrames and type(deadline) is int,
+        'ntfs.version1_owned_deadline_required')
+    primary=None
+    try:
+        decoder=_Version1OriginalDecoder(channel_id=launch.channel_id,leg='worker',query_digest=None,
+            expected_context={'run_id':launch.run_id,'operation_nonce':launch.operation_nonce,
+                'installation_digest':launch.installation_digest},
+            expected_grant=canonical_bytes(launch.root_grant))
+        decoder.feed(canonical_bytes(original))
+        while not decoder.ended:
+            raw,_=pipe.receive_frame(deadline)
+            decoder.feed(raw)
+        parsed=decoder.finish()
+        launch.check_runtime()
+        # Worker pipe remains open for READY/GO; no reader EOF is invented.
+        run_version1_worker(pipe,parse_json_bytes(parsed.context_bytes),parse_json_bytes(parsed.grant_bytes),
+            parse_json_bytes(parsed.effect_bytes),parsed.content_bytes,parsed.timestamp,
+            _handshake_deadline_ns=deadline)
+        launch.check_runtime()
+    except BaseException as error:primary=error
+    _close_worker_stdio(primary)
+    return 0

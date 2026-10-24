@@ -9,7 +9,7 @@ Root-wide unresolved scanning/locks, guarantee admission, fresh observations,
 possible-dispatch/GO, worker exit and Core receipts remain mandatory outside.
 """
 from __future__ import annotations
-from .handoff import ParsedNativeFileCreate
+from .handoff import ParsedNativeFileCreate, ParsedNativeVersion1
 from jsonschema import Draft202012Validator, FormatChecker
 from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes, profile_digest
 from ...evidence import validate_intent
@@ -18,7 +18,7 @@ from ...planning import _validate_logical_plan
 from ...preconditions import verify_saved_precondition_results
 from ...registry import RegistrySnapshot
 from .native import _require
-from .worker import _grant, _context
+from .worker import _grant, _context, _version1_context
 
 _CONTROL_LIMIT=2*1024**2
 _EFFECT_FIELDS={'effect_id','kind','target','input_binding','content_source','content_digest',
@@ -33,11 +33,12 @@ def _canonical(raw: bytes):
     return value
 
 
-def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
+def _parse_original(*, intent_bytes: bytes, plan_bytes: bytes,
     pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
     expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
     installed_native_binding: bytes, installed_root_grants: bytes,
-    installed_implementation_binding: bytes, _execution_requested: bool) -> ParsedNativeFileCreate:
+    installed_implementation_binding: bytes, _execution_requested: bool,
+    _version1: bool = False) -> ParsedNativeFileCreate | ParsedNativeVersion1:
     """Validate exact buffers before a future installation-owned handoff.
 
     Installed buffers are supplied by the FUTURE closed selector, not a broker
@@ -47,6 +48,8 @@ def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
     The first structural subset is existing single frozen-input file_create-v1,
     <=1MiB, existing parents. No new contract/limits or recovery permission.
     """
+    _require(type(_version1) is bool and type(_execution_requested) is bool,
+        'ntfs.original_closed_role_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
     intent=_canonical(intent_bytes)
     _require(type(intent) is dict and intent.get('phase_intent_version')=='1.2','ntfs.original_native_intent_required')
@@ -65,7 +68,8 @@ def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
     _require(digest_bytes(plan_bytes)==intent['evidence']['effect_plan_attachment_digest']
         and profile_digest('effect-plan',plan)==intent['effect_plan_digest'],'ntfs.original_plan_digest_mismatch')
     _validate_logical_plan(plan,contract,registry)
-    _require(plan['run_id']==intent['run_id'] and plan['operation_intent']==intent['operation']['intent']=='create'
+    operation = 'publish_new_version' if _version1 else 'create'
+    _require(plan['run_id']==intent['run_id'] and plan['operation_intent']==intent['operation']['intent']==operation
         and plan['mechanism']==intent['operation']['mechanism'],'ntfs.original_plan_binding_mismatch')
     scope=canonical_digest(contract.document['write_scope'])
     _require(intent['write_scope_digest']==plan['write_scope_digest']==scope,'ntfs.original_write_scope_mismatch')
@@ -75,10 +79,20 @@ def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
         'ntfs.original_implementation_mismatch')
     _require(len(plan['effects'])==1,'ntfs.original_single_effect_required')
     effect=plan['effects'][0]
-    _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
-        and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
-        and effect['lock_scope'] is None and effect['durability_policy_id']=='file_data_synced'
-        and effect['on_failure']=='stop_and_classify','ntfs.original_single_effect_required')
+    if _version1:
+        _require(contract.document['identity']['id']=='publish_new_version.v1'
+            and contract.document['identity']['version']=='1.0.0'
+            and plan['mechanism']['id']=='mechanism.archive_then_publish_v1'
+            and set(effect)==_EFFECT_FIELDS|{'ordinal','archive_target','archive_digest','archive_length',
+                'operation_identity','request_digest'}
+            and effect['kind']=='publish_new_version' and type(effect['ordinal']) is int
+            and effect['ordinal']==0 and effect['request_digest'] is None,
+            'ntfs.original_version1_effect_required')
+    else:
+        _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
+            and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
+            and effect['lock_scope'] is None and effect['durability_policy_id']=='file_data_synced'
+            and effect['on_failure']=='stop_and_classify','ntfs.original_single_effect_required')
     candidate=intent['candidate']
     _require(candidate['input_mode']=='structured_json' and candidate['storage']['mode']=='inline'
         and candidate['storage']['attachment_digest'] is None,'ntfs.original_inline_candidate_required')
@@ -91,11 +105,25 @@ def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
         and effect['target']['root_binding']==contract.document['canonical_result']['root_binding']
         and effect['input_binding']==value['input_binding'] and intent['idempotency']['key']==value['idempotency_key'],
         'ntfs.original_candidate_effect_mismatch')
+    if _version1:
+        from ...contracts.publish_new_version_v1 import archive_locator
+        archive = archive_locator(value['expected_current_digest'])
+        _require(value['input_binding']=='payload' and effect['target']['relative_locator']!=archive
+            and effect['archive_target']=={'root_binding':effect['target']['root_binding'],'relative_locator':archive}
+            and effect['archive_digest']==value['expected_current_digest']
+            and type(effect['archive_length']) is int and 0<=effect['archive_length']<=16*1024**2
+            and effect['operation_identity']==value['operation_id']
+            and effect['preconditions']=={'existence':'present','expected_digest':effect['archive_digest'],
+                'expected_head':None,'concurrency_token':effect['archive_digest']}
+            and effect['lock_scope']=='publish.'+digest_bytes(value['target_locator'].encode('utf-8')).removeprefix('sha256:')
+            and effect['durability_policy_id']=='file_data_synced' and effect['on_failure']=='stop_and_classify',
+            'ntfs.original_version1_effect_mismatch')
     inputs=intent['inputs']
     _require(len(inputs)==1 and inputs[0]['binding_id']==value['input_binding']
         and inputs[0]['freeze_strategy']=='copy_and_hash','ntfs.original_frozen_input_required')
     frozen=inputs[0]
-    _require(type(blob_bytes) is bytes and len(blob_bytes)<=1024**2,'mechanism.content_too_large')
+    maximum = 16*1024**2 if _version1 else 1024**2
+    _require(type(blob_bytes) is bytes and len(blob_bytes)<=maximum,'mechanism.content_too_large')
     digest=digest_bytes(blob_bytes)
     _require(type(effect['content_length']) is int and effect['content_length']==len(blob_bytes)
         and frozen['blob_digest']==frozen['digest']==effect['content_digest']==digest
@@ -110,7 +138,7 @@ def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
         and not {grant.binding for grant in grants}.intersection(contract.document['write_scope']['forbidden_root_bindings'])
         and grants[0].binding==effect['target']['root_binding'],'ntfs.original_root_binding_mismatch')
     root_digest=profile_digest('native-root-identity-v1',root_records)
-    id_scope={'contract':binding,'result_locator':value['target_locator'],'root_identity_digest':root_digest,'operation_intent':'create'}
+    id_scope={'contract':binding,'result_locator':value['target_locator'],'root_identity_digest':root_digest,'operation_intent':operation}
     _require(intent['idempotency']['root_identity_digest']==root_digest
         and intent['idempotency']['scope_digest']==profile_digest('idempotency-scope',id_scope)
         and intent['idempotency']['request_digest']==profile_digest('request',{'scope':id_scope,
@@ -119,12 +147,15 @@ def _parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
         'ntfs.original_precondition_bytes_required')
     verify_saved_precondition_results(registry,contract,intent,plan,pre_validator_bytes)
     native=intent['native_binding']
-    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.0','run_id':intent['run_id'],
+    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.1' if _version1 else '1.0','run_id':intent['run_id'],
         'intent_digest':expected_intent_digest,'effect_plan_digest':intent['effect_plan_digest'],
         'native_binding_digest':digest_bytes(canonical_bytes(native)),
         'installation_digest':native['installation']['descriptor_digest'],
         'implementation_artifact_digest':implementation['authority']['provider']['artifact_digest'],
         'operation_nonce':native['operation_nonce']}
+    if _version1:
+        return ParsedNativeVersion1(canonical_bytes(_version1_context(context)),canonical_bytes(grants[0].as_dict()),
+            canonical_bytes(effect),blob_bytes,intent['created_at'])
     return ParsedNativeFileCreate(canonical_bytes(_context(context)),canonical_bytes(grants[0].as_dict()),
         canonical_bytes(effect),blob_bytes,intent['created_at'])
 
@@ -135,7 +166,7 @@ def parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,
     installed_native_binding: bytes, installed_root_grants: bytes,
     installed_implementation_binding: bytes) -> ParsedNativeFileCreate:
     """Executing original only; never accept planned data for worker handoff."""
-    return _parse_original_file_create(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
+    return _parse_original(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
         blob_bytes=blob_bytes,registry=registry,expected_run_id=expected_run_id,
         expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
         installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
@@ -148,8 +179,35 @@ def validate_planned_file_create_original(*, intent_bytes: bytes, plan_bytes: by
     installed_native_binding: bytes, installed_root_grants: bytes,
     installed_implementation_binding: bytes) -> None:
     """Same semantic parser for planned-only historical closure; returns no GO data."""
-    _parse_original_file_create(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
+    _parse_original(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
         blob_bytes=blob_bytes,registry=registry,expected_run_id=expected_run_id,
         expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
         installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
         installed_implementation_binding=installed_implementation_binding,_execution_requested=False)
+
+
+
+def parse_original_version1(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes) -> ParsedNativeVersion1:
+    """Closed version1 executing tuple; no generic role or transport selector."""
+    return _parse_original(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
+        blob_bytes=blob_bytes,registry=registry,expected_run_id=expected_run_id,
+        expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
+        installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
+        installed_implementation_binding=installed_implementation_binding,_execution_requested=True,_version1=True)
+
+
+def validate_planned_version1_original(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes) -> None:
+    """The same version1 semantics for nonexecuting closure; no GO tuple returned."""
+    _parse_original(intent_bytes=intent_bytes,plan_bytes=plan_bytes,pre_validator_bytes=pre_validator_bytes,
+        blob_bytes=blob_bytes,registry=registry,expected_run_id=expected_run_id,
+        expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
+        installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
+        installed_implementation_binding=installed_implementation_binding,_execution_requested=False,_version1=True)

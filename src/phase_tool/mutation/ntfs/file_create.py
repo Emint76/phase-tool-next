@@ -44,7 +44,11 @@ class _MutationTrace:
     Prefix/suffix omission is explicit. This is not every native syscall, an
     execution log authority, or a replacement for independent qualification.
     """
-    def __init__(self):
+    def __init__(self, *, _maximum_creates: int = 1):
+        _require(type(_maximum_creates) is int and _maximum_creates in (1,4),
+                 'ntfs.invalid_trace_role')
+        self._maximum_creates = _maximum_creates
+        self._create_events: list[dict] = []
         self._hash = hashlib.sha256()
         self._first: list[dict] = []
         self._last: deque[dict] = deque(maxlen=64)
@@ -70,8 +74,10 @@ class _MutationTrace:
                     self._first.append(value)
                 self._last.append(value)
                 if value.get('api') == 'NtCreateFile' and value.get('disposition') == 2:
-                    _require(self.create_event is None,'ntfs.multiple_create_calls_forbidden')
-                    self.create_event = value
+                    _require(len(self._create_events) < self._maximum_creates,'ntfs.multiple_create_calls_forbidden')
+                    self._create_events.append(value)
+                    if self.create_event is None:
+                        self.create_event = value
         except BaseException as caught:
             self.capture_complete = False
             self.unprocessed_records += len(pending)-completed
@@ -90,7 +96,13 @@ class _MutationTrace:
                 'scope':'NativeMutationIO mutation/flush event records, not every OS syscall'}
 
 
-def _observe(scope: NativeScopedTarget, *, expected: NativeIdentity | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+def _observe(scope: NativeScopedTarget, *, expected: NativeIdentity | None = None,
+             _maximum_bytes: int = _CONTENT_LIMIT) -> tuple[dict[str, Any], dict[str, Any]]:
+    # Two closed contract bounds; the default file-create role retains
+    # its original 1 MiB behavior. No request supplies a size selector.
+    _require(type(_maximum_bytes) is int and _maximum_bytes in (_CONTENT_LIMIT,16*1024**2),
+             'ntfs.invalid_observation_bound')
+    _require(not scope._missing_ancestors,'ntfs.partial_scope_has_no_leaf_parent')
     io = scope.io
     scope.assert_bound()
     try:
@@ -107,9 +119,15 @@ def _observe(scope: NativeScopedTarget, *, expected: NativeIdentity | None = Non
         identity = io.identity(handle)
         length = facts['length']
         digest = None
-        if length <= _CONTENT_LIMIT:
+        if _maximum_bytes != _CONTENT_LIMIT:
+            _require(length <= _maximum_bytes,'ntfs.version1_file_too_large')
+        if length <= _maximum_bytes:
             digest,observed = io.hash_file(handle,length)
             _require(observed == length,'ntfs.observation_length_mismatch')
+        if _maximum_bytes != _CONTENT_LIMIT:
+            final = io.assert_object(handle,directory=False,expected=identity)
+            _require(final['length'] == length and final['links'] == facts['links'] == 1,
+                     'ntfs.version1_observation_changed')
         scope.assert_file_name(handle,identity)
         state = {'known':True,'exists':True,'digest':digest,'length':length,'head_token':None}
         proof = {'exists':True,'native_identity':identity.as_dict(),'length':length,

@@ -166,7 +166,7 @@ class ValidatorRunner:
         value = parse_json_bytes(candidate.canonical_bytes)
         if identifier == "validator.exact_binding_v1":
             return "pass", "validation.pass", "exact_registry_binding", "exact_registry_binding", []
-        hook = load_contract_hook(contract)
+        hook = load_contract_hook(contract, **({} if self._native_authority is None else {"_native_authority":self._native_authority}))
         if hook is not None:
             setattr(hook, "_registry", self.registry)
             try:
@@ -438,7 +438,7 @@ class ValidatorRunner:
                     blockers=[] if matches else ["validation.ordered_progress_mismatch"],
                 )
                 continue
-            hook = load_contract_hook(contract)
+            hook = load_contract_hook(contract, **({} if self._native_authority is None else {"_native_authority":self._native_authority}))
             if hook is not None:
                 setattr(hook, "_registry", self.registry)
                 handled = hook.run_post_validator(identifier, contract, effect_plan, root_bindings, evidence_root=evidence_root)

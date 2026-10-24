@@ -10,7 +10,7 @@ import re
 from ...canonical import canonical_bytes, parse_json_bytes
 from ...errors import PhaseError
 from ...installation import (_NativeFileCreateReadBinding,_native_qualified_profile,
-    _native_inspection_file_create_registry,_resolve_native_file_create_read_binding)
+    _native_inspection_file_create_registry,_native_registry_for_manifest,_resolve_native_file_create_read_binding)
 from .native import _require
 
 
@@ -34,7 +34,7 @@ def native_original_query(launch,query):
         and (query['intent_digest'] is None or (type(query['intent_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
-    registry=_native_inspection_file_create_registry()  # Fixed installed generation, never query-selected.
+    registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)  # Accepted static generation only.
     _native_qualified_profile(registry,registry.guarantee_profile_bindings().get(
         'phase.native.ntfs.authority.v1@1.0.0'))  # Candidate always refuses, even empty requirements.
     binding=_resolve_native_file_create_read_binding(manifest_bytes=launch._manifest_bytes,
@@ -46,8 +46,9 @@ def native_original_query(launch,query):
         _confirm_native_original_absent(binding,query['run_id'])
         value={'original_absent':True,'verified_intent_digest':None}
     else:
-        from .reader import read_original_file_create_buffers
-        original,_,_,_=read_original_file_create_buffers(
+        from .reader import read_original_file_create_buffers,read_original_version1_buffers
+        reader = read_original_version1_buffers if launch._version1 else read_original_file_create_buffers
+        original,_,_,_=reader(
             evidence_root=Path(launch.manifest['evidence_root']),
             installed_evidence_identity=canonical_bytes(launch.manifest['evidence_identity']),
             registry=registry,run_id=query['run_id'],expected_intent_digest=digest)
@@ -56,13 +57,19 @@ def native_original_query(launch,query):
             'ntfs.original_current_invocation_mismatch')
         if query['action']=='read_executing':
             parsed=binding.read(run_id=query['run_id'],intent_digest=digest)
-            value={'context':parse_json_bytes(parsed.context_bytes),'grant':parse_json_bytes(parsed.grant_bytes),
-                'effect':parse_json_bytes(parsed.effect_bytes),
-                'content_base64':base64.b64encode(parsed.content_bytes).decode('ascii'),'timestamp':parsed.timestamp}
+            if launch._version1:
+                value=parsed
+            else:
+                value={'context':parse_json_bytes(parsed.context_bytes),'grant':parse_json_bytes(parsed.grant_bytes),
+                    'effect':parse_json_bytes(parsed.effect_bytes),
+                    'content_base64':base64.b64encode(parsed.content_bytes).decode('ascii'),'timestamp':parsed.timestamp}
         else:
             if intent['execution_requested'] is True:binding.read(run_id=query['run_id'],intent_digest=digest)
             else:binding.validate_planned(run_id=query['run_id'],intent_digest=digest)
             value={'original_absent':False,'verified_intent_digest':digest}
     binding.check_evidence_root()
     launch.check_runtime()
+    from .handoff import ParsedNativeVersion1
+    if type(value) is ParsedNativeVersion1:
+        return value
     return {'query':query,'value':value,'required_evidence_reads_finalized':True}

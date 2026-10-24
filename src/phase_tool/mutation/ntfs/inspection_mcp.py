@@ -15,7 +15,7 @@ from pydantic import Field, StrictInt, StrictStr
 from ...canonical import canonical_bytes
 from ...command_result import validate_command_result
 from ...evidence import validate_run_id
-from ...installation import _native_inspection_file_create_registry
+from ...installation import _native_registry_for_manifest
 from .bootstrap import _NativeAcceptedLaunch
 from .entrypoint import run_native_parent
 from .native import _require
@@ -71,7 +71,8 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
-            validate_command_result(result,_native_inspection_file_create_registry())
+            validate_command_result(result,_native_registry_for_manifest(
+                self._startup['manifest_bytes'],self._startup['expected_manifest_digest']))
             _require(result['command']==request['operation']
                 and result['exit_code']==response['exit_code'],
                 'ntfs.parent_command_binding_mismatch')

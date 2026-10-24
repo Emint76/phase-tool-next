@@ -895,7 +895,7 @@ class PhaseCore:
                     raise PhaseError("candidate.invalid_expected_content")
                 if candidate.canonical_bytes != expected_candidate:
                     raise PhaseError("candidate.expected_content_mismatch")
-            hook = load_contract_hook(contract)
+            hook = load_contract_hook(contract, **({} if native_ctx is None or native_ctx.native_authority is None else {"_native_authority":native_ctx.native_authority}))
             if hook is not None and hasattr(hook, "normalize_candidate"):
                 normalized = hook.normalize_candidate(parse_json_bytes(candidate.canonical_bytes))
                 candidate = normalize_captured_structured(candidate, normalized)
@@ -1106,7 +1106,7 @@ class PhaseCore:
                 for result in validator_results
                 if result["blocking"] and result["phase"] != "post_operation"
             )
-            hook = load_contract_hook(contract)
+            hook = load_contract_hook(contract, **({} if native_authority is None else {"_native_authority":native_authority}))
             if execute and blocking_valid and hook is not None and hasattr(hook, "find_reusable_result"):
                 try:
                     prior = hook.find_reusable_result(

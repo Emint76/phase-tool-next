@@ -37,9 +37,9 @@ def _evidence_identity(raw: bytes) -> dict:
     return expected
 
 
-def read_original_file_create_buffers(*, evidence_root: Path,
+def _read_original_buffers(*, evidence_root: Path,
     installed_evidence_identity: bytes, registry: RegistrySnapshot,
-    run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes,bytes]:
+    run_id: str, expected_intent_digest: str, _maximum_bytes: int) -> tuple[bytes,bytes,bytes,bytes]:
     """Read only four existing Core objects, preserving their original bytes.
 
     Matching hashes establish data consistency, not the identity of a remote
@@ -48,6 +48,8 @@ def read_original_file_create_buffers(*, evidence_root: Path,
     remain outside and unimplemented. This is not a callable native route.
     The existing original-buffer parser owns complete structural semantics.
     """
+    _require(type(_maximum_bytes) is int and _maximum_bytes in (_CONTENT_LIMIT,16*1024**2),
+        'ntfs.invalid_original_bound')
     _require(sys.platform.startswith('linux'),'ntfs.original_linux_reader_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
     _require(type(run_id) is str,'evidence.invalid_run_id')
@@ -87,9 +89,28 @@ def read_original_file_create_buffers(*, evidence_root: Path,
     pre_name = ('pre-validator-results.json' if intent['execution_requested']
         else 'validator-results.json')
     pre=read_bounded_file(run/'attachments'/pre_name,_CONTROL_LIMIT)
-    blob=read_bounded_file(run/'blobs'/blob_digest.removeprefix('sha256:'),_CONTENT_LIMIT)
+    blob=read_bounded_file(run/'blobs'/blob_digest.removeprefix('sha256:'),_maximum_bytes)
     _require(digest_bytes(plan)==intent['evidence']['effect_plan_attachment_digest']
         and digest_bytes(pre)==intent['evidence']['pre_validator_results_digest']
         and digest_bytes(blob)==blob_digest,'ntfs.original_evidence_bytes_mismatch')
     check_root()
     return intent_raw,plan,pre,blob
+
+
+
+def read_original_file_create_buffers(*, evidence_root: Path,
+    installed_evidence_identity: bytes, registry: RegistrySnapshot,
+    run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes,bytes]:
+    """Original1MiB bound and external signature; no request-selected size."""
+    return _read_original_buffers(evidence_root=evidence_root,
+        installed_evidence_identity=installed_evidence_identity,registry=registry,
+        run_id=run_id,expected_intent_digest=expected_intent_digest,_maximum_bytes=_CONTENT_LIMIT)
+
+
+def read_original_version1_buffers(*, evidence_root: Path,
+    installed_evidence_identity: bytes, registry: RegistrySnapshot,
+    run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes,bytes]:
+    """Same four Core-owned objects, with the existing version1 contract16MiB bound."""
+    return _read_original_buffers(evidence_root=evidence_root,
+        installed_evidence_identity=installed_evidence_identity,registry=registry,
+        run_id=run_id,expected_intent_digest=expected_intent_digest,_maximum_bytes=16*1024**2)

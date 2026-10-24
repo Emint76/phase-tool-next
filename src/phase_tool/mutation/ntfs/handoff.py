@@ -11,3 +11,8 @@ class ParsedNativeFileCreate:
     effect_bytes: bytes
     content_bytes: bytes
     timestamp: str
+
+
+@dataclass(frozen=True)
+class ParsedNativeVersion1(ParsedNativeFileCreate):
+    """Same immutable tuple shape, distinct exact semantic type; no GO authority."""

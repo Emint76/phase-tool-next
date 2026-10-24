@@ -62,6 +62,44 @@ def _root(path: Path, *, existing: bool) -> Path:
     return resolved
 
 
+def _file_publication_candidate(request_id: str, target_locator: str):
+    """Pure request construction; caller retains validation and authority gates."""
+    candidate = {
+        "operation_id": request_id, "idempotency_key": request_id,
+        "input_binding": "payload", "target_locator": target_locator,
+    }
+    candidate_bytes = encode_structured_input(candidate)
+    if len(candidate_bytes) > 1_048_576:
+        raise PhaseError("candidate.too_large")
+    return candidate, candidate_bytes
+
+
+def _require_file_publication_evidence(*, intent, plan, binding, candidate,
+        intent_digest, effect_plan_digest, content_digest, content_length, target_locator, request_id):
+    """Pure literal correlation AFTER trusted inspect/schema verification.
+
+    This reuses the Host adapter's exact checks; it does not authenticate input
+    facts, qualify a profile, inspect a target or authorize a native operation.
+    """
+    if (
+        profile_digest("intent", intent) != intent_digest
+        or profile_digest("effect-plan", plan) != effect_plan_digest
+        or intent["candidate"]["storage"]["value"] != candidate
+        or intent["contract"] != binding
+        or intent["idempotency"]["key"] != request_id
+        or len(plan["effects"]) != 1
+    ):
+        raise PhaseError("publish_file.evidence_mismatch")
+    effect = plan["effects"][0]
+    if (
+        effect["target"] != {"root_binding": TARGET_ROOT_BINDING, "relative_locator": target_locator}
+        or effect["content_digest"] != content_digest
+        or effect["content_length"] != content_length
+        or effect["kind"] != "exclusive_create"
+    ):
+        raise PhaseError("publish_file.evidence_mismatch")
+
+
 def publish_file(
     application: PhaseApplication,
     *,
@@ -142,13 +180,7 @@ def publish_file(
             raise PhaseError("publish_file.target_exists_inspection_required")
         binding = application._binding(contract_binding)
         result.contract_digest = binding["package_digest"]
-        candidate = {
-            "operation_id": request_id, "idempotency_key": request_id,
-            "input_binding": "payload", "target_locator": target_locator,
-        }
-        candidate_bytes = encode_structured_input(candidate)
-        if len(candidate_bytes) > 1_048_576:
-            raise PhaseError("candidate.too_large")
+        candidate, candidate_bytes = _file_publication_candidate(request_id, target_locator)
         # Explicit isolated scratch: callers supply roots, never candidates/blobs.
         with TemporaryDirectory(prefix="phase-publish-", dir=preparation_root) as scratch:
             frozen = capture(
@@ -215,23 +247,12 @@ def publish_file(
         run_root = evidence_root / ".phase" / "runs" / run_id
         intent = parse_json_bytes(read_evidence_bytes(run_root / "intent.json"))
         plan = parse_json_bytes(read_evidence_bytes(run_root / "attachments" / "effect-plan.json"))
-        if (
-            profile_digest("intent", intent) != result.intent_digest
-            or profile_digest("effect-plan", plan) != result.effect_plan_digest
-            or intent["candidate"]["storage"]["value"] != candidate
-            or intent["contract"] != binding
-            or intent["idempotency"]["key"] != request_id
-            or len(plan["effects"]) != 1
-        ):
-            raise PhaseError("publish_file.evidence_mismatch")
-        effect = plan["effects"][0]
-        if (
-            effect["target"] != {"root_binding": TARGET_ROOT_BINDING, "relative_locator": target_locator}
-            or effect["content_digest"] != result.content_digest
-            or effect["content_length"] != result.content_length
-            or effect["kind"] != "exclusive_create"
-        ):
-            raise PhaseError("publish_file.evidence_mismatch")
+        _require_file_publication_evidence(
+            intent=intent, plan=plan, binding=binding, candidate=candidate,
+            intent_digest=result.intent_digest, effect_plan_digest=result.effect_plan_digest,
+            content_digest=result.content_digest, content_length=result.content_length,
+            target_locator=target_locator, request_id=request_id,
+        )
         result.success = True
         result.status = "verified"
         result.target_verified = True

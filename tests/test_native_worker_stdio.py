@@ -84,7 +84,11 @@ class FramedNativeWorkerTests(unittest.TestCase):
                     self.assertEqual(error.exception.details['transport']['code'],'synthetic.poisoned')
                     self.assertEqual(len(self.peer_records['sent']),1)
                 else:
-                    self.invoke(peer)
+                    frames=self.invoke(peer)
+                    self.assertEqual(len(frames),2)
+                    self.assertEqual(frames[0]['worker_ready_version'],'1.0')
+                    self.assertEqual(self.peer_records['receives'],[(30_000_000_100,4096)])
+                    self.assertEqual(frames[-1]['error']['code'],'ntfs.worker_go_binding_mismatch')
                 self.assertEqual((self.peer_records['effects'],self.peer_records['seals']),(0,1))
 
     def test_receive_error_poisoning_preserves_primary_and_failed_diagnostics(self):

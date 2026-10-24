@@ -15,6 +15,7 @@ import sys
 import threading
 from types import SimpleNamespace
 import unittest
+from ._native_startup_shell import startup_shell
 from unittest.mock import Mock, patch
 
 from phase_tool import evidence, installation
@@ -40,14 +41,28 @@ class NativeInspectionSelectionTests(unittest.TestCase):
         new = _native_inspection_file_create_registry()
         self.assertEqual(new.to_document()['entries'][:-1], old.to_document()['entries'])
         self.assertEqual(new.to_document()['trust_roots'], old.to_document()['trust_roots'])
-        descriptor = new.resolve_guarantee_profile(new.guarantee_profile_bindings()[
-            'phase.native.ntfs.candidate.authority.v2@1.0.0'])
+        # Historical V4 descriptor retains its exact older authority bytes.
+        # New code cannot silently rebind it to the current implementation.
+        with self.assertRaisesRegex(PhaseError,'guarantee_profile.implementation_digest_mismatch'):
+            new.resolve_guarantee_profile(new.guarantee_profile_bindings()[
+                'phase.native.ntfs.candidate.authority.v2@1.0.0'])
+        descriptor = parse_json_bytes(BundledRegistry.resources()[
+            'descriptors/guarantee/phase.native.ntfs.candidate.authority.v2.json'])
         self.assertEqual(descriptor['classification'], 'qualification_candidate')
         self.assertEqual(descriptor['provided_guarantees'], [])
         self.assertEqual(descriptor['conformance'], [])
         self.assertEqual(descriptor['implementation']['version'], '1.1.0')
         raw = resources.files('phase_tool').joinpath('mutation/ntfs/authority.py').read_bytes()
-        self.assertEqual(descriptor['implementation']['artifact_digest'], digest_bytes(raw))
+        self.assertNotEqual(descriptor['implementation']['artifact_digest'], digest_bytes(raw))
+        current=installation._native_lifecycle_registry()
+        current_descriptor=current.resolve_guarantee_profile(current.guarantee_profile_bindings()[
+            'phase.native.ntfs.candidate.authority.v3@1.0.0'])
+        self.assertEqual(current_descriptor['classification'],'qualification_candidate')
+        self.assertEqual(current_descriptor['provided_guarantees'],[])
+        self.assertEqual(current_descriptor['conformance'],[])
+        self.assertEqual(current_descriptor['implementation']['version'],'1.2.0')
+        self.assertEqual(current_descriptor['implementation']['artifact_digest'],digest_bytes(raw))
+        self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0',current.guarantee_profile_bindings())
         self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0', new.guarantee_profile_bindings())
         for version, sha in [('v1', 'fa2a9aff5f576d15b5a71574a11bd3a7a994a38346540ff6d7e7a74335cfa2c7'),
                 ('v2', 'fd7e6f78790491d59f97820fa23132a95cdd89678548e441464cca728605ca2f'),
@@ -70,8 +85,8 @@ class NativeInspectionSelectionTests(unittest.TestCase):
 
     def test_entrypoint_delivers_only_actual_preinstallation_refusal(self):
         launch = SimpleNamespace(_inspection_only=True, check_runtime=Mock(),
-            invocation={'request': {'operation': 'inspect'}}, _manifest_bytes=b'',
-            installation_digest=None, run_id='synthetic-known-run', operation_nonce='a'*32, channel_id='b'*32)
+            invocation={'request': {'operation': 'inspect'}}, _manifest_bytes=startup_shell()[0],
+            installation_digest=startup_shell()[1], run_id='synthetic-known-run', operation_nonce='a'*32, channel_id='b'*32)
         with (patch.object(entrypoint, '_linux_stdio_identity', return_value='synthetic-pipes'),
                 patch.object(entrypoint, '_deliver_linux_frame') as deliver,
                 patch.object(LinuxNativeChannelV2, '__init__', side_effect=AssertionError('channel reached')) as channel):
@@ -114,7 +129,7 @@ class NativeInspectionSelectionTests(unittest.TestCase):
 class NativeInspectionBranchTests(unittest.TestCase):
     def shell(self):
         # Never a constructed/admitted installation. Pure branch fixture only.
-        value = object.__new__(_NativeFileCreateAuthority); value._inspection_only = True
+        value = object.__new__(_NativeFileCreateAuthority); value._inspection_only = True; value._version1=False
         return value
 
     def test_all_mutating_authority_entries_refuse_before_read_or_dispatch(self):
@@ -221,8 +236,9 @@ class NativeInspectionParentTests(unittest.TestCase):
         p._owner = os.getpid(), threading.get_ident(); p._inspection_only = True
         p._consumed = True; p._finished = False; p._failed = False; p._spawn_attempted = False
         p._go_attempted = False; p._worker = None; p._worker_count = 0
-        p._no_dispatch_finished = False
-        p._launch = SimpleNamespace(channel_id='a'*32, run_id='synthetic-read', check_runtime=Mock())
+        p._no_dispatch_finished = False; p._version1=False; p._channel_version='1.1'
+        p._launch = SimpleNamespace(channel_id='a'*32, run_id='synthetic-read', check_runtime=Mock(),
+            _manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1])
         frame = {'protocol': 'phase.native.command', 'version': '1.0', 'channel_id': 'a'*32,
             'run_id': 'synthetic-read', 'result': result, 'exit_code': result['exit_code']}
         p._pipe = SimpleNamespace(receive_frame=Mock(return_value=(canonical_bytes(frame), None)), seal=Mock())
@@ -253,7 +269,7 @@ class NativeInspectionParentTests(unittest.TestCase):
 class NativeInspectionMCPTests(unittest.TestCase):
     def owner(self):
         return inspection_mcp._InspectionMCPCallOwner(config_bytes=b'', expected_config_digest=None,
-            manifest_bytes=b'', expected_manifest_digest=None)
+            manifest_bytes=startup_shell()[0], expected_manifest_digest=startup_shell()[1])
 
     def test_failed_parent_owner_is_retained_and_subsequent_call_cannot_spawn(self):
         owner = self.owner(); launch = object(); primary = RuntimeError('synthetic unknown finalization')

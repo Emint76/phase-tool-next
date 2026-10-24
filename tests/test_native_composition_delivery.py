@@ -14,6 +14,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+from ._native_startup_shell import startup_shell
 from unittest.mock import Mock, call, patch
 
 from phase_tool.application import PhaseApplication
@@ -30,6 +31,7 @@ class NativeComposedDeliveryTests(unittest.TestCase):
         """Real orchestration and strict seal, synthetic OS/process boundary."""
         launch=object.__new__(_NativeAcceptedLaunch)
         launch._inspection_only=inspection
+        launch._manifest_bytes,launch._manifest_digest=startup_shell()
         launch._finalization_attempted=set()
         launch._invocation_bytes=canonical_bytes({'run_id':'synthetic-delivery',
             'channel_id':'a'*32,'operation_nonce':'b'*32,'request':{}})

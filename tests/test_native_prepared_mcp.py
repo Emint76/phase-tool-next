@@ -15,6 +15,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from ._native_startup_shell import startup_shell
 from unittest.mock import Mock, patch
 
 from phase_tool import evidence
@@ -29,7 +30,7 @@ from phase_tool.mutation.ntfs.uncertainty import _NativeLifecycleUnresolved
 class NativePreparedMCPTests(unittest.TestCase):
     def owner(self):
         return inspection_mcp._InspectionMCPCallOwner(config_bytes=b'',expected_config_digest=None,
-            manifest_bytes=b'',expected_manifest_digest=None)
+            manifest_bytes=startup_shell()[0],expected_manifest_digest=startup_shell()[1])
 
     def args(self,run='synthetic-prepared'):
         return {'run_id':run,'candidate_path':'/synthetic/prepared/candidate.json',
@@ -167,7 +168,7 @@ class NativePreparedMCPTests(unittest.TestCase):
         args=self.args();request=inspection_mcp._prepared_request(args['candidate_path'],
             args['input_paths'],args['expected_inputs'],args['maximum_candidate_bytes'])
         launch=SimpleNamespace(_inspection_only=False,check_runtime=Mock(),
-            invocation={'request':request},_manifest_bytes=b'',installation_digest=None,
+            invocation={'request':request},_manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1],
             run_id=args['run_id'],operation_nonce='a'*32,channel_id='b'*32)
         with (patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
                 patch.object(entrypoint,'_deliver_linux_frame') as deliver,

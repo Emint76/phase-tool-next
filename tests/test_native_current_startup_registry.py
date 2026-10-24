@@ -6,6 +6,7 @@ channel, target/evidence I/O or receipt is authorized by these tests.
 """
 from types import SimpleNamespace
 import unittest
+from ._native_startup_shell import startup_shell
 from unittest.mock import Mock, patch
 
 from phase_tool import command_result, evidence, installation
@@ -24,7 +25,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
         launch=SimpleNamespace(_inspection_only=False,check_runtime=Mock(),
             invocation={'request':{'operation':'execute','candidate_path':'/synthetic/unused.json',
                 'input_paths':{},'expected_inputs':None,'maximum_candidate_bytes':1024**2}},
-            _manifest_bytes=b'',installation_digest=None,run_id='synthetic-unqualified',
+            _manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1],run_id='synthetic-unqualified',
             operation_nonce='a'*32,channel_id='b'*32)
         with (patch.object(installation,'_native_inspection_file_create_registry',
                     wraps=_native_inspection_file_create_registry) as selected,
@@ -37,7 +38,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
                 patch.object(evidence.EvidenceStore,'__init__',side_effect=AssertionError('store reached')) as store,
                 patch.object(PhaseApplication,'run',side_effect=AssertionError('application reached')) as app):
             self.assertEqual(entrypoint.run_native_core(launch),10)
-            self.assertEqual(selected.call_count,2)
+            self.assertEqual(selected.call_count,3)
             old.assert_not_called();channel.assert_not_called();store.assert_not_called();app.assert_not_called()
             validate.assert_called_once()
             self.assertEqual(validate.call_args.args[1].digest,
@@ -54,7 +55,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
         launch=object.__new__(_NativeAcceptedLaunch)
         launch._invocation_bytes=canonical_bytes({'run_id':'synthetic-original','channel_id':'b'*32,
             'operation_nonce':'a'*32,'request':{}})
-        launch._manifest_digest='sha256:'+'c'*64
+        launch._manifest_bytes,launch._manifest_digest=startup_shell()
         query={'native_original_query_version':'1.0','action':'verify_no_dispatch',
             'run_id':'synthetic-original','intent_digest':None,'operation_nonce':'a'*32,
             'installation_digest':launch._manifest_digest,'channel_id':'b'*32}
@@ -66,21 +67,21 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
             with self.subTest(action=action):
                 query=dict(query,action=action,intent_digest=digest)
                 with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
-                        patch.object(original_endpoint,'_native_inspection_file_create_registry',
-                            wraps=_native_inspection_file_create_registry) as selected,
+                        patch.object(original_endpoint,'_native_registry_for_manifest',
+                            wraps=installation._native_registry_for_manifest) as selected,
                         patch.object(original_endpoint,'_resolve_native_file_create_read_binding',
                             side_effect=AssertionError('manifest reached')) as binding,
                         patch.object(evidence,'_confirm_native_original_absent',
                             side_effect=AssertionError('evidence read reached')) as absent):
                     with self.assertRaisesRegex(PhaseError,'ntfs.native_profile_not_qualified'):
                         original_endpoint.native_original_query(launch,query)
-                    selected.assert_called_once_with();binding.assert_not_called();absent.assert_not_called()
+                    selected.assert_called_once_with(*startup_shell());binding.assert_not_called();absent.assert_not_called()
 
     def test_original_endpoint_bad_query_refuses_before_current_registry(self):
         launch,query=self.original_shell()
         query['registry']='synthetic-untrusted-selection'
         with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
-                patch.object(original_endpoint,'_native_inspection_file_create_registry',
+                patch.object(original_endpoint,'_native_registry_for_manifest',
                     side_effect=AssertionError('registry reached')) as selected):
             with self.assertRaisesRegex(PhaseError,'ntfs.original_query_binding_mismatch'):
                 original_endpoint.native_original_query(launch,query)

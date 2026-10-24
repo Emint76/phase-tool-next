@@ -10,6 +10,7 @@ from copy import deepcopy
 import sys
 from types import SimpleNamespace
 import unittest
+from ._native_startup_shell import startup_shell
 from unittest.mock import patch
 
 from phase_tool.application import PhaseApplication
@@ -62,7 +63,7 @@ class NativeCommandResultBindingTests(unittest.TestCase):
 
     def owner(self):
         return inspection_mcp._InspectionMCPCallOwner(config_bytes=b'',
-            expected_config_digest=None, manifest_bytes=b'', expected_manifest_digest=None)
+            expected_config_digest=None, manifest_bytes=startup_shell()[0], expected_manifest_digest=startup_shell()[1])
 
     def call_owner(self, owner, command, run='synthetic-null-binding'):
         if command == 'inspect':

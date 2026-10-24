@@ -134,6 +134,12 @@ def _native_terminal_stdout_write(relative: str,tree: ast.AST,node: ast.Call) ->
     if len(owners)!=1:return False
     function=owners[0]
     if [arg.arg for arg in function.args.args]!=['value','identities']:return False
+    if function.args.posonlyargs or function.args.defaults or function.args.vararg or function.args.kwarg:return False
+    keyword_names=[arg.arg for arg in function.args.kwonlyargs]
+    if keyword_names not in ([],['_deadline']):return False
+    if keyword_names and (len(function.args.kw_defaults)!=1
+        or not isinstance(function.args.kw_defaults[0],ast.Constant)
+        or function.args.kw_defaults[0].value is not None):return False
     if any(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda))
         for n in ast.walk(function) if n is not function):return False
     writes=[n for n in ast.walk(function) if isinstance(n,ast.Call) and _call_name(n)=='os.write']
@@ -595,3 +601,20 @@ def test_native_inspection_spawn_inventory_rejects_nonliteral_or_wrong_role(repl
     old="self._spawn(self._linux_command('inspect'))"
     assert source.count(old)==1
     assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,replacement)))
+
+
+@pytest.mark.parametrize('signature,expected',[
+ ('value,identities,*,_deadline=None',True),
+ ('value,identities,*,caller_fd=None',False),
+ ('caller_fd,/,value,identities',False),
+ ('value=None,identities=None',False),
+ ('value,identities,*,_deadline=30',False),
+ ('value,identities,*,_deadline',False),
+ ('value,identities,**options',False),
+ ('value,identities,*options',False),
+])
+def test_native_terminal_inventory_rejects_new_caller_authority(signature,expected):
+    tree=ast.parse(f'def _deliver_linux_frame({signature}):\n os.write(1, wire[offset:offset + 65536])\n')
+    calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and _call_name(n)=='os.write']
+    assert len(calls)==1
+    assert _native_terminal_stdout_write('mutation/ntfs/entrypoint.py',tree,calls[0]) is expected

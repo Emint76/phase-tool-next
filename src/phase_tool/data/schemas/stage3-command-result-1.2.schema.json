@@ -1,0 +1,142 @@
+{
+  "$id": "https://phase-tool.local/schemas/stage3-command-result-1.2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blockers": {
+      "maxItems": 1,
+      "minItems": 1,
+      "prefixItems": [
+        {
+          "const": "ntfs.native_lifecycle_unresolved"
+        }
+      ],
+      "type": "array"
+    },
+    "command": {
+      "enum": [
+        "validate",
+        "plan",
+        "execute"
+      ]
+    },
+    "diagnostic_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "effect_plan_digest": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "error": {
+      "const": "ntfs.native_lifecycle_unresolved"
+    },
+    "execution_disposition": {
+      "description": "Unconfirmed original receipt fact; null never proves absence or non-mutation.",
+      "type": "null"
+    },
+    "exit_code": {
+      "const": 40
+    },
+    "inspection_required": {
+      "const": true
+    },
+    "intent_digest": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "mutation_attempted": {
+      "description": "Unconfirmed original receipt fact; null never proves absence or non-mutation.",
+      "type": "null"
+    },
+    "possible_dispatch": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt_digest": {
+      "description": "Unconfirmed original receipt fact; null never proves absence or non-mutation.",
+      "type": "null"
+    },
+    "receipt_publication_attempted": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retry_authorized": {
+      "const": false
+    },
+    "run_id": {
+      "oneOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stage3_command_result_version": {
+      "const": "1.2"
+    },
+    "success": {
+      "const": false
+    },
+    "target_verified": {
+      "description": "Unconfirmed original receipt fact; null never proves absence or non-mutation.",
+      "type": "null"
+    },
+    "terminal_status": {
+      "description": "Unconfirmed original receipt fact; null never proves absence or non-mutation.",
+      "type": "null"
+    }
+  },
+  "required": [
+    "blockers",
+    "command",
+    "diagnostic_digest",
+    "effect_plan_digest",
+    "error",
+    "execution_disposition",
+    "exit_code",
+    "inspection_required",
+    "intent_digest",
+    "mutation_attempted",
+    "possible_dispatch",
+    "receipt_digest",
+    "receipt_publication_attempted",
+    "retry_authorized",
+    "run_id",
+    "stage3_command_result_version",
+    "success",
+    "target_verified",
+    "terminal_status"
+  ],
+  "title": "Phase native lifecycle unconfirmed-original-receipt diagnostic 1.2",
+  "type": "object"
+}

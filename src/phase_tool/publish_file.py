@@ -167,6 +167,7 @@ def publish_file(
                 evidence_root=evidence_root, run_id=run_id,
                 input_paths={"payload": frozen.blob_path},
                 expected_inputs={"payload": (frozen.digest, frozen.length)},
+                _expected_candidate_bytes=candidate_bytes,
                 root_bindings={TARGET_ROOT_BINDING: target_root},
             )
             # Preserve the returned execution evidence before fallible cleanup.

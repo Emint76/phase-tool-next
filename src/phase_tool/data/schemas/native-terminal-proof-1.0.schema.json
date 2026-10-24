@@ -1,0 +1,482 @@
+{
+  "$defs": {
+    "digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "exactBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "package_digest"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "implementation_authorityBinding": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "profile": {
+              "$ref": "#/$defs/implementation_profileBinding"
+            },
+            "provider": {
+              "$ref": "#/$defs/implementation_providerBinding"
+            },
+            "usage": {
+              "const": "provider_backed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": {
+              "type": "null"
+            },
+            "provider": {
+              "type": "null"
+            },
+            "usage": {
+              "const": "mechanism_managed"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "profile": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/implementation_profileBinding"
+            }
+          ]
+        },
+        "provider": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/implementation_providerBinding"
+            }
+          ]
+        },
+        "usage": {
+          "enum": [
+            "provider_backed",
+            "mechanism_managed"
+          ]
+        }
+      },
+      "required": [
+        "usage",
+        "profile",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "implementation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "implementation_exactBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/implementation_identifier"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/implementation_digest"
+        },
+        "version": {
+          "$ref": "#/$defs/implementation_semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "package_digest"
+      ],
+      "type": "object"
+    },
+    "implementation_identifier": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "implementation_profileBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "descriptor_digest": {
+          "$ref": "#/$defs/implementation_digest"
+        },
+        "id": {
+          "$ref": "#/$defs/implementation_identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/implementation_semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "descriptor_digest"
+      ],
+      "type": "object"
+    },
+    "implementation_providerBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_digest": {
+          "$ref": "#/$defs/implementation_digest"
+        },
+        "id": {
+          "$ref": "#/$defs/implementation_identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/implementation_semver"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "artifact_digest"
+      ],
+      "type": "object"
+    },
+    "implementation_semver": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+      "type": "string"
+    },
+    "nativeBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "composition": {
+          "additionalProperties": false,
+          "properties": {
+            "artifact_graph_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "version": {
+              "$ref": "#/$defs/semver"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "artifact_graph_digest"
+          ],
+          "type": "object"
+        },
+        "evidence_identity": {
+          "additionalProperties": false,
+          "properties": {
+            "device": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "inode": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "stable_id": {
+              "$ref": "#/$defs/identifier"
+            }
+          },
+          "required": [
+            "stable_id",
+            "device",
+            "inode"
+          ],
+          "type": "object"
+        },
+        "installation": {
+          "additionalProperties": false,
+          "properties": {
+            "descriptor_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "id": {
+              "$ref": "#/$defs/identifier"
+            }
+          },
+          "required": [
+            "id",
+            "descriptor_digest"
+          ],
+          "type": "object"
+        },
+        "native_binding_version": {
+          "const": "1.0"
+        },
+        "operation_nonce": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "native_binding_version",
+        "installation",
+        "composition",
+        "evidence_identity",
+        "operation_nonce"
+      ],
+      "type": "object"
+    },
+    "nativeRootGrant": {
+      "additionalProperties": false,
+      "properties": {
+        "components": {
+          "items": {
+            "maxLength": 255,
+            "minLength": 1,
+            "not": {
+              "pattern": "^(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\\.|$)"
+            },
+            "pattern": "^[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "device": {
+          "pattern": "^\\\\Device\\\\HarddiskVolume[0-9]+$",
+          "type": "string"
+        },
+        "native_identity": {
+          "additionalProperties": false,
+          "properties": {
+            "file_id": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "volume_serial": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "volume_serial",
+            "file_id"
+          ],
+          "type": "object"
+        },
+        "root_binding": {
+          "$ref": "#/$defs/identifier"
+        },
+        "volume_guid": {
+          "pattern": "^\\\\\\\\\\?\\\\volume\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}\\\\$",
+          "type": "string"
+        },
+        "volume_serial32": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root_binding",
+        "device",
+        "volume_guid",
+        "volume_serial32",
+        "components",
+        "native_identity"
+      ],
+      "type": "object"
+    },
+    "runId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "semver": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+      "type": "string"
+    }
+  },
+  "$id": "https://phase-tool.local/schemas/native-terminal-proof-1.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "common_guard_finalized": {
+      "const": true
+    },
+    "idempotency": {
+      "additionalProperties": false,
+      "properties": {
+        "enter_started": {
+          "type": "boolean"
+        },
+        "entered": {
+          "type": "boolean"
+        },
+        "finalized": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enter_started",
+        "entered",
+        "finalized"
+      ],
+      "type": "object"
+    },
+    "installation": {
+      "additionalProperties": false,
+      "properties": {
+        "descriptor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "required": [
+        "id",
+        "descriptor_digest"
+      ],
+      "type": "object"
+    },
+    "native_binding": {
+      "$ref": "#/$defs/nativeBinding"
+    },
+    "native_terminal_proof_version": {
+      "const": "1.0"
+    },
+    "physical": {
+      "additionalProperties": false,
+      "properties": {
+        "local_channel_sealed": {
+          "const": true
+        },
+        "no_dispatch_finalization": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "no_dispatch_safety_established": {
+          "type": "boolean"
+        },
+        "observations": {
+          "additionalProperties": false,
+          "properties": {
+            "post_operation": {
+              "additionalProperties": false,
+              "properties": {
+                "observation": {
+                  "type": "object"
+                },
+                "run_id": {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "observation",
+                "run_id"
+              ],
+              "type": "object"
+            },
+            "pre_operation": {
+              "additionalProperties": false,
+              "properties": {
+                "observation": {
+                  "type": "object"
+                },
+                "run_id": {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "observation",
+                "run_id"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "parent_response": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "parent_safety_established": {
+          "type": "boolean"
+        },
+        "possible_dispatch": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "server_ingress_sealed": {
+          "const": true
+        }
+      },
+      "required": [
+        "local_channel_sealed",
+        "no_dispatch_finalization",
+        "no_dispatch_safety_established",
+        "observations",
+        "parent_response",
+        "parent_safety_established",
+        "possible_dispatch",
+        "run_id",
+        "server_ingress_sealed"
+      ],
+      "type": "object"
+    },
+    "prepared_receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "registry_snapshot_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "common_guard_finalized",
+    "idempotency",
+    "installation",
+    "native_binding",
+    "native_terminal_proof_version",
+    "physical",
+    "prepared_receipt_digest",
+    "registry_snapshot_digest",
+    "run_id"
+  ],
+  "title": "Native physical completion attachment; Core remains receipt owner",
+  "type": "object"
+}

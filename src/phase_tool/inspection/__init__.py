@@ -235,9 +235,17 @@ def _inspect_missing_receipt_state(
     contract: ResolvedContract,
     root_bindings: Mapping[str, Path],
     registry: RegistrySnapshot,
+    *, _native_authority: object | None = None,
 ) -> str | None:
     try:
-        validate_static_plan(plan, contract, root_bindings, registry)
+        if _native_authority is None:
+            validate_static_plan(plan, contract, root_bindings, registry)
+        else:
+            _native_authority.require_contract(contract)
+            _native_authority.require_request_roots(root_bindings,
+                Path(parse_json_bytes(_native_authority.read_binding.manifest_bytes)['evidence_root']))
+            from ..planning import _validate_logical_plan
+            _validate_logical_plan(plan,contract,registry)
         return hook.inspect_missing_receipt_result(plan, root_bindings, registry)
     except PhaseError as exc:
         if exc.code != "plan.root_unavailable":
@@ -250,7 +258,13 @@ def _inspect_missing_receipt_state(
 def _resolved_hook_roots(
     contract: ResolvedContract,
     root_bindings: Mapping[str, Path],
+    *, _native_authority: object | None = None,
 ) -> dict[str, Path]:
+    if _native_authority is not None:
+        _native_authority.require_contract(contract)
+        _native_authority.require_request_roots(root_bindings,
+            Path(parse_json_bytes(_native_authority.read_binding.manifest_bytes)['evidence_root']))
+        return dict(root_bindings)  # Opaque lexical projections, never POSIX target roots.
     resolved = dict(root_bindings)
     for declaration in contract.document["write_scope"]["roots"]:
         binding_id = declaration["binding_id"]
@@ -263,6 +277,24 @@ def _resolved_hook_roots(
     return resolved
 
 
+def _check_native_intent_binding(intent, contract, authority):
+    """Static exact-installation linkage before any contract hook/target path."""
+    if authority is None:
+        if intent.get('phase_intent_version') == '1.2':
+            raise PhaseError('inspection.native_installation_required')
+        return
+    authority.require_contract(contract)
+    if intent.get('phase_intent_version') != '1.2':
+        raise PhaseError('ntfs.original_native_intent_required')
+    expected = authority.read_binding._parser_bindings(intent)
+    fields = {'installed_core_binding': intent['core'],
+        'installed_native_binding': intent['native_binding'],
+        'installed_root_grants': intent['idempotency']['root_identities'],
+        'installed_implementation_binding': intent['implementation_binding']}
+    if any(expected[key] != canonical_bytes(value) for key, value in fields.items()):
+        raise PhaseError('ntfs.original_installation_binding_mismatch')
+
+
 def inspect_run(
     evidence_root: Path,
     run_id: str,
@@ -270,10 +302,17 @@ def inspect_run(
     *,
     root_bindings: Mapping[str, Path] | None = None,
     _visited_receipts: frozenset[str] = frozenset(),
+    _native_authority: object | None = None,
 ) -> dict[str, Any]:
     """Verify evidence and, for observed results, re-read installation-bound target bytes."""
     validate_run_id(run_id)
     registry = registry or BundledRegistry.load()
+    if _native_authority is not None:
+        from ..mutation.ntfs.authority import _NativeFileCreateAuthority
+        if type(_native_authority) is not _NativeFileCreateAuthority or _native_authority.registry is not registry:
+            raise PhaseError("ntfs.closed_native_installation_required")
+        _native_authority._usable()
+        _native_authority.require_request_roots(root_bindings or {}, evidence_root)
     try:
         root = Path(_platform_path(Path(evidence_root))).resolve(strict=True)
         run_root = (root / ".phase" / "runs" / run_id).resolve(strict=True)
@@ -284,11 +323,18 @@ def inspect_run(
         run_root.relative_to(expected_parent)
     except ValueError as exc:
         raise PhaseError("inspection.outside_evidence_root", run_id) from exc
+    if (_native_authority is None and evidence_file_exists(
+            run_root / 'attachments' / 'native-terminal-proof.json')):
+        # A pre-intent rejection may have no profile/implementation binding.
+        # Native provenance is still present; never accept it through Host I/O.
+        raise PhaseError('inspection.native_installation_required')
     receipt_path = run_root / "receipt.json"
     if not evidence_file_exists(receipt_path):
         intent, _ = _read_canonical(run_root / "intent.json")
         intent_digest = profile_digest("intent", intent)
         validate_intent(intent, registry)
+        if intent.get('phase_intent_version') == '1.2' and _native_authority is None:
+            raise PhaseError('inspection.native_installation_required')
         plan, _ = _read_canonical(run_root / "attachments" / "effect-plan.json")
         plan_digest = profile_digest("effect-plan", plan)
         if plan_digest != intent["effect_plan_digest"]:
@@ -304,6 +350,7 @@ def inspect_run(
             contract_binding["package_digest"],
             core_version=intent["core"]["version"],
         )
+        _check_native_intent_binding(intent, contract, _native_authority)
         validate_plan_mechanism_authorization(plan, contract, registry)
         implementation_binding = intent.get("implementation_binding")
         if implementation_binding is None and _implementation_binding_required(contract, registry):
@@ -315,7 +362,7 @@ def inspect_run(
         _verify_bound_pre_validators(run_root, intent)
         _verify_intent_blobs(run_root, intent, plan)
         state_classification = None
-        hook = load_contract_hook(contract)
+        hook = load_contract_hook(contract,**({} if _native_authority is None else {'_native_authority':_native_authority}))
         if hook is not None and hasattr(hook, "inspect_missing_receipt_result"):
             state_classification = _inspect_missing_receipt_state(
                 hook,
@@ -323,9 +370,16 @@ def inspect_run(
                 contract,
                 root_bindings or {},
                 registry,
+                **({} if _native_authority is None else {'_native_authority':_native_authority}),
             )
         from .recovered import inspect_missing_recovery
-        recovery = inspect_missing_recovery(registry, root, run_root, intent, plan, root_bindings or {})
+        recovery = ({'inspection_status': 'indeterminate',
+            'inspection_error': 'inspection.original_receipt_unconfirmed',
+            'inspection_required': True, 'recorded_recovery_mutation_attempted': None,
+            'recovery_observations': []} if _native_authority is not None else
+            inspect_missing_recovery(registry, root, run_root, intent, plan, root_bindings or {}))
+        if _native_authority is not None:
+            _native_authority._usable()  # Whole-read root/profile identity recheck.
         return {
             "run_id": run_id,
             "terminal_status": None,
@@ -350,10 +404,23 @@ def inspect_run(
     if receipt_digest in _visited_receipts:
         raise PhaseError("inspection.prior_receipt_cycle", receipt_digest)
     validate_receipt(receipt, registry)
+    native_proof = None
+    if _native_authority is not None:
+        from ..mutation.ntfs.proof import verify_native_terminal_proof
+        # Read-only verification only. This never fsyncs, retries target effects
+        # or discharges the original barrier; successor confirmation is separate.
+        native_proof = verify_native_terminal_proof(_native_authority.read_binding, run_root, receipt)
+    else:
+        implementation = receipt.get('implementation_binding')
+        authority_binding = implementation.get('authority') if isinstance(implementation, Mapping) else None
+        profile = authority_binding.get('profile') if isinstance(authority_binding, Mapping) else None
+        if isinstance(profile, Mapping) and profile.get('id') == 'phase.native.ntfs.authority.v1':
+            raise PhaseError('inspection.native_installation_required')
     intent = None
     intent_digest = None
     plan = None
     plan_digest = None
+    native_target_identity = None
     target_verified: bool | None = None
     contract_result: Any | None = None
     state_classification: str | None = None
@@ -361,6 +428,8 @@ def inspect_run(
         intent, _ = _read_canonical(run_root / "intent.json")
         intent_digest = profile_digest("intent", intent)
         validate_intent(intent, registry)
+        if intent.get('phase_intent_version') == '1.2' and _native_authority is None:
+            raise PhaseError('inspection.native_installation_required')
         if intent_digest != receipt["evidence"]["intent_digest"]:
             raise PhaseError("inspection.digest_mismatch", "intent.json")
         plan, plan_attachment_digest = _read_canonical(run_root / "attachments" / "effect-plan.json")
@@ -377,6 +446,7 @@ def inspect_run(
             intent["contract"]["package_digest"],
             core_version=intent["core"]["version"],
         )
+        _check_native_intent_binding(intent, contract_for_plan, _native_authority)
         validate_plan_mechanism_authorization(plan, contract_for_plan, registry)
         intent_binding = intent.get("implementation_binding")
         receipt_binding = receipt.get("implementation_binding")
@@ -395,7 +465,16 @@ def inspect_run(
         attachment_digests = {plan_attachment_digest, validators_digest}
         claimed = set(receipt["evidence"]["attachment_digests"])
         effect_receipts = receipt["effect_receipts"]
-        if effect_receipts:
+        unknown_dispatch_without_receipts = (
+            not effect_receipts
+            and receipt["terminal_status"] == "indeterminate"
+            and receipt["execution_disposition"] == "executed"
+            and receipt["mutation_attempted"] is True
+            and receipt["recovery_required"] is True
+            and receipt["retry_disposition"] == "forbidden"
+            and "broker.dispatch_outcome_unknown" in receipt["blockers"]
+        )
+        if effect_receipts or unknown_dispatch_without_receipts:
             pre_validators, pre_validators_digest = _read_canonical(run_root / "attachments" / "pre-validator-results.json")
             stored_effect_receipts, effect_receipts_digest = _read_canonical(run_root / "attachments" / "effect-receipts.json")
             if stored_effect_receipts != effect_receipts:
@@ -415,10 +494,13 @@ def inspect_run(
                 attachment_digests.add(progress_digest)
             elif receipt["evidence"]["finalization_status"] == "finalized":
                 attachment_digests.add(progress_digest)
+        if native_proof is not None:
+            attachment_digests.add(native_proof["attachment_digest"])
         if attachment_digests != claimed:
             raise PhaseError("inspection.attachment_set_mismatch")
         _verify_intent_blobs(run_root, intent, plan)
-        hook_for_plan = load_contract_hook(contract_for_plan)
+        hook_for_plan = load_contract_hook(contract_for_plan,
+            **({} if _native_authority is None else {'_native_authority':_native_authority}))
         needs_state_classification = (
             receipt["terminal_status"] not in {"succeeded_verified", "validated_planned"}
             or receipt["evidence"]["finalization_status"] != "finalized"
@@ -430,6 +512,7 @@ def inspect_run(
                 contract_for_plan,
                 root_bindings or {},
                 registry,
+                **({} if _native_authority is None else {'_native_authority':_native_authority}),
             )
     canonical_result = receipt["canonical_result"]
     if canonical_result is not None:
@@ -448,10 +531,14 @@ def inspect_run(
             target_root = Path(roots[root_id])
         except KeyError as exc:
             raise PhaseError("inspection.target_root_missing", root_id) from exc
-        try:
-            resolved_target_root = target_root.resolve(strict=True)
-        except (OSError, ValueError) as exc:
-            raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
+        if _native_authority is not None:
+            _native_authority.require_contract(contract)
+            resolved_target_root = None  # No target-path resolution through Linux.
+        else:
+            try:
+                resolved_target_root = target_root.resolve(strict=True)
+            except (OSError, ValueError) as exc:
+                raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
         state = canonical_result["state"]
         appended = canonical_result.get("appended_record")
         data: bytes | None = None
@@ -467,43 +554,59 @@ def inspect_run(
             ):
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         try:
-            authority = HostAuthorityProvider().open_authority(
-                resolved_target_root,
-                canonical_result["locator"],
-                create_parents=False,
-            )
-            try:
-                if appended is not None:
-                    stream_observation = authority.observe_record_stream(
-                        prefix_length=appended["append_offset"] + append_tail_bytes,
-                        segment_offset=appended["append_offset"],
-                        segment_length=append_tail_bytes,
-                    )
-                elif contract.document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
-                    from ..bundle import verify_bundle
-                    data, _manifest = verify_bundle(authority.target, state["digest"], run_id=run_id, plan_digest=plan_digest)
-                    from ..prepared_binding import verify_bound_bundle_target
-                    verify_bound_bundle_target(registry, contract, intent, plan, run_root, authority.target)
-                    authority.assert_namespace_binding()
-                elif contract.document["operation"]["mechanism"]["id"] == "mechanism.exclusive_create_v2":
-                    from ..streaming import FILE_LIMIT, observe_target
-                    streamed_state = observe_target(authority, FILE_LIMIT)
+            if _native_authority is not None:
+                if appended is not None or native_proof is None:
+                    raise PhaseError('inspection.native_binding_mismatch')
+                if contract.document['identity']['id'] == 'publish_new_version.v1':
+                    targets = native_proof['target_identity']
+                    if receipt['execution_disposition'] != 'reused_existing' and (
+                            type(targets) is not dict or set(targets) != {'current','archive'}):
+                        raise PhaseError('inspection.native_identity_mismatch')
+                    observation = _native_authority.observe_advisory(root_binding=root_id,
+                        locator=canonical_result['locator'],expected_identity=None if targets is None else targets['current'])
                 else:
-                    maximum_bytes = _MATERIALIZED_TARGET_LIMITS.get(
-                        contract.document["operation"]["mechanism"]["id"]
-                    )
-                    if (
-                        maximum_bytes is None
-                        or not isinstance(state.get("length"), int)
-                        or isinstance(state.get("length"), bool)
-                        or state["length"] < 0
-                        or state["length"] > maximum_bytes
-                    ):
-                        raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
-                    data = authority.read_bytes(maximum_bytes=maximum_bytes)
-                    authority.assert_namespace_binding()
-            finally:
-                authority.close()
+                    observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
+                        locator=canonical_result['locator'], expected_identity=native_proof['target_identity'])
+                streamed_state = observation['state']
+                native_target_identity = observation['native']['native_identity']
+            else:
+                authority = HostAuthorityProvider().open_authority(
+                    resolved_target_root,
+                    canonical_result["locator"],
+                    create_parents=False,
+                )
+                try:
+                    if appended is not None:
+                        stream_observation = authority.observe_record_stream(
+                            prefix_length=appended["append_offset"] + append_tail_bytes,
+                            segment_offset=appended["append_offset"],
+                            segment_length=append_tail_bytes,
+                        )
+                    elif contract.document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
+                        from ..bundle import verify_bundle
+                        data, _manifest = verify_bundle(authority.target, state["digest"], run_id=run_id, plan_digest=plan_digest)
+                        from ..prepared_binding import verify_bound_bundle_target
+                        verify_bound_bundle_target(registry, contract, intent, plan, run_root, authority.target)
+                        authority.assert_namespace_binding()
+                    elif contract.document["operation"]["mechanism"]["id"] == "mechanism.exclusive_create_v2":
+                        from ..streaming import FILE_LIMIT, observe_target
+                        streamed_state = observe_target(authority, FILE_LIMIT)
+                    else:
+                        maximum_bytes = _MATERIALIZED_TARGET_LIMITS.get(
+                            contract.document["operation"]["mechanism"]["id"]
+                        )
+                        if (
+                            maximum_bytes is None
+                            or not isinstance(state.get("length"), int)
+                            or isinstance(state.get("length"), bool)
+                            or state["length"] < 0
+                            or state["length"] > maximum_bytes
+                        ):
+                            raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
+                        data = authority.read_bytes(maximum_bytes=maximum_bytes)
+                        authority.assert_namespace_binding()
+                finally:
+                    authority.close()
         except (OSError, PhaseError) as exc:
             raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
         if appended is not None:
@@ -538,51 +641,68 @@ def inspect_run(
                 registry,
                 root_bindings=root_bindings,
                 _visited_receipts=_visited_receipts | {receipt_digest},
+                **({} if _native_authority is None else {"_native_authority": _native_authority}),
             )
             if prior.get("terminal_status") != "succeeded_verified" or prior.get("target_verified") is not True or prior.get("contract") != receipt["contract"]:
                 raise PhaseError("inspection.prior_receipt_mismatch", prior_run_id)
             if prior.get("implementation_binding") != receipt.get("implementation_binding"):
                 raise PhaseError("inspection.implementation_binding_mismatch")
+            if _native_authority is not None:
+                if (prior.get('native_target_identity') is None
+                    or native_target_identity != prior['native_target_identity']):
+                    raise PhaseError('inspection.native_identity_mismatch')
             contract_result = prior.get("contract_result")
         else:
-            hook = load_contract_hook(contract)
+            native_context = {} if _native_authority is None else {'_native_authority':_native_authority}
+            if (_native_authority is not None and contract.document['identity']['id'] == 'publish_new_version.v1'):
+                if native_proof is None or native_proof['target_identity'] is None:
+                    raise PhaseError('inspection.native_identity_mismatch')
+                native_context['_native_expected_targets'] = canonical_bytes(native_proof['target_identity'])
+            hook = load_contract_hook(contract,**native_context)
             if hook is not None:
                 setattr(hook, "_registry", registry)
-                hook_roots = _resolved_hook_roots(contract, root_bindings or {})
+                hook_roots = _resolved_hook_roots(contract, root_bindings or {},
+                    **({} if _native_authority is None else {'_native_authority':_native_authority}))
                 try:
-                    if data is None:
-                        if not hasattr(hook, "inspect_stream_result"):
-                            raise PhaseError("contract.hook_invalid")
-                        contract_result = hook.inspect_stream_result(
-                            stream_observation,
-                            state["digest"],
-                            target_root,
-                            receipt_digest,
-                            registry,
-                            evidence_root=root,
-                        )
+                    if _native_authority is not None:
+                        if not hasattr(hook,'inspect_native_result'):
+                            raise PhaseError('contract.hook_invalid')
+                        contract_result = hook.inspect_native_result(receipt,plan,target_root,registry,root,
+                            root_bindings=hook_roots)
                     else:
-                        contract_result = hook.inspect_result(
-                            data,
-                            state["digest"],
-                            target_root,
-                            receipt_digest,
-                            registry,
-                            evidence_root=root,
-                        )
-                    if hasattr(hook, "inspect_receipt_result"):
-                        receipt_result = hook.inspect_receipt_result(
-                            receipt,
-                            plan,
-                            target_root,
-                            registry,
-                            root,
-                            root_bindings=hook_roots,
-                        )
-                        if isinstance(contract_result, dict) and isinstance(receipt_result, dict):
-                            contract_result = dict(contract_result) | receipt_result
+                        if data is None:
+                            if not hasattr(hook, "inspect_stream_result"):
+                                raise PhaseError("contract.hook_invalid")
+                            contract_result = hook.inspect_stream_result(
+                                stream_observation,
+                                state["digest"],
+                                target_root,
+                                receipt_digest,
+                                registry,
+                                evidence_root=root,
+                            )
                         else:
-                            contract_result = receipt_result
+                            contract_result = hook.inspect_result(
+                                data,
+                                state["digest"],
+                                target_root,
+                                receipt_digest,
+                                registry,
+                                evidence_root=root,
+                            )
+                        if hasattr(hook, "inspect_receipt_result"):
+                            receipt_result = hook.inspect_receipt_result(
+                                receipt,
+                                plan,
+                                target_root,
+                                registry,
+                                root,
+                                root_bindings=hook_roots,
+                            )
+                            if isinstance(contract_result, dict) and isinstance(receipt_result, dict):
+                                contract_result = dict(contract_result) | receipt_result
+                            else:
+                                contract_result = receipt_result
                 except OSError as exc:
                     raise PhaseError("inspection.target_unavailable") from exc
         target_verified = True
@@ -607,4 +727,7 @@ def inspect_run(
         result["state_classification"] = state_classification
     if contract_result is not None:
         result["contract_result"] = contract_result
+    if _native_authority is not None:
+        _native_authority._usable()
+        result['native_target_identity'] = native_target_identity
     return result

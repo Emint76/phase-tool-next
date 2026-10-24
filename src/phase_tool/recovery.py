@@ -99,50 +99,12 @@ def verify_preconditions(application, run: Path, intent: dict, plan: dict) -> st
     This is verification of saved claims, never a re-run claiming that an absent
     destination is still absent. Commit-time observations are separate.
     """
-    from jsonschema import Draft202012Validator, FormatChecker
     try:
         binding = intent['contract']
         contract = application.registry.resolve_contract(binding['id'], binding['version'], binding['package_digest'], core_version=intent['core']['version'])
-        resource = 'schemas/validator-result.schema.json'
-        # Validator-result 1.0 is a registry schema, not a contract package
-        # artifact. Its version is enforced by that unchanged closed schema.
-        schema = application.registry.schema_document('https://phase-tool.local/'+resource)
-        validator = Draft202012Validator(schema, format_checker=FormatChecker())
+        from .preconditions import verify_saved_precondition_results
         data = read_bounded_file(run/'attachments/pre-validator-results.json', REQUEST_LIMIT)
-        from .preconditions import verify_pre_validator_binding
-        verify_pre_validator_binding(intent, digest_bytes(data))
-        pre = parse_json_bytes(data)
-        declarations = contract.document['validators']
-        if not isinstance(pre, list) or len(pre) != len(declarations) or canonical_bytes(pre) != data:
-            raise ValueError('incomplete results')
-        if plan['run_id'] != intent['run_id'] or plan['contract'] != binding:
-            raise ValueError('plan binding')
-        content_digest = plan['effects'][0]['content_digest']
-        if not any(item['digest'] == content_digest for item in intent['inputs']):
-            raise ValueError('input binding')
-        for item, declaration in zip(pre, declarations, strict=True):
-            validator.validate(item)
-            expected_binding = {key: declaration['binding'][key] for key in ('id','version','package_digest')}
-            if (item['validator'] != expected_binding or item['run_id'] != intent['run_id']
-                or item['phase'] != declaration['phase'] or item['blocking'] != declaration['blocking']
-                or item['started_at'] != intent['created_at'] or item['finished_at'] != intent['created_at']
-                or item['observation_refs'] or item.get('detail_attachment') is not None or item['blockers']):
-                raise ValueError('result binding')
-            # These exact builtins emit no external observations/attachments.
-            identifier = expected_binding['id']
-            expected = {'validator.exact_binding_v1': 'exact_registry_binding',
-                        'fixture.create.candidate_v1': 'schema_valid',
-                        'bundle.candidate_v1': 'schema_valid',
-                        'validator.frozen_blob_v1': content_digest,
-                        'validator.destination_absent_v1': 'absent',
-                        'validator.result_digest_v1': 'prior_phases_pass',
-                        'bundle.result_v1': 'prior_phases_pass'}[identifier]
-            post = declaration['phase'] == 'post_operation'
-            if (item['status'] != ('not_reached' if post else 'pass')
-                or item['code'] != ('validation.not_reached' if post else 'validation.pass')
-                or item['expected'] != expected or item['actual'] != (None if post else expected)):
-                raise ValueError('result content')
-        return digest_bytes(data)
+        return verify_saved_precondition_results(application.registry, contract, intent, plan, data)
     except (PhaseError, OSError, ValueError, TypeError, KeyError, StopIteration, ValidationError) as exc:
         raise PhaseError('recovery.preconditions_not_proven') from exc
 

@@ -90,7 +90,7 @@ jobs:
           "$VENV/bin/python" -m pip install "$EVIDENCE"/dist/*.whl 2>&1 | tee "$EVIDENCE/install-wheel.log"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == "1.1.0"; print(p)' | tee "$EVIDENCE/installed-location.txt"
+          "$VENV/bin/python" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()), p; assert m.version("phase-tool") == phase_tool.__distribution_version__ == "1.2.0rc1"; assert phase_tool.__version__ == "1.2.0-rc.1"; print(p)' | tee "$EVIDENCE/installed-location.txt"
           "$VENV/bin/phase" --version | tee "$EVIDENCE/installed-version.txt"
           "$VENV/bin/phase" doctor | tee "$EVIDENCE/installed-doctor.json"
           "$VENV/bin/phase" contracts list | tee "$EVIDENCE/installed-contracts.json"
@@ -110,6 +110,16 @@ jobs:
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/correction_installed_smoke.py" --root "$EVIDENCE/installed-correction" 2>&1 | tee "$EVIDENCE/installed-correction.log"
+      - name: Installed old-new-old Host rollback
+        if: matrix.python == '3.11'
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python -B "$GITHUB_WORKSPACE/scripts/host_rollback_smoke.py" \
+            --root "$EVIDENCE/installed-host-rollback" \
+            --wheel "$EVIDENCE/dist/phase_tool-1.2.0rc1-py3-none-any.whl" \
+            --lock "$GITHUB_WORKSPACE/docker/requirements.lock" \
+            2>&1 | tee "$EVIDENCE/installed-host-rollback.log"
       - name: Preserve verification artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -159,17 +169,19 @@ jobs:
           "$PYTHON" -m pip freeze > "$EVIDENCE/installed-dependencies.txt"
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
-          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == "1.1.0"; print(p)' > "$EVIDENCE/installed-location.txt"
+          "$PYTHON" -c 'import importlib.metadata as m, pathlib, sys, phase_tool; p=pathlib.Path(phase_tool.__file__).resolve(); assert p.is_relative_to(pathlib.Path(sys.prefix).resolve()); assert m.version("phase-tool") == phase_tool.__distribution_version__ == "1.2.0rc1"; assert phase_tool.__version__ == "1.2.0-rc.1"; print(p)' > "$EVIDENCE/installed-location.txt"
       - name: Real 64 MiB 1 GiB 2 GiB streaming and RSS gate
         run: |
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
+          sha256sum "$GITHUB_WORKSPACE/scripts/rc01_resources.py" "$GITHUB_WORKSPACE/tests/test_resource_rss_gate.py" > "$EVIDENCE/harness-SHA256SUMS"
           "$RESOURCE_PYTHON" "$GITHUB_WORKSPACE/scripts/rc01_resources.py" --output "$EVIDENCE/resources.json" 2>&1 | tee "$EVIDENCE/resources.log"
       - name: Real 256 file 256 MiB bundle gate
         run: |
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
           "$RESOURCE_PYTHON" "$GITHUB_WORKSPACE/scripts/rc01_bundle_resources.py" --output "$EVIDENCE/bundle-resources.json" 2>&1 | tee "$EVIDENCE/bundle-resources.log"
+          sha256sum --check --status "$EVIDENCE/harness-SHA256SUMS"
       - name: Preserve exact-candidate resource evidence
         if: always()
         uses: actions/upload-artifact@v4

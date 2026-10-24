@@ -149,7 +149,7 @@ def test_untrusted_preconditions_never_authorize_recovery_effect(tmp_path, monke
     assert not (run / "recovery/commit-intent.json").exists()
 
 
-@pytest.mark.parametrize("version", ["1.0", "1.1"])
+@pytest.mark.parametrize("version", ["1.0", "1.1", "1.2"])
 def test_binding_helper_has_explicit_historical_guarantees(version):
     from phase_tool.errors import PhaseError
     from phase_tool.preconditions import verify_pre_validator_binding
@@ -170,7 +170,7 @@ def test_binding_helper_has_explicit_historical_guarantees(version):
             verify_pre_validator_binding(intent, original)
 
 
-@pytest.mark.parametrize("version", [None, "", "1.2", "2.0"])
+@pytest.mark.parametrize("version", [None, "", "1.3", "2.0"])
 def test_binding_helper_does_not_exempt_unknown_formats(version):
     from phase_tool.errors import PhaseError
     from phase_tool.preconditions import verify_pre_validator_binding

@@ -1,12 +1,12 @@
 """Final candidate version identity, not a relabelled stable v1.0.0."""
 from importlib import metadata
-from phase_tool import __version__
+from phase_tool import __version__, __distribution_version__
 from phase_tool.application import PhaseApplication
 
 
 def test_rc01_has_explicit_prerelease_and_resolves_old_contracts() -> None:
-    assert metadata.version('phase-tool')=='1.1.0'
-    assert __version__=='1.1.0'
+    assert metadata.version('phase-tool')==__distribution_version__=='1.2.0rc1'
+    assert __version__=='1.2.0-rc.1'
     app=PhaseApplication()
     assert app.doctor().payload['version']==__version__
     contracts=app.contracts_list().payload['contracts']
@@ -23,7 +23,7 @@ def test_installed_candidate_cli_mcp_smoke(tmp_path) -> None:
         env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode==0,result.stdout+result.stderr
     report=json.loads((tmp_path/'installed/summary.json').read_text())
-    assert report['success'] and report['version']=='1.1.0'
+    assert report['success'] and report['version']=='1.2.0rc1'
     assert report['file_bytes']==2097152
     assert report['bundle_members']==2
     assert report['cross_inspect'] and report['recovery'] and report['metadata_status_not_verification']

@@ -249,10 +249,34 @@ class RegistrySnapshot:
         entry = matches[0]
         if entry.get("capability") != "mutation_authority":
             raise PhaseError("registry.capability_mismatch", str(binding.get("id", "unknown")))
+        # A package-bound profile requires an actual artifact list. In the
+        # generic verifier an absent/null package is optional; it is not here.
+        package_artifacts = entry.get("package_artifacts")
+        if type(package_artifacts) is not list or any(
+            type(item) is not dict or type(item.get("resource")) is not str
+            or type(item.get("digest")) is not str
+            or ("archive_resource" in item and type(item["archive_resource"]) is not str)
+            for item in package_artifacts
+        ):
+            raise PhaseError("guarantee_profile.schema_unbound", str(binding.get("id", "unknown")))
         self._verify_entry(entry)
         descriptor = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
 
-        profile_schema = self.schema_document("https://phase-tool.local/schemas/mutation-guarantee-profile.schema.json")
+        # Closed version dispatch. Both old and new schemas are pinned by the
+        # exact immutable profile package, never selected via current/$schema.
+        schema_resources = {
+            "1.0": "schemas/mutation-guarantee-profile.schema.json",
+            "1.1": "schemas/mutation-guarantee-profile-1.1.schema.json",
+        }
+        version = descriptor.get("descriptor_version")
+        resource = schema_resources.get(version) if type(version) is str else None
+        if resource is None:
+            raise PhaseError("guarantee_profile.schema_unsupported", str(descriptor.get("descriptor_version")))
+        schema_bindings = [item["digest"] for item in package_artifacts
+            if item["resource"] == resource]
+        if len(schema_bindings) != 1:
+            raise PhaseError("guarantee_profile.schema_unbound", descriptor["id"])
+        profile_schema = self.schema_document("https://phase-tool.local/" + resource, schema_bindings[0])
         Draft202012Validator.check_schema(profile_schema)
         errors = sorted(Draft202012Validator(profile_schema).iter_errors(descriptor), key=lambda item: list(item.path))
         if errors:

@@ -43,6 +43,72 @@ def _normalized_linux_contour(value,keys):
         'ntfs.accepted_linux_contour_required')
     return value|{'mounts':sorted(mounts,key=lambda row:row['Destination'])}
 
+def _native_history_manifest_buffers(raw, expected_digest, *, active_bytes, active_digest):
+    """Pure accepted-config correlation; no authentication, I/O or authority.
+
+    Exactly two V5 manifest1.2 roles in fixed order. Trust belongs to the
+    externally accepted immutable config namespace, never to these hashes.
+    """
+    _require(type(raw) is bytes and len(raw)<=2*1024**2
+        and type(expected_digest) is str and digest_bytes(raw)==expected_digest,
+        'ntfs.accepted_history_binding_mismatch')
+    value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+    _require(type(value) is dict and canonical_bytes(value)==raw
+        and set(value)=={'history_manifest_set_version','manifests'}
+        and value['history_manifest_set_version']=='1.0'
+        and type(value['manifests']) is list and len(value['manifests'])==2,
+        'ntfs.accepted_history_shape')
+    buffers=[]
+    for role,row in zip(('file_create.v1','publish_new_version.v1'),value['manifests']):
+        _require(type(row) is dict and set(row)=={'manifest_base64','manifest_digest'}
+            and type(row['manifest_base64']) is str and type(row['manifest_digest']) is str
+            and re.fullmatch('sha256:[0-9a-f]{64}',row['manifest_digest']) is not None,
+            'ntfs.accepted_history_shape')
+        try:leaf=base64.b64decode(row['manifest_base64'],validate=True)
+        except (ValueError,UnicodeError) as error:
+            raise PhaseError('ntfs.accepted_history_shape') from error
+        _require(base64.b64encode(leaf).decode('ascii')==row['manifest_base64']
+            and digest_bytes(leaf)==row['manifest_digest'],
+            'ntfs.accepted_history_binding_mismatch')
+        manifest=parse_json_bytes(leaf,maximum_bytes=2*1024**2)
+        _require(type(manifest) is dict and canonical_bytes(manifest)==leaf
+            and manifest.get('native_read_installation_version')=='1.2'
+            and type(manifest.get('contract')) is dict and manifest['contract'].get('id')==role,
+            'ntfs.accepted_history_shape')
+        buffers.append((leaf,row['manifest_digest']))
+    _require(type(active_bytes) is bytes and type(active_digest) is str
+        and digest_bytes(active_bytes)==active_digest
+        and sum(leaf==active_bytes and sha==active_digest for leaf,sha in buffers)==1,
+        'ntfs.accepted_history_binding_mismatch')
+    return tuple(buffers)
+
+
+def _accepted_launch_history(config, manifest_bytes, manifest_digest):
+    """Closed config1.0 unchanged; config1.1 supplies accepted companion data."""
+    fields={'native_launch_version','phase_wheel','phase_wheel_digest',
+        'dependency_file_digests','windows_launcher','linux_launcher','docker_executable',
+        'core_container_id','reader_container_id','image_digest','linux_python',
+        'expected_linux_contours','artifact_graph'}
+    _require(type(config) is dict and type(config.get('native_launch_version')) is str,
+        'ntfs.accepted_launch_shape')
+    version=config['native_launch_version']
+    if version=='1.0':
+        _require(set(config)==fields,'ntfs.accepted_launch_shape')
+        return None,None
+    _require(version=='1.1' and set(config)==fields|{
+        'history_manifest_set_base64','history_manifest_set_digest'}
+        and type(config['history_manifest_set_base64']) is str,
+        'ntfs.accepted_launch_shape')
+    try:raw=base64.b64decode(config['history_manifest_set_base64'],validate=True)
+    except (ValueError,UnicodeError) as error:
+        raise PhaseError('ntfs.accepted_history_shape') from error
+    _require(base64.b64encode(raw).decode('ascii')==config['history_manifest_set_base64'],
+        'ntfs.accepted_history_shape')
+    digest=config['history_manifest_set_digest']
+    _native_history_manifest_buffers(raw,digest,active_bytes=manifest_bytes,active_digest=manifest_digest)
+    return raw,digest
+
+
 class _NativeAcceptedLaunch:
     """One invocation from the fixed trusted launcher, never from operation JSON.
 
@@ -68,12 +134,8 @@ class _NativeAcceptedLaunch:
         manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
         invocation=parse_json_bytes(invocation_bytes,maximum_bytes=2*1024**2)
         _require(canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
-            and canonical_bytes(invocation)==invocation_bytes
-            and type(config) is dict and set(config)=={'native_launch_version','phase_wheel',
-                'phase_wheel_digest','dependency_file_digests','windows_launcher','linux_launcher',
-                'docker_executable','core_container_id','reader_container_id','image_digest','linux_python',
-                'expected_linux_contours','artifact_graph'}
-            and config['native_launch_version']=='1.0','ntfs.accepted_launch_shape')
+            and canonical_bytes(invocation)==invocation_bytes,'ntfs.accepted_launch_shape')
+        self._history_manifest_set=_accepted_launch_history(config,manifest_bytes,expected_manifest_digest)
         _require(type(invocation) is dict and set(invocation)=={'run_id','channel_id','operation_nonce','request'}
             and type(invocation['run_id']) is str
             and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',invocation['run_id']) is not None
@@ -95,6 +157,10 @@ class _NativeAcceptedLaunch:
         self._held=[]
         self._finalization_attempted=set()
         self.check_runtime()
+
+    @property
+    def history_manifest_set(self):
+        return self._history_manifest_set
 
     @property
     def _config(self):return parse_json_bytes(self._config_bytes,maximum_bytes=2*1024**2)

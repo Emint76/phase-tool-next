@@ -139,9 +139,11 @@ def run_native_core(launch):
     # admission still refuses the unqualified candidate, even empty requirements.
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
     try:
+        history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))
         registry,installation=_native_installation_for_manifest(manifest_bytes=launch._manifest_bytes,
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
-            operation_nonce=launch.operation_nonce,channel_id=launch.channel_id)
+            operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
+            history_manifest_set_bytes=history_bytes,history_manifest_set_digest=history_digest)
     except (PhaseError,OSError,ValueError) as error:
         # ONLY this pre-installation boundary is a known ordinary refusal.
         # No Core lifecycle, native request or evidence reservation has begun.
@@ -209,10 +211,12 @@ def run_native_inspection(launch):
         'ntfs.fixed_native_request_required')
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
     try:
+        history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))
         registry,installation=_native_installation_for_manifest(manifest_bytes=launch._manifest_bytes,
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
-            _inspection_only=True)
+            _inspection_only=True,history_manifest_set_bytes=history_bytes,
+            history_manifest_set_digest=history_digest)
     except (PhaseError,OSError,ValueError) as error:
         # Only pre-installation refusal: no channel/evidence/target read begun.
         response=PhaseApplication(registry=registry)._failure('inspect',error)

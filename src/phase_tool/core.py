@@ -1392,7 +1392,7 @@ class PhaseCore:
 
 
 @contextmanager
-def _guard_native_original_intents(read_binding):
+def _guard_native_original_intents(read_binding, *, history_bindings=None):
     """Unselected refusal barrier over existing Core evidence, not authority.
 
     A future trusted native entrypoint must acquire this BEFORE EvidenceStore
@@ -1409,7 +1409,7 @@ def _guard_native_original_intents(read_binding):
     from .canonical import canonical_bytes
     from .evidence import validate_run_id
     from .installation import (_NativeFileCreateReadBinding,
-        _resolve_native_file_create_read_binding, _linux_filesystem_type,
+        _resolve_native_file_create_read_binding, _validate_native_history_bindings, _linux_filesystem_type,
         qualify_host_authority_roots)
     from .mutation.ntfs.native import _require
     from .streaming import read_bounded_file
@@ -1421,6 +1421,18 @@ def _guard_native_original_intents(read_binding):
         expected_manifest_digest=read_binding.manifest_digest, registry=read_binding.registry)
     manifest=parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
     root=Path(manifest['evidence_root']);registry=read_binding.registry
+    bindings=((read_binding,) if history_bindings is None else
+        _validate_native_history_bindings(read_binding,history_bindings))
+    static=tuple((row,parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2)) for row in bindings)
+
+    def historical_binding(contract,core,installation=None):
+        # Select ONLY from accepted static data, never from original claims.
+        # Contract-only selection is used solely for strict pre-intent rejects.
+        matches=[row for row,leaf in static if contract==leaf['contract'] and core==leaf['core']
+            and (installation is None or installation=={
+                'id':leaf['installation_id'],'descriptor_digest':row.manifest_digest})]
+        _require(len(matches)==1,'ntfs.original_history_binding_mismatch')
+        return matches[0]
     _require(sys.platform.startswith('linux'), 'ntfs.original_linux_reader_required')
     qualify_host_authority_roots({'phase_evidence_root':root})
     _require(_linux_filesystem_type(root)=='ext4', 'ntfs.original_ext4_evidence_required')
@@ -1476,11 +1488,12 @@ def _guard_native_original_intents(read_binding):
                         'ntfs.original_evidence_name_unsafe')
         return names,attachments
 
-    def no_effect_receipt(receipt,run_id,attachments,*,planned):
+    def no_effect_receipt(receipt,run_id,attachments,*,planned,selected):
         # Resolve the exact known package before validate_receipt's legacy
         # unknown-package structural fallback can be reached.
         _require(type(receipt) is dict, 'ntfs.original_receipt_binding_mismatch')
-        _require(receipt.get('contract')==manifest['contract'] and receipt.get('core')==manifest['core']
+        leaf=parse_json_bytes(selected.manifest_bytes,maximum_bytes=2*1024**2)
+        _require(receipt.get('contract')==leaf['contract'] and receipt.get('core')==leaf['core']
             and receipt.get('run_id')==run_id, 'ntfs.original_receipt_binding_mismatch')
         binding=receipt['contract']
         registry.resolve_contract(binding['id'],binding['version'],binding['package_digest'],
@@ -1515,7 +1528,12 @@ def _guard_native_original_intents(read_binding):
             'ntfs.original_receipt_binding_mismatch')
         digest = profile_digest('receipt',receipt)
         _require(digest not in visited, 'inspection.prior_receipt_cycle')
-        checked = verify_native_terminal_proof(read_binding,run,receipt)
+        proof,_=control(run/'attachments'/'native-terminal-proof.json')
+        _require(type(proof) is dict and type(proof.get('installation')) is dict
+            and set(proof['installation'])=={'id','descriptor_digest'},
+            'ntfs.original_history_binding_mismatch')
+        selected=historical_binding(receipt.get('contract'),receipt.get('core'),proof['installation'])
+        checked = verify_native_terminal_proof(selected,run,receipt)
         _require(receipt['evidence']['finalization_status'] == 'finalized'
             and receipt['recovery_required'] is False
             and 'broker.dispatch_outcome_unknown' not in receipt['blockers'],
@@ -1592,7 +1610,9 @@ def _guard_native_original_intents(read_binding):
                     continue
                 if 'intent.json' not in names:
                     receipt,_=control(run/'receipt.json')
-                    no_effect_receipt(receipt,entry.name,attachments,planned=False)
+                    _require(type(receipt) is dict,'ntfs.original_receipt_binding_mismatch')
+                    selected=historical_binding(receipt.get('contract'),receipt.get('core'))
+                    no_effect_receipt(receipt,entry.name,attachments,planned=False,selected=selected)
                     continue
                 intent,_=control(run/'intent.json')
                 _require(type(intent) is dict and intent.get('phase_intent_version')=='1.2',
@@ -1600,7 +1620,8 @@ def _guard_native_original_intents(read_binding):
                 validate_intent(intent,registry)
                 _require(intent['run_id']==entry.name and intent['registry_snapshot_digest']==registry.digest,
                     'ntfs.original_intent_mismatch')
-                expected=read_binding._parser_bindings(intent)
+                selected=historical_binding(intent['contract'],intent['core'],intent['native_binding']['installation'])
+                expected=selected._parser_bindings(intent)
                 for key,value in [('installed_core_binding',intent['core']),
                     ('installed_native_binding',intent['native_binding']),
                     ('installed_root_grants',intent['idempotency']['root_identities']),
@@ -1612,7 +1633,7 @@ def _guard_native_original_intents(read_binding):
                 _require(intent['execution_requested'] is False, 'ntfs.original_history_unresolved')
                 _require('receipt.json' in names, 'ntfs.original_history_unresolved')
                 receipt,_=control(run/'receipt.json')
-                no_effect_receipt(receipt,entry.name,attachments,planned=True)
+                no_effect_receipt(receipt,entry.name,attachments,planned=True,selected=selected)
                 for path in attachments.values():
                     control(path)
                 blobs=run/'blobs'

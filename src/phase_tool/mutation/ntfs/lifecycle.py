@@ -57,7 +57,7 @@ def _run_admitted(core, request, *, execute, context, secondary):
     primary = None
     outcome = None
     try:
-        with _guard_native_original_intents(installed.read_binding):
+        with _guard_native_original_intents(installed.read_binding,history_bindings=installed.history_bindings):
             try:
                 outcome = core._run_lifecycle(request, execute=execute, native_ctx=context)
                 # Core may prepare an indeterminate terminal from interruption.

@@ -110,6 +110,16 @@ jobs:
           unset PYTHONPATH
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/phase-next-wheel-venv/bin/python" "$GITHUB_WORKSPACE/scripts/correction_installed_smoke.py" --root "$EVIDENCE/installed-correction" 2>&1 | tee "$EVIDENCE/installed-correction.log"
+      - name: Installed old-new-old Host rollback
+        if: matrix.python == '3.11'
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python -B "$GITHUB_WORKSPACE/scripts/host_rollback_smoke.py" \
+            --root "$EVIDENCE/installed-host-rollback" \
+            --wheel "$EVIDENCE/dist/phase_tool-1.2.0rc1-py3-none-any.whl" \
+            --lock "$GITHUB_WORKSPACE/docker/requirements.lock" \
+            2>&1 | tee "$EVIDENCE/installed-host-rollback.log"
       - name: Preserve verification artifacts
         if: always()
         uses: actions/upload-artifact@v4

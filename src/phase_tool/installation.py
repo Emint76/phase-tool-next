@@ -458,14 +458,14 @@ class _NativeFileCreateInstallation:
         self.authority.require_contract(contract)
         self.check_request(request)
 
-    def check_request(self, request):
+    def _check_preparation_namespace(self, *, root_bindings, evidence_root, maximum_candidate_bytes):
         from .canonical import parse_json_bytes
         from .mutation.ntfs.native import _require
         import stat
         manifest = parse_json_bytes(self.read_binding.manifest_bytes, maximum_bytes=2*1024**2)
-        self.authority.require_request_roots(request.root_bindings, request.evidence_root)
-        _require(type(request.maximum_candidate_bytes) is int
-            and 0 < request.maximum_candidate_bytes <= 1024**2,
+        self.authority.require_request_roots(root_bindings, evidence_root)
+        _require(type(maximum_candidate_bytes) is int
+            and 0 < maximum_candidate_bytes <= 1024**2,
             'candidate.too_large')
         for name, identity in [('evidence_root', manifest['evidence_identity']),
                                ('preparation_root', manifest['preparation_identity'])]:
@@ -480,6 +480,14 @@ class _NativeFileCreateInstallation:
         _require_native_no_descendant_mounts(Path(manifest['preparation_root']))
         _require_native_mixed_roots_disjoint(Path(manifest['evidence_root']),
             Path(manifest['preparation_root']))
+        return manifest
+
+    def check_request(self, request):
+        from .mutation.ntfs.native import _require
+        import stat
+        manifest = self._check_preparation_namespace(
+            root_bindings=request.root_bindings, evidence_root=request.evidence_root,
+            maximum_candidate_bytes=request.maximum_candidate_bytes)
         preparation = Path(manifest['preparation_root'])
         # Existing Core capture/freeze owns all bytes and their stable read checks.
         # This is admission of prepared paths, never a copy-out or target reader.

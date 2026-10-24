@@ -127,14 +127,19 @@ def run_native_core(launch):
     launch.check_runtime()
     identities=_linux_stdio_identity()
     request=launch.invocation['request']
-    _require(type(request) is dict and set(request)=={'operation','candidate_path','input_paths',
+    prepared_request = (type(request) is dict and set(request)=={'operation','candidate_path','input_paths',
         'expected_inputs','maximum_candidate_bytes'}
         and request['operation'] in {'validate','plan','execute'}
         and type(request['candidate_path']) is str and type(request['input_paths']) is dict
         and all(type(k) is str and type(v) is str for k,v in request['input_paths'].items())
         and type(request['maximum_candidate_bytes']) is int
-        and 0<request['maximum_candidate_bytes']<=1024**2,
-        'ntfs.fixed_native_request_required')
+        and 0<request['maximum_candidate_bytes']<=1024**2)
+    publication_request = (type(request) is dict and set(request)=={'operation',
+        'native_file_publication_request_version','source_locator','target_locator','request_id','expected_digest'}
+        and request['operation']=='execute' and request['native_file_publication_request_version']=='1.0'
+        and all(type(request[k]) is str for k in ('source_locator','target_locator','request_id'))
+        and (request['expected_digest'] is None or type(request['expected_digest']) is str))
+    _require(prepared_request or publication_request, 'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
     # admission still refuses the unqualified candidate, even empty requirements.
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
@@ -151,20 +156,38 @@ def run_native_core(launch):
     else:
         app=PhaseApplication(registry=registry,installation=installation)
         manifest=launch.manifest
-        expected=request['expected_inputs']
-        if expected is not None:
-            _require(type(expected) is dict and all(type(v) is list and len(v)==2
-                and type(v[0]) is str and type(v[1]) is int and v[1]>=0 for v in expected.values()),
-                'ntfs.fixed_native_request_required')
-            expected={k:tuple(v) for k,v in expected.items()}
-        # Core owns capture/freeze, intent, common/per-key locks, effect,
-        # validation, ONE proof/receipt and original-intent recovery barrier.
-        response=app.run(request['operation'],contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
-            contract_digest=manifest['contract']['package_digest'],candidate_path=Path(request['candidate_path']),
-            evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
-            input_paths={k:Path(v) for k,v in request['input_paths'].items()},
-            root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()},
-            maximum_candidate_bytes=request['maximum_candidate_bytes'],expected_inputs=expected)
+        if publication_request:
+            from .preparation import _prepare_file_publication
+            try:
+                candidate_path, inputs, expected, candidate_bytes = _prepare_file_publication(app,
+                    source_locator=request['source_locator'], target_locator=request['target_locator'],
+                    request_id=request['request_id'], expected_digest=request['expected_digest'])
+            except (PhaseError,OSError,ValueError) as error:
+                # Preparation ONLY: no Core call, channel request, worker or GO.
+                # The real parent independently checks all four no-effect facts.
+                response=app._failure('execute',error)
+            else:
+                # Never catch a Core result/failure as an early preparation error.
+                response=app.run('execute',contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
+                    contract_digest=manifest['contract']['package_digest'],candidate_path=candidate_path,
+                    evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
+                    input_paths=inputs,root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()},
+                    expected_inputs=expected,_expected_candidate_bytes=candidate_bytes)
+        else:
+            expected=request['expected_inputs']
+            if expected is not None:
+                _require(type(expected) is dict and all(type(v) is list and len(v)==2
+                    and type(v[0]) is str and type(v[1]) is int and v[1]>=0 for v in expected.values()),
+                    'ntfs.fixed_native_request_required')
+                expected={k:tuple(v) for k,v in expected.items()}
+            # Core owns capture/freeze, intent, common/per-key locks, effect,
+            # validation, ONE proof/receipt and original-intent recovery barrier.
+            response=app.run(request['operation'],contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
+                contract_digest=manifest['contract']['package_digest'],candidate_path=Path(request['candidate_path']),
+                evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
+                input_paths={k:Path(v) for k,v in request['input_paths'].items()},
+                root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()},
+                maximum_candidate_bytes=request['maximum_candidate_bytes'],expected_inputs=expected)
     # Use EXACT installed registry. The ordinary default CLI writer must never
     # recast a post-dispatch render/schema/delivery failure as mutationFalse.
     validate_command_result(response.payload,registry)

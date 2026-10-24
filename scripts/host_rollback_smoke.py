@@ -20,6 +20,20 @@ def require(value,message):
 def digest(data):return 'sha256:'+hashlib.sha256(data).hexdigest()
 
 
+def require_installed_inventory(expected_raw,actual,*,expected_count=None):
+    """Compare every installed package byte with the exact accepted wheel.
+
+    Only the immutable reference has a pinned count. Candidate membership comes
+    from its wheel; extra, missing and changed installed files still fail.
+    """
+    with zipfile.ZipFile(io.BytesIO(expected_raw)) as z:
+        source={n.removeprefix('phase_tool/'):digest(z.read(n)) for n in z.namelist()
+            if n.startswith('phase_tool/') and not n.endswith('/')}
+    if expected_count is not None:
+        require(len(source)==expected_count,'reference wheel member count differs from pin')
+    require(actual==source,'installed source differs from exact wheel; stale files forbidden')
+
+
 def checked_path(path,*,exists):
     path=Path(path)
     require(path.is_absolute() and path==Path(os.path.abspath(path)),'absolute normalized path required')
@@ -112,16 +126,14 @@ def execute(root,wheel,runtime,lock,head):
         venv.EnvBuilder(with_pip=True,symlinks=False).create(runtime/'venv')
         python=runtime/'venv/bin/python'
         command([str(python),'-I','-B','-m','pip','--isolated','install','--no-compile','--require-hashes','-r',str(dep)],timeout=240)
-        def install(package,expected_raw,version,expected_files):
+        def install(package,expected_raw,version,expected_files=None):
             require(package.read_bytes()==expected_raw,'package drift before installation')
             command([str(python),'-I','-B','-m','pip','--isolated','install','--no-compile','--no-deps','--force-reinstall',str(package)],timeout=120)
             diagnostic=json.loads(command([str(python),'-I','-B','-c',PROBE,str(root)]))
             require(diagnostic['distribution']==version and diagnostic['filesystem']=='ext4','wrong installed version/filesystem')
             require(package.read_bytes()==expected_raw,'package drift after installation')
             command([str(python),'-I','-B','-m','pip','--isolated','check'])
-            with zipfile.ZipFile(io.BytesIO(expected_raw)) as z:
-                source={n.removeprefix('phase_tool/'):digest(z.read(n)) for n in z.namelist() if n.startswith('phase_tool/') and not n.endswith('/')}
-            require(len(source)==expected_files and diagnostic['files']==source,'installed source differs from exact wheel; stale files forbidden')
+            require_installed_inventory(expected_raw,diagnostic['files'],expected_count=expected_files)
             report['installations'].append(diagnostic)
         def cli(name,argv):
             value=json.loads(command([str(python),'-I','-B','-m','phase_tool',*map(str,argv)]))
@@ -140,7 +152,7 @@ def execute(root,wheel,runtime,lock,head):
         old_result=publish('rollback-old-before','first.bin','old-first.bin');inspect('old-inspect-old',old_result)
         protected={'target':root/'target','runs':root/'evidence/.phase/runs'}
         old_snapshot=snapshot(protected)
-        stage='candidate';install(wheel,candidate,'1.2.0rc1',237)
+        stage='candidate';install(wheel,candidate,'1.2.0rc1')
         require(snapshot(protected)==old_snapshot,'upgrade modified managed data')
         inspect('candidate-inspect-old',old_result)
         new_result=publish('rollback-new-file','next.bin','new-file.bin')

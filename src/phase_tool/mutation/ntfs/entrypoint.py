@@ -205,7 +205,8 @@ def _native_file_inspection_expectations(request):
         'native_file_publication_inspection_request_version', 'request_id',
         'target_locator', 'expected_digest', 'expected_receipt_digest'}
         and request['operation'] == 'inspect'
-        and request['native_file_publication_inspection_request_version'] == '1.0',
+        and type(request['native_file_publication_inspection_request_version']) is str
+        and request['native_file_publication_inspection_request_version'] in {'1.0', '1.1'},
         'ntfs.fixed_native_request_required')
     import re
     from ...paths import safe_relative_locator
@@ -231,20 +232,31 @@ def _native_file_inspection_expectations(request):
 
 
 def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root_bindings,
-        _expected_candidate_digest=None, _expected_frozen_input=None, _expected_receipt_digest=None):
+        _expected_candidate_digest=None, _expected_frozen_input=None, _expected_receipt_digest=None,
+        _canonical_result_context=None):
     """Read invocation only: always revoke channel, preserve primary failure."""
     primary=None
     response=None
+    reference=None
     try:
-        response=application.inspect(evidence_root=evidence_root,run_id=run_id,root_bindings=root_bindings,
-            **({} if _expected_candidate_digest is None and _expected_frozen_input is None else {
-                '_expected_candidate_digest': _expected_candidate_digest,
-                '_expected_frozen_input': _expected_frozen_input}))
+        assertions=({} if _expected_candidate_digest is None and _expected_frozen_input is None else {
+            '_expected_candidate_digest': _expected_candidate_digest,
+            '_expected_frozen_input': _expected_frozen_input})
+        if _canonical_result_context is None:
+            response=application.inspect(evidence_root=evidence_root,run_id=run_id,
+                root_bindings=root_bindings,**assertions)
+        else:
+            response,reference=application._inspect_with_result(evidence_root=evidence_root,
+                run_id=run_id,root_bindings=root_bindings,_include_canonical_result=True,**assertions)
         if _expected_receipt_digest is not None and response.payload['success'] is True:
             # Compare the CURRENT ACK receipt, including reused_existing. Failed
             # application responses retain their original error and raw payload.
             _require(response.payload.get('receipt_digest') == _expected_receipt_digest,
                 'ntfs.file_publication_receipt_mismatch')
+        if _canonical_result_context is not None:
+            from .parent_result import validate_native_file_inspection_result
+            reference=validate_native_file_inspection_result(response.payload,reference,
+                run_id=run_id,**_canonical_result_context)
     except BaseException as error:
         primary=error
     finally:
@@ -255,7 +267,7 @@ def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root
                 try:primary.add_note('Native inspection channel seal: '+type(error).__name__)
                 except BaseException:pass
     if primary is not None:raise primary
-    return response
+    return response if _canonical_result_context is None else (response,reference)
 
 
 def run_native_inspection(launch):
@@ -272,7 +284,11 @@ def run_native_inspection(launch):
     launch.check_runtime()
     _require(launch._inspection_only, 'ntfs.fixed_inspection_role_required')
     identities=_linux_stdio_identity()
-    capture = _native_file_inspection_expectations(launch.invocation['request'])
+    request=launch.invocation['request']
+    capture = _native_file_inspection_expectations(request)
+    from .parent_result import _native_file_result_mode
+    include_result=_native_file_result_mode(request)
+    reference=None
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
     if capture:
         from ...publish_file import CONTRACT_BINDING
@@ -292,13 +308,26 @@ def run_native_inspection(launch):
         response=PhaseApplication(registry=registry)._failure('inspect',error)
     else:
         manifest=launch.manifest
-        response=_inspect_with_channel_seal(PhaseApplication(registry=registry,installation=installation),
+        context=({'request':request,'manifest_bytes':launch._manifest_bytes,
+            'expected_manifest_digest':launch.installation_digest,'registry':registry}
+            if include_result else None)
+        inspected=_inspect_with_channel_seal(PhaseApplication(registry=registry,installation=installation),
             installation.authority,evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
-            root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()}, **capture)
+            root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()}, **capture,
+            **({'_canonical_result_context':context} if include_result else {}))
+        if include_result:response,reference=inspected
+        else:response=inspected
     validate_command_result(response.payload,registry)
     launch.check_runtime()
-    _deliver_linux_frame({'protocol':'phase.native.command','version':'1.0','channel_id':launch.channel_id,
-        'run_id':launch.run_id,'result':response.payload,'exit_code':response.exit_code},identities)
+    frame={'protocol':'phase.native.command','version':'1.0','channel_id':launch.channel_id,
+        'run_id':launch.run_id,'result':response.payload,'exit_code':response.exit_code}
+    if include_result:
+        frame.update(version='1.1',canonical_result=reference)
+        from .parent_result import validate_native_file_result_delivery
+        validate_native_file_result_delivery(frame,request=request,run_id=launch.run_id,
+            channel_id=launch.channel_id,manifest_bytes=launch._manifest_bytes,
+            expected_manifest_digest=launch.installation_digest,registry=registry)
+    _deliver_linux_frame(frame,identities)
     return response.exit_code
 
 

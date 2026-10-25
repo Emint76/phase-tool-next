@@ -268,3 +268,89 @@ def _require_command_run_binding(result: dict, run_id: str) -> None:
     else:
         allowed = False
     _require(allowed, 'ntfs.parent_command_binding_mismatch')
+
+
+def _native_file_result_mode(request) -> bool:
+    """Only a wire-generation selector; never admission or an operation grant."""
+    return (type(request) is dict
+        and request.get('native_file_publication_inspection_request_version') == '1.1')
+
+
+def validate_native_file_inspection_result(result, reference, *, request, run_id,
+        manifest_bytes, expected_manifest_digest, registry):
+    """Correlate one CURRENT reference after the SAME existing inspection.
+
+    This is data validation only: no target reads, lifecycle, qualification,
+    receipt ownership or fresh-source claim. Fixed startup remains mandatory.
+    """
+    from jsonschema import Draft202012Validator, FormatChecker
+    from ...command_result import validate_command_result
+    from ...installation import _resolve_native_file_create_read_binding
+    from ...publish_file import CONTRACT_BINDING, MAX_BYTES
+    from .entrypoint import _native_file_inspection_expectations
+
+    _native_file_inspection_expectations(request)
+    _require(_native_file_result_mode(request), 'ntfs.file_result_request_version_required')
+    validate_command_result(result, registry)
+    _require_command_run_binding(result, run_id)
+    _require(result['command'] == 'inspect', 'ntfs.file_result_binding_mismatch')
+    binding = _resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest, registry=registry)
+    manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    exact = registry.contract_bindings().get(CONTRACT_BINDING)
+    _require(exact is not None and manifest['contract'] == exact,
+        'ntfs.original_single_effect_required')
+    if result['success'] is True:
+        _require(result['receipt_digest'] == request['expected_receipt_digest'],
+            'ntfs.file_publication_receipt_mismatch')
+    if reference is None:
+        # Successful planning/recovery is not an inspected file publication.
+        _require(not (result['success'] is True and result['target_verified'] is True),
+            'ntfs.file_result_required')
+        return None
+    _require(result['success'] is True and result['exit_code'] == 0
+        and result['target_verified'] is True
+        and result['error'] is None and result['blockers'] == []
+        and result['terminal_status'] == 'succeeded_verified'
+        and result['execution_disposition'] in {'executed', 'reused_existing'}
+        and result['receipt_digest'] == request['expected_receipt_digest'],
+        'ntfs.file_result_binding_mismatch')
+    contract = registry.resolve_contract(exact['id'], exact['version'], exact['package_digest'],
+        core_version=manifest['core']['version']).document
+    declaration = contract['canonical_result']
+    schema = registry.schema_document(declaration['result_reference_schema_ref'])
+    _require(type(reference) is dict and not list(Draft202012Validator(schema,
+        registry=registry.schema_registry(), format_checker=FormatChecker()).iter_errors(reference)),
+        'ntfs.file_result_binding_mismatch')
+    state = reference['state']
+    _require(reference['contract'] == exact
+        and reference['owner_id'] == declaration['owner_id']
+        and reference['authority_rule'] == declaration['authority_rule']
+        and reference['root_binding'] == declaration['root_binding']
+        and reference['root_binding'] in manifest['root_projections']
+        and reference['locator'] == request['target_locator']
+        and state['exists'] is True and state['head_token'] is None
+        and type(state['length']) is int and 0 <= state['length'] <= MAX_BYTES
+        and type(state['digest']) is str
+        and re.fullmatch(r'sha256:[0-9a-f]{64}', state['digest']) is not None
+        and reference.get('appended_record') is None,
+        'ntfs.file_result_binding_mismatch')
+    _require(request['expected_digest'] is None or state['digest'] == request['expected_digest'],
+        'ntfs.file_result_binding_mismatch')
+    # Preserve CURRENT owner/observed_at/head semantics; no new authority claim.
+    return parse_json_bytes(canonical_bytes(reference))
+
+
+def validate_native_file_result_delivery(value, *, request, run_id, channel_id,
+        manifest_bytes, expected_manifest_digest, registry):
+    """Closed 1.1 frame; reject downgrade, unsolicited sidecar and cross-call data."""
+    _require(type(value) is dict and set(value) == {'protocol', 'version', 'channel_id',
+        'run_id', 'result', 'exit_code', 'canonical_result'}
+        and value['protocol'] == 'phase.native.command' and value['version'] == '1.1'
+        and value['channel_id'] == channel_id and value['run_id'] == run_id
+        and type(value['result']) is dict and type(value['exit_code']) is int
+        and value['result'].get('exit_code') == value['exit_code'],
+        'ntfs.parent_command_binding_mismatch')
+    return validate_native_file_inspection_result(value['result'], value['canonical_result'],
+        request=request, run_id=run_id, manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest, registry=registry)

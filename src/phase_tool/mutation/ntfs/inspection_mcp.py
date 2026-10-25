@@ -49,10 +49,13 @@ def _file_publication_request(source_locator,target_locator,request_id,expected_
         'request_id':request_id,'expected_digest':expected_digest}
 
 
-def _file_publication_inspection_request(request_id, target_locator, expected_digest, expected_receipt_digest):
+def _file_publication_inspection_request(request_id, target_locator, expected_digest, expected_receipt_digest,
+        *, _include_canonical_result=False):
     """Shared pure validator runs before any owner gate, nonce or launch."""
     from .entrypoint import _native_file_inspection_expectations
-    request = {'operation': 'inspect', 'native_file_publication_inspection_request_version': '1.0',
+    _require(type(_include_canonical_result) is bool, 'ntfs.file_result_request_version_required')
+    request = {'operation': 'inspect', 'native_file_publication_inspection_request_version':
+        '1.1' if _include_canonical_result else '1.0',
         'request_id': request_id, 'target_locator': target_locator,
         'expected_digest': expected_digest, 'expected_receipt_digest': expected_receipt_digest}
     _native_file_inspection_expectations(request)
@@ -74,11 +77,17 @@ class _InspectionMCPCallOwner:
         self._held_launch=None
         self._unavailable=False
 
-    def _call(self,run_id,request,*,inspection_only):
+    def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False):
+        from .parent_result import _native_file_result_mode
+        _require(type(_include_canonical_result) is bool
+            and _include_canonical_result is _native_file_result_mode(request)
+            and (not _include_canonical_result or inspection_only is True),
+            'ntfs.file_result_request_version_required')
         validate_run_id(run_id)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None
         result=None
+        reference=None
         try:
             _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
             import secrets
@@ -91,12 +100,21 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
-            validate_command_result(result,_native_registry_for_manifest(
-                self._startup['manifest_bytes'],self._startup['expected_manifest_digest']))
+            registry=_native_registry_for_manifest(self._startup['manifest_bytes'],
+                self._startup['expected_manifest_digest'])
+            validate_command_result(result,registry)
             _require(result['command']==request['operation']
                 and result['exit_code']==response['exit_code'],
                 'ntfs.parent_command_binding_mismatch')
             _require_command_run_binding(result,run_id)
+            if _include_canonical_result:
+                from .parent_result import validate_native_file_result_delivery
+                reference=validate_native_file_result_delivery(response,request=request,run_id=run_id,
+                    channel_id=invocation['channel_id'],manifest_bytes=self._startup['manifest_bytes'],
+                    expected_manifest_digest=self._startup['expected_manifest_digest'],registry=registry)
+            else:
+                _require('canonical_result' not in response and response.get('version','1.0')=='1.0',
+                    'ntfs.parent_command_binding_mismatch')
             if (result.get('stage3_command_result_version')=='1.2'
                     or result.get('inspection_required') is True or result['exit_code']==40):
                 # Keep the SAME result and actual launch. A finalization attempt
@@ -116,7 +134,7 @@ class _InspectionMCPCallOwner:
                     try:primary.add_note('Native MCP call gate: '+type(error).__name__)
                     except BaseException:pass
         if primary is not None:raise primary
-        return result
+        return (result,reference) if _include_canonical_result else result
 
     def inspect(self,run_id:StrictStr)->dict:
         """Inspect a known run using only fixed read-only installation bindings."""
@@ -136,6 +154,12 @@ class _InspectionMCPCallOwner:
         request = _file_publication_inspection_request(request_id, target_locator,
             expected_digest, expected_receipt_digest)
         return self._call(run_id, request, inspection_only=True)
+
+    def _inspect_file_result(self,run_id,request_id,target_locator,expected_digest,expected_receipt_digest):
+        """Internal CURRENT projection; existing public raw MCP tools stay unchanged."""
+        request=_file_publication_inspection_request(request_id,target_locator,
+            expected_digest,expected_receipt_digest,_include_canonical_result=True)
+        return self._call(run_id,request,inspection_only=True,_include_canonical_result=True)
 
     def execute_prepared(self,run_id:StrictStr,candidate_path:StrictStr,
             input_paths:dict[StrictStr,StrictStr],

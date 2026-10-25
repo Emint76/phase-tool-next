@@ -270,12 +270,28 @@ class _NativeWindowsParent:
                     _require(not self._spawn_attempted or self._consumed,
                         'ntfs.parent_execution_unresolved')
                     self._consumed=True
-                    _require(set(value)=={'protocol','version','channel_id','run_id','result','exit_code'}
-                        and value['version']=='1.0' and value['channel_id']==self._launch.channel_id
-                        and value['run_id']==self._launch.run_id
-                        and type(value['result']) is dict and type(value['exit_code']) is int
-                        and value['result'].get('exit_code')==value['exit_code']
-                        and canonical_bytes(value)==raw,'ntfs.parent_command_binding_mismatch')
+                    from .parent_result import _native_file_result_mode, validate_native_file_result_delivery
+                    invocation=getattr(self._launch,'invocation',None)
+                    request=invocation.get('request') if type(invocation) is dict else None
+                    expects_result=_native_file_result_mode(request)
+                    if expects_result or value.get('version')=='1.1' or 'canonical_result' in value:
+                        _require(self._inspection_only and expects_result,
+                            'ntfs.file_result_request_version_required')
+                        from ...installation import _native_registry_for_manifest
+                        registry=_native_registry_for_manifest(self._launch._manifest_bytes,
+                            self._launch.installation_digest)
+                        validate_native_file_result_delivery(value,request=request,
+                            run_id=self._launch.run_id,channel_id=self._launch.channel_id,
+                            manifest_bytes=self._launch._manifest_bytes,
+                            expected_manifest_digest=self._launch.installation_digest,registry=registry)
+                        _require(canonical_bytes(value)==raw,'ntfs.parent_command_binding_mismatch')
+                    else:
+                        _require(set(value)=={'protocol','version','channel_id','run_id','result','exit_code'}
+                            and value['version']=='1.0' and value['channel_id']==self._launch.channel_id
+                            and value['run_id']==self._launch.run_id
+                            and type(value['result']) is dict and type(value['exit_code']) is int
+                            and value['result'].get('exit_code')==value['exit_code']
+                            and canonical_bytes(value)==raw,'ntfs.parent_command_binding_mismatch')
                     _require_command_run_binding(value['result'],self._launch.run_id)
                     if (value['result'].get('run_id') is None
                             and value['result'].get('stage3_command_result_version')=='1.0'):

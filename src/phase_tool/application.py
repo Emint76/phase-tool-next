@@ -277,7 +277,25 @@ class PhaseApplication:
         _expected_candidate_digest: str | None = None,
         _expected_frozen_input: tuple[str, str] | None = None,
     ) -> ApplicationResponse:
+        response, _reference = self._inspect_with_result(
+            evidence_root=evidence_root, run_id=run_id, root_bindings=root_bindings,
+            _expected_candidate_digest=_expected_candidate_digest,
+            _expected_frozen_input=_expected_frozen_input)
+        return response
+
+    def _inspect_with_result(
+        self,
+        *,
+        evidence_root: Path,
+        run_id: str,
+        root_bindings: Mapping[str, Path],
+        _expected_candidate_digest: str | None = None,
+        _expected_frozen_input: tuple[str, str] | None = None,
+        _include_canonical_result: bool = False,
+    ) -> tuple[ApplicationResponse, dict | None]:
         try:
+            if type(_include_canonical_result) is not bool:
+                raise PhaseError("inspection.invalid_result_projection")
             from .installation import _NativeFileCreateInstallation
             native = (self.installation.authority
                 if type(self.installation) is _NativeFileCreateInstallation else None)
@@ -286,7 +304,8 @@ class PhaseApplication:
                 **({} if _expected_candidate_digest is None and _expected_frozen_input is None else {
                     "_expected_candidate_digest": _expected_candidate_digest,
                     "_expected_frozen_input": _expected_frozen_input,
-                }))
+                }),
+                **({"_include_canonical_result": True} if _include_canonical_result else {}))
             payload = self._command_payload(
                 "inspect",
                 success=True,
@@ -316,9 +335,10 @@ class PhaseApplication:
                 )
             from .command_result import validate_command_result
             validate_command_result(payload, self.registry)
-            return ApplicationResponse(payload, payload["exit_code"])
+            return (ApplicationResponse(payload, payload["exit_code"]),
+                inspected.get("canonical_result") if _include_canonical_result else None)
         except (PhaseError, OSError, ValueError) as exc:
-            return self._failure("inspect", exc)
+            return self._failure("inspect", exc), None
 
     @staticmethod
     def _command_payload(

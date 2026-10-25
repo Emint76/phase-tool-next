@@ -352,8 +352,11 @@ def inspect_run(
     _native_authority: object | None = None,
     _expected_candidate_digest: str | None = None,
     _expected_frozen_input: tuple[str, str] | None = None,
+    _include_canonical_result: bool = False,
 ) -> dict[str, Any]:
     """Verify evidence and, for observed results, re-read installation-bound target bytes."""
+    if type(_include_canonical_result) is not bool:
+        raise PhaseError("inspection.invalid_result_projection")
     _validate_capture_expectations(_expected_candidate_digest, _expected_frozen_input)
     capture_expectations = ({} if _expected_candidate_digest is None else {
         "_expected_candidate_digest": _expected_candidate_digest,
@@ -794,4 +797,12 @@ def inspect_run(
     if _native_authority is not None:
         _native_authority._usable()
         result['native_target_identity'] = native_target_identity
+    # Detached CURRENT receipt reference only. Its target digest/length were
+    # checked above; owner/head/timestamp metadata keeps its historical meaning.
+    # Do not pass this opt-in through recursion or replace CURRENT with prior.
+    if (_include_canonical_result and canonical_result is not None
+        and target_verified is True and receipt["terminal_status"] == "succeeded_verified"
+        and receipt["evidence"]["finalization_status"] == "finalized"
+        and receipt["execution_disposition"] in {"executed", "reused_existing"}):
+        result["canonical_result"] = parse_json_bytes(canonical_bytes(canonical_result))
     return result

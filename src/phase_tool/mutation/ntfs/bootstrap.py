@@ -109,6 +109,25 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest):
     return raw,digest
 
 
+def _original_query_request(launch,action,digest):
+    """Pure request composition; the accepted launcher still owns all trust."""
+    query={'native_original_query_version':'1.0','action':action,'run_id':launch.run_id,
+        'intent_digest':digest,'operation_nonce':launch.operation_nonce,'channel_id':launch.channel_id,
+        'installation_digest':launch.installation_digest}
+    request=launch.invocation['request']
+    if action=='read_executing' and not launch._version1 and type(request) is dict and (
+            'native_file_publication_request_version' in request):
+        _require(set(request)=={'operation','native_file_publication_request_version','source_locator',
+            'target_locator','request_id','expected_digest'}
+            and request['operation']=='execute' and request['native_file_publication_request_version']=='1.0'
+            and type(request['source_locator']) is str,'ntfs.fixed_native_request_required')
+        query['native_original_query_version']='1.1'
+        query['publication_request']={key:request[key] for key in ('request_id','target_locator','expected_digest')}
+    from .original_endpoint import _original_query_publication
+    _original_query_publication(query)  # Exact generation/shape; never downgrade.
+    return query
+
+
 class _NativeAcceptedLaunch:
     """One invocation from the fixed trusted launcher, never from operation JSON.
 
@@ -418,6 +437,7 @@ class _NativeAcceptedLaunch:
         self._windows_required()
         _require(not self._original_query_attempted,'ntfs.original_query_consumed')
         self._original_query_attempted=True
+        request=_original_query_request(self,action,digest)
         process=self._spawn(self._linux_command('original'))
         witness=pipe=None
         answer=None
@@ -425,9 +445,6 @@ class _NativeAcceptedLaunch:
         try:
             witness=WindowsProcessWitness(process)
             pipe=self._pipe(process)
-            request={'native_original_query_version':'1.0','action':action,'run_id':self.run_id,
-                'intent_digest':digest,'operation_nonce':self.operation_nonce,'channel_id':self.channel_id,
-                'installation_digest':self.installation_digest}
             deadline = time.perf_counter_ns()+30_000_000_000
             pipe.send_frame(canonical_bytes(request),deadline)
             if self._version1 and action == 'read_executing':

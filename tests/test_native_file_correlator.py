@@ -343,7 +343,7 @@ class NativeFilePublicationCorrelatorTests(unittest.TestCase):
                         self.assertEqual([t.name for t in tools],['phase_inspect'])
                     else:
                         self.assertEqual([t.name for t in tools],['phase_execute_prepared',
-                            'phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect'])
+                            'phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect_version1_publication','phase_inspect'])
                         schema=tools[2].inputSchema
                         self.assertEqual(set(schema['properties']),set(self.args()))
                         self.assertEqual(set(schema['required']),{'run_id','source_locator','target_locator','request_id'})

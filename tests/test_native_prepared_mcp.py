@@ -340,7 +340,7 @@ class NativePreparedMCPTests(unittest.TestCase):
                         refused=await session.call_tool('phase_inspect',{'run_id':'synthetic-read'})
                     else:
                         self.assertEqual([t.name for t in tools],['phase_execute_prepared',
-                            'phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect'])
+                            'phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect_version1_publication','phase_inspect'])
                         tool=tools[1];schema=tool.inputSchema
                         self.assertEqual(set(schema['properties']),set(self.file_args()))
                         self.assertEqual(set(schema['required']),{'run_id','source_locator','target_locator','request_id'})
@@ -389,7 +389,7 @@ class NativePreparedMCPTests(unittest.TestCase):
                 async with ClientSession(reader,writer) as session:
                     await session.initialize();tools=(await session.list_tools()).tools
                     self.assertEqual([t.name for t in tools],['phase_execute_prepared',
-                        'phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect'])
+                        'phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect_version1_publication','phase_inspect'])
                     schema=tools[0].inputSchema
                     self.assertEqual(set(schema['properties']),set(self.args()))
                     self.assertEqual(set(schema['required']),{'run_id','candidate_path','input_paths'})
@@ -560,8 +560,8 @@ class NativePreparedMCPTests(unittest.TestCase):
             async with stdio_client(StdioServerParameters(command=sys.executable,args=['-B','-c',code],env=env)) as (reader,writer):
                 async with ClientSession(reader,writer) as session:
                     await session.initialize();tools=(await session.list_tools()).tools
-                    self.assertEqual([t.name for t in tools],['phase_execute_prepared','phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect'])
-                    schema=tools[4].inputSchema
+                    self.assertEqual([t.name for t in tools],['phase_execute_prepared','phase_execute_file_publication','phase_publish_file','phase_execute_version1_publication','phase_inspect_version1_publication','phase_inspect'])
+                    schema=tools[5].inputSchema
                     self.assertEqual(set(schema['properties']),set(self.inspection_args()))
                     self.assertEqual(schema['required'],['run_id']);self.assertIs(schema['additionalProperties'],False)
                     bad=[dict(request_id=17),dict(expected_digest=17),dict(expected_receipt_digest=True),

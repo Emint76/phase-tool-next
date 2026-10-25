@@ -274,13 +274,19 @@ class PhaseApplication:
         evidence_root: Path,
         run_id: str,
         root_bindings: Mapping[str, Path],
+        _expected_candidate_digest: str | None = None,
+        _expected_frozen_input: tuple[str, str] | None = None,
     ) -> ApplicationResponse:
         try:
             from .installation import _NativeFileCreateInstallation
             native = (self.installation.authority
                 if type(self.installation) is _NativeFileCreateInstallation else None)
             inspected = inspect_run(evidence_root, run_id, self.registry,
-                root_bindings=root_bindings, _native_authority=native)
+                root_bindings=root_bindings, _native_authority=native,
+                **({} if _expected_candidate_digest is None and _expected_frozen_input is None else {
+                    "_expected_candidate_digest": _expected_candidate_digest,
+                    "_expected_frozen_input": _expected_frozen_input,
+                }))
             payload = self._command_payload(
                 "inspect",
                 success=True,

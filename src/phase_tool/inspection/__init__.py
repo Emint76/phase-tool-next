@@ -295,6 +295,53 @@ def _check_native_intent_binding(intent, contract, authority):
         raise PhaseError('ntfs.original_installation_binding_mismatch')
 
 
+def _validate_capture_expectations(candidate_digest, frozen_input) -> None:
+    """Private assertions contain immutable values, never paths or selectors."""
+    import re
+
+    def digest(value):
+        return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+    if candidate_digest is None:
+        if frozen_input is not None:
+            raise PhaseError("inspection.invalid_capture_expectation")
+        return
+    if not digest(candidate_digest):
+        raise PhaseError("inspection.invalid_capture_expectation")
+    if frozen_input is not None and not (
+        type(frozen_input) is tuple and len(frozen_input) == 2
+        and type(frozen_input[0]) is str and 0 < len(frozen_input[0]) <= 128
+        and "\x00" not in frozen_input[0] and digest(frozen_input[1])
+    ):
+        raise PhaseError("inspection.invalid_capture_expectation")
+
+
+def _verify_expected_capture(intent, candidate_digest, frozen_input) -> None:
+    """Compare canonical captured VALUE, after ordinary leaf evidence checks.
+
+    This supplies no contract grammar, code authentication or new evidence.
+    Candidate formatting and its original source path are not asserted.
+    """
+    candidate = intent.get("candidate") if intent is not None else None
+    storage = candidate.get("storage") if isinstance(candidate, Mapping) else None
+    if (not isinstance(storage, Mapping) or set(storage) != {"mode", "value", "attachment_digest"}
+        or candidate.get("input_mode") != "structured_json" or storage["mode"] != "inline"
+        or storage["attachment_digest"] is not None):
+        raise PhaseError("inspection.captured_request_unavailable")
+    value = storage["value"]
+    actual = profile_digest("candidate", value)
+    if (candidate.get("digest") != actual or actual != candidate_digest
+        or type(candidate.get("length")) is not int
+        or candidate["length"] != len(canonical_bytes(value))):
+        raise PhaseError("inspection.captured_candidate_mismatch")
+    if frozen_input is not None:
+        binding, expected = frozen_input
+        matches = [item for item in intent["inputs"] if item["binding_id"] == binding]
+        if (len(matches) != 1 or matches[0].get("digest") != expected
+            or matches[0].get("blob_digest") != expected):
+            raise PhaseError("inspection.captured_input_mismatch", binding)
+
+
 def inspect_run(
     evidence_root: Path,
     run_id: str,
@@ -303,8 +350,15 @@ def inspect_run(
     root_bindings: Mapping[str, Path] | None = None,
     _visited_receipts: frozenset[str] = frozenset(),
     _native_authority: object | None = None,
+    _expected_candidate_digest: str | None = None,
+    _expected_frozen_input: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """Verify evidence and, for observed results, re-read installation-bound target bytes."""
+    _validate_capture_expectations(_expected_candidate_digest, _expected_frozen_input)
+    capture_expectations = ({} if _expected_candidate_digest is None else {
+        "_expected_candidate_digest": _expected_candidate_digest,
+        "_expected_frozen_input": _expected_frozen_input,
+    })
     validate_run_id(run_id)
     registry = registry or BundledRegistry.load()
     if _native_authority is not None:
@@ -380,6 +434,8 @@ def inspect_run(
             inspect_missing_recovery(registry, root, run_root, intent, plan, root_bindings or {}))
         if _native_authority is not None:
             _native_authority._usable()  # Whole-read root/profile identity recheck.
+        if capture_expectations:
+            raise PhaseError("inspection.captured_request_unavailable")
         return {
             "run_id": run_id,
             "terminal_status": None,
@@ -641,6 +697,7 @@ def inspect_run(
                 registry,
                 root_bindings=root_bindings,
                 _visited_receipts=_visited_receipts | {receipt_digest},
+                **capture_expectations,
                 **({} if _native_authority is None else {"_native_authority": _native_authority}),
             )
             if prior.get("terminal_status") != "succeeded_verified" or prior.get("target_verified") is not True or prior.get("contract") != receipt["contract"]:
@@ -706,6 +763,13 @@ def inspect_run(
                 except OSError as exc:
                     raise PhaseError("inspection.target_unavailable") from exc
         target_verified = True
+    if capture_expectations:
+        if (target_verified is not True or receipt["terminal_status"] != "succeeded_verified"
+            or receipt["evidence"]["finalization_status"] != "finalized"
+            or receipt["execution_disposition"] not in {"executed", "reused_existing"}):
+            raise PhaseError("inspection.captured_request_unavailable")
+        if receipt["execution_disposition"] != "reused_existing":
+            _verify_expected_capture(intent, _expected_candidate_digest, _expected_frozen_input)
     result = {
         "run_id": run_id,
         "terminal_status": receipt["terminal_status"],

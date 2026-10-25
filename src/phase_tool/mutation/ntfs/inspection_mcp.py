@@ -49,6 +49,16 @@ def _file_publication_request(source_locator,target_locator,request_id,expected_
         'request_id':request_id,'expected_digest':expected_digest}
 
 
+def _file_publication_inspection_request(request_id, target_locator, expected_digest, expected_receipt_digest):
+    """Shared pure validator runs before any owner gate, nonce or launch."""
+    from .entrypoint import _native_file_inspection_expectations
+    request = {'operation': 'inspect', 'native_file_publication_inspection_request_version': '1.0',
+        'request_id': request_id, 'target_locator': target_locator,
+        'expected_digest': expected_digest, 'expected_receipt_digest': expected_receipt_digest}
+    _native_file_inspection_expectations(request)
+    return request
+
+
 class _InspectionMCPCallOwner:
     """One shared finite call owner; legacy read-only entry stays read-only.
 
@@ -112,6 +122,21 @@ class _InspectionMCPCallOwner:
         """Inspect a known run using only fixed read-only installation bindings."""
         return self._call(run_id,{'operation':'inspect'},inspection_only=True)
 
+    def inspect_prepared(self, run_id: StrictStr, request_id: StrictStr | None = None,
+            target_locator: StrictStr | None = None, expected_digest: StrictStr | None = None,
+            expected_receipt_digest: StrictStr | None = None) -> dict:
+        """Inspect normally, or pin file1 caller literals and its CURRENT ACK receipt.
+
+        All extra fields absent/null preserve the original known-run inspection,
+        including unknown execute delivery without an ACK. An uncertain owner
+        stays unavailable; a separate accepted read-only owner permits no retry.
+        """
+        if all(value is None for value in (request_id, target_locator, expected_digest, expected_receipt_digest)):
+            return self.inspect(run_id)
+        request = _file_publication_inspection_request(request_id, target_locator,
+            expected_digest, expected_receipt_digest)
+        return self._call(run_id, request, inspection_only=True)
+
     def execute_prepared(self,run_id:StrictStr,candidate_path:StrictStr,
             input_paths:dict[StrictStr,StrictStr],
             expected_inputs:dict[StrictStr,tuple[StrictStr,Annotated[StrictInt,Field(ge=0)]]]|None=None,
@@ -170,7 +195,7 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
         json_response=True)
     server.tool(name='phase_execute_prepared')(owner.execute_prepared)
     server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
-    server.tool(name='phase_inspect')(owner.inspect)
+    server.tool(name='phase_inspect')(owner.inspect_prepared)
     return _closed_arguments(server)
 
 

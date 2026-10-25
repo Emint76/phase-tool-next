@@ -149,3 +149,54 @@ class Version1OriginalTests(unittest.TestCase):
                 installation._native_lifecycle_installation(manifest_bytes=raw,expected_manifest_digest=digest_bytes(raw),
                     run_id='synthetic-no-go',operation_nonce='a'*32,channel_id='b'*32)
             binding.assert_not_called();channel.assert_not_called();store.assert_not_called()
+
+
+    def test_real_ext4_control_and_full_version1_readers_preserve_executing_and_planned_originals(self):
+        from unittest.mock import patch
+        from phase_tool.installation import _linux_filesystem_type,qualify_host_authority_roots
+        from phase_tool.mutation.ntfs import reader
+        with original_fixture(b'x'*(1024**2)+b'tail') as values:
+            registry,original,plan,pre,content=values
+            with TemporaryDirectory(prefix='phase-version1-control-reader-') as directory:
+                for executing in (True,False):
+                    with self.subTest(executing=executing):
+                        root=Path(directory)/('executing' if executing else 'planned');root.mkdir()
+                        try:
+                            qualify_host_authority_roots({'phase_evidence_root':root})
+                            filesystem=_linux_filesystem_type(root)
+                        except PhaseError as error:
+                            self.skipTest('NOT_VERIFIED: actual root qualification: '+error.code)
+                        if filesystem!='ext4':self.skipTest('NOT_VERIFIED: actual filesystem '+filesystem)
+                        info=root.stat()
+                        identity={'stable_id':'synthetic.version1.reader','device':info.st_dev,'inode':info.st_ino}
+                        intent=deepcopy(original)
+                        intent['execution_requested']=executing
+                        intent['native_binding']['evidence_identity']=identity
+                        args=arguments(registry,intent,plan,pre,content)
+                        run=root/'.phase'/'runs'/intent['run_id']
+                        pre_name='pre-validator-results.json' if executing else 'validator-results.json'
+                        paths=(run/'intent.json',run/'attachments'/'effect-plan.json',
+                            run/'attachments'/pre_name,run/'blobs'/digest_bytes(content).removeprefix('sha256:'))
+                        buffers=(args['intent_bytes'],args['plan_bytes'],args['pre_validator_bytes'],content)
+                        for path,raw in zip(paths,buffers):
+                            path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+                        expected={'evidence_root':root,'installed_evidence_identity':canonical_bytes(identity),
+                            'registry':registry,'run_id':intent['run_id'],
+                            'expected_intent_digest':args['expected_intent_digest']}
+                        before={p.relative_to(root):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                        with patch.object(reader,'read_bounded_file',wraps=reader.read_bounded_file) as read:
+                            controls=reader._read_original_control_buffers(**expected)
+                            complete=reader.read_original_version1_buffers(**expected)
+                        self.assertEqual(controls,buffers[:3]);self.assertEqual(complete,buffers)
+                        self.assertEqual([call.args[0] for call in read.call_args_list],list(paths[:3])+list(paths))
+                        self.assertEqual([call.args[1] for call in read.call_args_list],[2*1024**2]*6+[16*1024**2])
+                        if executing:
+                            parsed=parse_original_version1(**args)
+                            self.assertIs(type(parsed),ParsedNativeVersion1)
+                            self.assertEqual(parsed.content_bytes,content)
+                        else:
+                            self.assertIsNone(validate_planned_version1_original(**args))
+                        with self.assertRaisesRegex(PhaseError,'stream.limit_exceeded'):
+                            reader.read_original_file_create_buffers(**expected)
+                        after={p.relative_to(root):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                        self.assertEqual(before,after)

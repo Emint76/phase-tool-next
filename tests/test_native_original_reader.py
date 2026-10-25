@@ -219,4 +219,53 @@ class OriginalNativeReaderTests(unittest.TestCase):
         self.assertEqual((retained/'.phase'/'runs'/self.intent['run_id']/'intent.json').read_bytes(),self.originals[0])
 
 
+    def test_control_reader_returns_only_exact_three_originals_without_blob_io_or_writes(self):
+        before={p.relative_to(self.root):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with patch.object(reader,'read_bounded_file',wraps=reader.read_bounded_file) as read:
+            controls=reader._read_original_control_buffers(**self.arguments())
+        self.assertEqual(controls,self.originals[:3])
+        self.assertEqual(type(controls),tuple)
+        self.assertTrue(all(type(raw) is bytes for raw in controls))
+        self.assertEqual([call.args[0] for call in read.call_args_list],list(self.paths()[:3]))
+        self.assertEqual([call.args[1] for call in read.call_args_list],[2*1024**2]*3)
+        after={p.relative_to(self.root):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(before,after)
+
+    def test_control_tuple_is_available_without_blob_but_full_reader_cannot_return_handoff_bytes(self):
+        self.blob_path.unlink()
+        self.assertEqual(reader._read_original_control_buffers(**self.arguments()),self.originals[:3])
+        with self.assertRaises(FileNotFoundError):
+            reader.read_original_file_create_buffers(**self.arguments())
+        self.assertFalse(self.blob_path.exists())
+
+    def test_control_corruption_precedes_missing_blob_and_never_falls_back_to_content(self):
+        self.blob_path.unlink()
+        for path,raw in zip(self.paths()[1:3],self.originals[1:3]):
+            with self.subTest(name=path.name):
+                path.write_bytes(raw+b'\n')
+                try:
+                    with patch.object(reader,'read_bounded_file',wraps=reader.read_bounded_file) as read:
+                        self.assert_code('ntfs.original_evidence_bytes_mismatch')
+                    self.assertEqual([call.args[0] for call in read.call_args_list],list(self.paths()[:3]))
+                finally:
+                    path.write_bytes(raw)
+        with self.assertRaises(FileNotFoundError):
+            reader.read_original_file_create_buffers(**self.arguments())
+
+    def test_root_replacement_during_control_read_rejects_before_blob_io(self):
+        actual=reader.read_bounded_file
+        retained=self.base/'control-retained-evidence'
+        def replace_root(path,limit):
+            raw=actual(path,limit)
+            if path==self.pre_path:
+                self.root.rename(retained);self.root.mkdir()
+            return raw
+        with patch.object(reader,'read_bounded_file',side_effect=replace_root) as read:
+            self.assert_code('ntfs.original_evidence_identity_mismatch')
+        self.assertEqual([call.args[0] for call in read.call_args_list],list(self.paths()[:3]))
+        self.assertEqual((retained/'.phase'/'runs'/self.intent['run_id']/'blobs'/self.blob_path.name).read_bytes(),
+            self.content)
+
+
+
 if __name__=='__main__':unittest.main()

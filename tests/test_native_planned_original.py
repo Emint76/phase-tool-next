@@ -104,3 +104,26 @@ class NativePlannedOriginalTests(unittest.TestCase):
     def test_missing_planned_file_cannot_fall_back_to_executing_filename(self):
         self.paths[2].rename(self.run/'attachments'/'pre-validator-results.json')
         with self.assertRaises(FileNotFoundError):self.read()
+
+
+    def test_control_reader_uses_only_planned_filename_and_does_not_require_blob(self):
+        self.paths[3].unlink()
+        arguments={'evidence_root':self.root,'installed_evidence_identity':canonical_bytes(self.identity),
+            'registry':self.registry,'run_id':self.intent['run_id'],
+            'expected_intent_digest':profile_digest('intent',self.intent)}
+        with patch.object(reader,'read_bounded_file',wraps=reader.read_bounded_file) as read:
+            controls=reader._read_original_control_buffers(**arguments)
+        self.assertEqual(controls,tuple(path.read_bytes() for path in self.paths[:3]))
+        self.assertEqual([call.args[0] for call in read.call_args_list],list(self.paths[:3]))
+        self.assertFalse((self.run/'attachments'/'pre-validator-results.json').exists())
+        with self.assertRaises(FileNotFoundError):self.read()
+
+    def test_control_reader_cannot_replace_required_planned_attachment_with_executing_one(self):
+        self.paths[2].rename(self.run/'attachments'/'pre-validator-results.json')
+        arguments={'evidence_root':self.root,'installed_evidence_identity':canonical_bytes(self.identity),
+            'registry':self.registry,'run_id':self.intent['run_id'],
+            'expected_intent_digest':profile_digest('intent',self.intent)}
+        with patch.object(reader,'read_bounded_file',wraps=reader.read_bounded_file) as read:
+            with self.assertRaises(FileNotFoundError):
+                reader._read_original_control_buffers(**arguments)
+        self.assertEqual([call.args[0] for call in read.call_args_list],list(self.paths[:3]))

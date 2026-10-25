@@ -424,3 +424,247 @@ class NativePreparedMCPTests(unittest.TestCase):
                     self.assertIn('ntfs.inspection_mcp_unavailable',
                         ' '.join(getattr(c,'text','') for c in blocked.content))
         asyncio.run(asyncio.wait_for(exchange(),timeout=30))
+
+    def inspection_args(self, run='synthetic-read'):
+        return {'run_id':run, 'request_id':'synthetic-request', 'target_locator':'objects/result.bin',
+            'expected_digest':'sha256:'+'d'*64, 'expected_receipt_digest':'sha256:'+'e'*64}
+
+    def test_file_inspection_closed_expectations_and_legacy_shapes(self):
+        from phase_tool.canonical import profile_digest
+        from phase_tool.publish_file import _file_publication_candidate
+        args=self.inspection_args()
+        request=inspection_mcp._file_publication_inspection_request(
+            args['request_id'],args['target_locator'],args['expected_digest'],args['expected_receipt_digest'])
+        candidate,_=_file_publication_candidate(args['request_id'],args['target_locator'])
+        self.assertEqual(entrypoint._native_file_inspection_expectations(request),{
+            '_expected_candidate_digest':profile_digest('candidate',candidate),
+            '_expected_frozen_input':('payload',args['expected_digest']),
+            '_expected_receipt_digest':args['expected_receipt_digest']})
+        no_hash=request|{'expected_digest':None}
+        self.assertNotIn('_expected_frozen_input',entrypoint._native_file_inspection_expectations(no_hash))
+        self.assertEqual(entrypoint._native_file_inspection_expectations({'operation':'inspect'}),{})
+        bad=[request|{'native_file_publication_inspection_request_version':'2.0'},request|{'operation':'execute'},
+            request|{'source_locator':'extra'}, {k:v for k,v in request.items() if k!='expected_receipt_digest'},
+            request|{'native_file_publication_request_version':'1.0'}, [('operation','inspect')]]
+        for value in bad:
+            with self.subTest(value=value),self.assertRaisesRegex(PhaseError,'ntfs.fixed_native_request_required'):
+                entrypoint._native_file_inspection_expectations(value)
+
+    def test_prepared_inspection_uses_same_owner_and_legacy_wire(self):
+        owner=self.owner();result=self.failure('inspect');launches=[object(),object()]
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=launches) as factory,
+                patch.object(inspection_mcp,'run_native_parent',return_value={'result':result,'exit_code':10}),
+                patch('secrets.token_hex',side_effect=['a'*32,'b'*32,'c'*32,'d'*32])):
+            self.assertIs(owner.inspect_prepared(**self.inspection_args()),result)
+            self.assertIs(owner.inspect_prepared('synthetic-read'),result)
+        calls=factory.call_args_list
+        self.assertTrue(all(c.kwargs['_inspection_only'] is True for c in calls))
+        values=[parse_json_bytes(c.kwargs['invocation_bytes']) for c in calls]
+        self.assertEqual(set(values[0]['request']),{'operation','native_file_publication_inspection_request_version',
+            'request_id','target_locator','expected_digest','expected_receipt_digest'})
+        self.assertEqual(values[0]['request']['expected_receipt_digest'],self.inspection_args()['expected_receipt_digest'])
+        self.assertEqual(values[1]['request'],{'operation':'inspect'})
+        self.assertEqual([v['channel_id'] for v in values],['a'*32,'c'*32])
+        self.assertEqual([v['operation_nonce'] for v in values],['b'*32,'d'*32])
+        self.assertFalse(owner._unavailable);self.assertIsNone(owner._held_launch)
+
+    def test_bad_file_inspection_literals_refuse_before_gate_nonce_or_launch(self):
+        class Text(str):pass
+        variants=[dict(request_id=None),dict(request_id=True),dict(request_id=Text('synthetic-request')),
+            dict(request_id='Bad'),dict(request_id='x'*129),dict(target_locator=None),
+            dict(target_locator='../outside'),dict(target_locator='nul.txt'),dict(target_locator=True),
+            dict(expected_digest=True),dict(expected_digest='sha256:'+'A'*64),
+            dict(expected_receipt_digest=None),dict(expected_receipt_digest='sha256:'+'z'*64),
+            dict(expected_receipt_digest=True),dict(run_id='../outside')]
+        owner=self.owner();owner._gate=SimpleNamespace(acquire=Mock(),release=Mock())
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch') as factory,
+                patch('secrets.token_hex') as nonce):
+            for change in variants:
+                with self.subTest(change=change),self.assertRaises(PhaseError):
+                    owner.inspect_prepared(**(self.inspection_args()|change))
+            with self.assertRaises(TypeError):owner.inspect_prepared(**self.inspection_args(),evidence_root='/outside')
+            factory.assert_not_called();nonce.assert_not_called()
+        owner._gate.acquire.assert_not_called();owner._gate.release.assert_not_called()
+        self.assertFalse(owner._unavailable);self.assertIsNone(owner._held_launch)
+
+    def test_file_inspection_both_actual_guards_and_wrong_contract_before_factory(self):
+        args=self.inspection_args()
+        request=inspection_mcp._file_publication_inspection_request(args['request_id'],args['target_locator'],
+            args['expected_digest'],args['expected_receipt_digest'])
+        for version in ('1.1','1.2'):
+            registry=(installation._native_inspection_file_create_registry() if version=='1.1'
+                else installation._native_lifecycle_registry())
+            manifest=canonical_bytes({'native_read_installation_version':version,
+                'registry_snapshot_digest':registry.digest,
+                'contract':registry.contract_bindings()['file_create.v1@1.0.0']})
+            launch=SimpleNamespace(_inspection_only=True,check_runtime=Mock(),invocation={'request':request},
+                _manifest_bytes=manifest,installation_digest=digest_bytes(manifest),
+                run_id=args['run_id'],operation_nonce='a'*32,channel_id='b'*32)
+            with (self.subTest(version=version),patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
+                    patch.object(entrypoint,'_deliver_linux_frame') as deliver,
+                    patch.object(LinuxNativeChannelV2,'__init__',side_effect=AssertionError('channel reached')) as c2,
+                    patch.object(LinuxNativeChannelV3,'__init__',side_effect=AssertionError('channel reached')) as c3,
+                    patch.object(evidence.EvidenceStore,'__init__',side_effect=AssertionError('evidence reached')) as store,
+                    patch.object(PhaseApplication,'inspect',side_effect=AssertionError('reader reached')) as reader):
+                self.assertEqual(entrypoint.run_native_inspection(launch),10)
+                result=deliver.call_args.args[0]['result']
+                self.assertEqual(result['error'],'ntfs.native_profile_not_qualified')
+                c2.assert_not_called();c3.assert_not_called();store.assert_not_called();reader.assert_not_called()
+            wrong=parse_json_bytes(manifest);wrong['contract']['id']='publish_new_version.v1'
+            launch._manifest_bytes=canonical_bytes(wrong);launch.installation_digest=digest_bytes(launch._manifest_bytes)
+            with (patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
+                    patch.object(installation,'_native_installation_for_manifest',side_effect=AssertionError('factory reached')) as factory):
+                with self.assertRaisesRegex(PhaseError,'ntfs.original_single_effect_required'):
+                    entrypoint.run_native_inspection(launch)
+                factory.assert_not_called()
+
+    def test_inspection_receipt_pin_failure_preserves_primary_and_always_seals(self):
+        pin='sha256:'+'e'*64
+        for receipt in (None,'sha256:'+'f'*64):
+            response=SimpleNamespace(payload={'success':True,'receipt_digest':receipt})
+            app=SimpleNamespace(inspect=Mock(return_value=response))
+            authority=SimpleNamespace(seal=Mock(side_effect=OSError('synthetic secondary seal')))
+            with self.subTest(receipt=receipt),self.assertRaisesRegex(PhaseError,'ntfs.file_publication_receipt_mismatch') as caught:
+                entrypoint._inspect_with_channel_seal(app,authority,evidence_root=None,run_id='synthetic-read',
+                    root_bindings={},_expected_candidate_digest='sha256:'+'d'*64,_expected_receipt_digest=pin)
+            authority.seal.assert_called_once_with(intent_digest=None)
+            self.assertIn('Native inspection channel seal: OSError',caught.exception.__notes__)
+        primary=RuntimeError('synthetic original reader primary')
+        app=SimpleNamespace(inspect=Mock(side_effect=primary));authority=SimpleNamespace(seal=Mock())
+        with self.assertRaises(RuntimeError) as caught:
+            entrypoint._inspect_with_channel_seal(app,authority,evidence_root=None,run_id='synthetic-read',
+                root_bindings={},_expected_receipt_digest=pin)
+        self.assertIs(caught.exception,primary);authority.seal.assert_called_once_with(intent_digest=None)
+        failed=SimpleNamespace(payload={'success':False,'receipt_digest':None,'error':'synthetic.original.failure'})
+        app=SimpleNamespace(inspect=Mock(return_value=failed));authority=SimpleNamespace(seal=Mock())
+        self.assertIs(entrypoint._inspect_with_channel_seal(app,authority,evidence_root=None,
+            run_id='synthetic-read',root_bindings={},_expected_receipt_digest=pin),failed)
+        authority.seal.assert_called_once_with(intent_digest=None)
+        app.inspect.assert_called_once_with(evidence_root=None,run_id='synthetic-read',root_bindings={})
+
+    @unittest.skipUnless(sys.platform.startswith('linux'),'real Linux SDK transport component required')
+    def test_real_sdk_prepared_inspect_optional_closed_literals_and_unary_legacy_schema(self):
+        legacy=inspection_mcp._inspection_server(config_bytes=b'',expected_config_digest=None,
+            manifest_bytes=b'',expected_manifest_digest=None)
+        self.assertEqual([t.name for t in legacy._tool_manager.list_tools()],['phase_inspect'])
+        self.assertEqual(set(legacy._tool_manager.list_tools()[0].parameters['properties']),{'run_id'})
+        async def exchange():
+            from mcp import ClientSession,StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            import phase_tool
+            root=Path(phase_tool.__file__).resolve(strict=True).parent.parent
+            code=("from phase_tool.mutation.ntfs.inspection_mcp import _prepared_server; "
+                "_prepared_server(config_bytes=b'',expected_config_digest=None,"
+                "manifest_bytes=b'',expected_manifest_digest=None).run(transport='stdio')")
+            env=os.environ.copy();env.update(PYTHONPATH=str(root),PYTHONDONTWRITEBYTECODE='1')
+            async with stdio_client(StdioServerParameters(command=sys.executable,args=['-B','-c',code],env=env)) as (reader,writer):
+                async with ClientSession(reader,writer) as session:
+                    await session.initialize();tools=(await session.list_tools()).tools
+                    self.assertEqual([t.name for t in tools],['phase_execute_prepared','phase_execute_file_publication','phase_inspect'])
+                    schema=tools[2].inputSchema
+                    self.assertEqual(set(schema['properties']),set(self.inspection_args()))
+                    self.assertEqual(schema['required'],['run_id']);self.assertIs(schema['additionalProperties'],False)
+                    bad=[dict(request_id=17),dict(expected_digest=17),dict(expected_receipt_digest=True),
+                        dict(target_locator=True),dict(request_id=None),dict(expected_receipt_digest=None),
+                        dict(target_locator='../outside'),dict(evidence_root='/outside')]
+                    for change in bad:
+                        response=await session.call_tool('phase_inspect',self.inspection_args()|change)
+                        self.assertTrue(response.isError,change)
+                        text=' '.join(getattr(c,'text','') for c in response.content)
+                        self.assertNotIn('ntfs.accepted_launch_binding_required',text)
+                        self.assertNotIn('ntfs.inspection_mcp_unavailable',text)
+                    refused=await session.call_tool('phase_inspect',self.inspection_args())
+                    self.assertTrue(refused.isError);self.assertIsNone(refused.structuredContent)
+                    self.assertIn('ntfs.accepted_launch_binding_required',' '.join(getattr(c,'text','') for c in refused.content))
+                    blocked=await session.call_tool('phase_inspect',{'run_id':'synthetic-read'})
+                    self.assertTrue(blocked.isError)
+                    self.assertIn('ntfs.inspection_mcp_unavailable',' '.join(getattr(c,'text','') for c in blocked.content))
+        asyncio.run(asyncio.wait_for(exchange(),timeout=30))
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'),'NOT_VERIFIED: actual qualified Linux/ext4 required')
+class NativeFileInspectionHostTests(unittest.TestCase):
+    """Real Host/Core fixture plus synthetic channel/process boundary, not NTFS."""
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+        from phase_tool.canonical import profile_digest
+        from phase_tool.core import PhaseCore,PhaseRequest
+        from phase_tool.installation import qualify_host_authority_roots,_linux_filesystem_type
+        from phase_tool.registry import BundledRegistry
+        from phase_tool.publish_file import _file_publication_candidate
+        temp=TemporaryDirectory(prefix='phase-native-inspect-caller-');self.addCleanup(temp.cleanup)
+        self.root=Path(temp.name);self.target=self.root/'target';self.target.mkdir()
+        (self.target/'objects').mkdir();self.evidence=self.root/'evidence';self.evidence.mkdir()
+        qualify_host_authority_roots({'target':self.target,'evidence':self.evidence})
+        self.assertEqual(_linux_filesystem_type(self.evidence),'ext4')
+        self.registry=BundledRegistry.load();self.core=PhaseCore(self.registry)
+        self.source=self.root/'source.bin';self.payload=b'synthetic-inspect-caller\x00\xff\r\n'
+        self.source.write_bytes(self.payload);self.candidate=self.root/'candidate.json'
+        _,data=_file_publication_candidate('synthetic-request','objects/result.bin');self.candidate.write_bytes(data)
+        binding=self.registry.contract_bindings()['file_create.v1@1.0.0']
+        self.request=PhaseRequest(binding['id'],binding['version'],binding['package_digest'],self.candidate,
+            self.evidence,'synthetic-first',{'payload':self.source},{'phase_result_root':self.target},
+            timestamp='2026-10-25T00:00:00Z')
+        self.app=PhaseApplication(registry=self.registry)
+
+    def execute(self,run='synthetic-first'):
+        from dataclasses import replace
+        result=self.core.run(replace(self.request,run_id=run),execute=True)
+        self.assertEqual(result.exit_code,0,result.receipt)
+        return result
+
+    def inspect_response(self,run,receipt,**changes):
+        args={'operation':'inspect','native_file_publication_inspection_request_version':'1.0',
+            'request_id':'synthetic-request','target_locator':'objects/result.bin',
+            'expected_digest':digest_bytes(self.payload),'expected_receipt_digest':receipt}
+        args.update(changes);expected=entrypoint._native_file_inspection_expectations(args)
+        authority=SimpleNamespace(seal=Mock())
+        try:
+            return entrypoint._inspect_with_channel_seal(self.app,authority,evidence_root=self.evidence,
+                run_id=run,root_bindings=self.request.root_bindings,**expected)
+        finally:authority.seal.assert_called_once_with(intent_digest=None)
+
+    def test_actual_host_create_and_reuse_inspect_pin_current_ack_and_preserve_raw_result(self):
+        first=self.execute()
+        for outcome in (first,self.execute('synthetic-reuse')):
+            expected=self.app.inspect(evidence_root=self.evidence,run_id=outcome.run_id,
+                root_bindings=self.request.root_bindings)
+            checked=self.inspect_response(outcome.run_id,outcome.receipt_digest)
+            self.assertEqual(checked.payload,expected.payload);self.assertEqual(checked.exit_code,0)
+            self.assertEqual(checked.payload['receipt_digest'],outcome.receipt_digest)
+            if outcome.run_id=='synthetic-reuse':
+                self.assertIsNone(checked.payload['intent_digest']);self.assertIsNone(checked.payload['effect_plan_digest'])
+                self.assertNotEqual(outcome.receipt_digest,first.receipt_digest)
+
+    def test_actual_host_wrong_literal_payload_or_current_receipt_fail_closed(self):
+        first=self.execute();reuse=self.execute('synthetic-reuse')
+        for change,code in [({'request_id':'different-request'},'inspection.captured_candidate_mismatch'),
+                ({'target_locator':'objects/other.bin'},'inspection.captured_candidate_mismatch'),
+                ({'expected_digest':'sha256:'+'f'*64},'inspection.captured_input_mismatch')]:
+            with self.subTest(change=change):
+                response=self.inspect_response(reuse.run_id,reuse.receipt_digest,**change)
+                self.assertFalse(response.payload['success']);self.assertEqual(response.payload['error'],code)
+        for pin in ('sha256:'+'e'*64,first.receipt_digest):
+            with self.subTest(pin=pin),self.assertRaisesRegex(PhaseError,'ntfs.file_publication_receipt_mismatch'):
+                self.inspect_response(reuse.run_id,pin)
+        # Null expected content is no independently observed CURRENT source read.
+        self.source.write_bytes(b'different-current-source-after-ACK')
+        self.assertTrue(self.inspect_response(reuse.run_id,reuse.receipt_digest,expected_digest=None).payload['success'])
+
+    def test_synthetic_fresh_read_success_does_not_clear_uncertain_execute_owner(self):
+        outcome=self.execute();read=self.inspect_response(outcome.run_id,outcome.receipt_digest).payload
+        old=NativePreparedMCPTests.owner(self);fresh=NativePreparedMCPTests.owner(self)
+        uncertain=NativePreparedMCPTests.unknown(self,run=outcome.run_id)
+        held,new=object(),object()
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=[held,new]) as factory,
+                patch.object(inspection_mcp,'run_native_parent',side_effect=[
+                    {'result':uncertain,'exit_code':uncertain['exit_code']},{'result':read,'exit_code':0}])):
+            self.assertIs(old.execute_file_publication(run_id=outcome.run_id,source_locator='source.bin',
+                target_locator='objects/result.bin',request_id='synthetic-request'),uncertain)
+            self.assertTrue(old._unavailable);self.assertIs(old._held_launch,held)
+            self.assertIs(fresh.inspect_prepared(run_id=outcome.run_id,request_id='synthetic-request',
+                target_locator='objects/result.bin',expected_digest=digest_bytes(self.payload),
+                expected_receipt_digest=outcome.receipt_digest),read)
+            self.assertTrue(old._unavailable);self.assertIs(old._held_launch,held)
+            with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_unavailable'):old.inspect(outcome.run_id)
+            self.assertEqual(factory.call_count,2)

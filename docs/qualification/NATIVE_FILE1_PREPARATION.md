@@ -123,3 +123,38 @@ reuse existing historical receipt/inspect recursion, without inventing a current
 original or deriving success only from matching target bytes. A05/G01 and real
 positive native CLI/MCP, recovery, rollback and full family qualification remain
 NOT_VERIFIED. Production installations are unchanged.
+
+
+## Caller-pinned fresh inspection candidate
+
+The prepared server keeps the same three tools. Its phase_inspect accepts either
+run_id alone (unchanged known-run read) or a coherent file1 group: request_id,
+target_locator, required expected_receipt_digest copied from that execute ACK,
+and optional expected_digest. The legacy inspection-only server remains unary.
+No installed Hermes/default MCP routing changes.
+
+The new closed native inspection wire is version1.0. One pure validator derives
+the canonical candidate VALUE profile through the existing publication helper
+and optional fixed payload binding; no source/target read or authority choice.
+The exact installed file1 contract binding is checked before the factory.
+Actual qualification still precedes installation/channel/evidence/target reads.
+
+The existing channel seal owner forwards generic capture assertions through
+PhaseApplication and the existing receipt recursion. A successful inspect must
+match the CURRENT ACK receipt, including reused_existing; a prior leaf receipt
+with identical content is not the current ACK. Receipt mismatch raises inside
+the existing try/finally, preserving the primary if sealing also fails. Failed
+application results keep their original error. CommandResult and history/proof/
+receipt formats stay unchanged. No new owner, history walk, journal or queue.
+
+When the ACK is missing or uncertain, run_id-only inspection remains available
+through a separately accepted read-only process. It does not authorize retry
+or clear the original uncertain owner's retained launch. Null expected_digest
+does not claim an independent read of the CURRENT source file. This remains raw
+CommandResult, not PublishFileResult or a complete high-level publisher.
+
+Nine new source-only component methods cover actual Host/Core create/reuse,
+caller/content/current-receipt mismatches, primary+seal errors, both real native
+guard refusals, owner poisoning, and Linux SDK strict optional arguments. Native
+positive execution, A05/G01, full family/FULL and native rollback remain
+NOT_VERIFIED. These test methods have not run at the source review checkpoint.

@@ -166,9 +166,11 @@ def native_original_query(launch,query):
         _confirm_native_original_absent(binding,query['run_id'])
         value={'original_absent':True,'verified_intent_digest':None}
     else:
-        from .reader import read_original_file_create_buffers,read_original_version1_buffers
-        reader = read_original_version1_buffers if launch._version1 else read_original_file_create_buffers
-        original,plan_raw,_,_=reader(
+        from .reader import _read_original_control_buffers
+        # Initial nonce/literal observation needs controls only. The mandatory
+        # binding.read/validate_planned below still rereads and verifies actual
+        # content through the SAME installed binding and expected intent digest.
+        original,plan_raw,_=_read_original_control_buffers(
             evidence_root=Path(launch.manifest['evidence_root']),
             installed_evidence_identity=canonical_bytes(launch.manifest['evidence_identity']),
             registry=registry,run_id=query['run_id'],expected_intent_digest=digest)

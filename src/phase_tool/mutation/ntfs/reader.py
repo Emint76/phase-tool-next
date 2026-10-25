@@ -37,19 +37,22 @@ def _evidence_identity(raw: bytes) -> dict:
     return expected
 
 
-def _read_original_buffers(*, evidence_root: Path,
-    installed_evidence_identity: bytes, registry: RegistrySnapshot,
-    run_id: str, expected_intent_digest: str, _maximum_bytes: int) -> tuple[bytes,bytes,bytes,bytes]:
-    """Read only four existing Core objects, preserving their original bytes.
+def _check_original_root_identity(root: Path, expected: dict) -> None:
+    """Fresh actual root identity; no cached namespace acceptance."""
+    info=root.stat(follow_symlinks=False)
+    _require(stat.S_ISDIR(info.st_mode) and (info.st_dev,info.st_ino)==(expected['device'],expected['inode']),
+        'ntfs.original_evidence_identity_mismatch')
 
-    Matching hashes establish data consistency, not the identity of a remote
-    daemon/container/loaded program. That fixed trusted selector, full artifact
-    graph/bootstrap, framing and current-invocation/root-lock/unresolved guard
-    remain outside and unimplemented. This is not a callable native route.
-    The existing original-buffer parser owns complete structural semantics.
+
+def _read_original_control_buffers(*, evidence_root: Path,
+    installed_evidence_identity: bytes, registry: RegistrySnapshot,
+    run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes]:
+    """Read three existing raw controls; never a parsed handoff or GO token.
+
+    The full reader/parser still owns content and semantic verification.
+    This private RO seam neither reads a payload nor creates a snapshot.
+    Callers keep the SAME expected intent digest and installed binding.
     """
-    _require(type(_maximum_bytes) is int and _maximum_bytes in (_CONTENT_LIMIT,16*1024**2),
-        'ntfs.invalid_original_bound')
     _require(sys.platform.startswith('linux'),'ntfs.original_linux_reader_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
     _require(type(run_id) is str,'evidence.invalid_run_id')
@@ -62,12 +65,7 @@ def _read_original_buffers(*, evidence_root: Path,
     qualify_host_authority_roots({'phase_evidence_root':root})
     _require(_linux_filesystem_type(root)=='ext4','ntfs.original_ext4_evidence_required')
 
-    def check_root():
-        info=root.stat(follow_symlinks=False)
-        _require(stat.S_ISDIR(info.st_mode) and (info.st_dev,info.st_ino)==(expected['device'],expected['inode']),
-            'ntfs.original_evidence_identity_mismatch')
-
-    check_root()
+    _check_original_root_identity(root,expected)
     run=root/'.phase'/'runs'/run_id
     intent_raw=read_bounded_file(run/'intent.json',_CONTROL_LIMIT)
     intent=parse_json_bytes(intent_raw,maximum_bytes=_CONTROL_LIMIT)
@@ -89,11 +87,31 @@ def _read_original_buffers(*, evidence_root: Path,
     pre_name = ('pre-validator-results.json' if intent['execution_requested']
         else 'validator-results.json')
     pre=read_bounded_file(run/'attachments'/pre_name,_CONTROL_LIMIT)
-    blob=read_bounded_file(run/'blobs'/blob_digest.removeprefix('sha256:'),_maximum_bytes)
     _require(digest_bytes(plan)==intent['evidence']['effect_plan_attachment_digest']
-        and digest_bytes(pre)==intent['evidence']['pre_validator_results_digest']
-        and digest_bytes(blob)==blob_digest,'ntfs.original_evidence_bytes_mismatch')
-    check_root()
+        and digest_bytes(pre)==intent['evidence']['pre_validator_results_digest'],'ntfs.original_evidence_bytes_mismatch')
+    _check_original_root_identity(root,expected)
+    return intent_raw,plan,pre
+
+
+
+def _read_original_buffers(*, evidence_root: Path,
+    installed_evidence_identity: bytes, registry: RegistrySnapshot,
+    run_id: str, expected_intent_digest: str, _maximum_bytes: int) -> tuple[bytes,bytes,bytes,bytes]:
+    """Historical full byte tuples and fixed role bounds, never metadata-only."""
+    _require(type(_maximum_bytes) is int and _maximum_bytes in (_CONTENT_LIMIT,16*1024**2),
+        'ntfs.invalid_original_bound')
+    intent_raw,plan,pre=_read_original_control_buffers(evidence_root=evidence_root,
+        installed_evidence_identity=installed_evidence_identity,registry=registry,
+        run_id=run_id,expected_intent_digest=expected_intent_digest)
+    intent=parse_json_bytes(intent_raw,maximum_bytes=_CONTROL_LIMIT)
+    root=Path(evidence_root)
+    expected=_evidence_identity(installed_evidence_identity)
+    blob_digest=intent['inputs'][0]['blob_digest']
+    blob_path=root/'.phase'/'runs'/run_id/'blobs'/blob_digest.removeprefix('sha256:')
+    _check_original_root_identity(root,expected)
+    blob=read_bounded_file(blob_path,_maximum_bytes)
+    _require(digest_bytes(blob)==blob_digest,'ntfs.original_evidence_bytes_mismatch')
+    _check_original_root_identity(root,expected)
     return intent_raw,plan,pre,blob
 
 

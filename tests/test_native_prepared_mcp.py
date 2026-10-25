@@ -18,12 +18,13 @@ import unittest
 from ._native_startup_shell import startup_shell
 from unittest.mock import Mock, patch
 
-from phase_tool import evidence
+from phase_tool import evidence, installation
 from phase_tool.application import PhaseApplication
-from phase_tool.canonical import canonical_bytes, parse_json_bytes
+from phase_tool.canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import entrypoint, inspection_mcp
+from phase_tool.mutation.ntfs import entrypoint, inspection_mcp, preparation
 from phase_tool.mutation.ntfs.channel_v2 import LinuxNativeChannelV2
+from phase_tool.mutation.ntfs.channel_v3 import LinuxNativeChannelV3
 from phase_tool.mutation.ntfs.uncertainty import _NativeLifecycleUnresolved
 
 
@@ -94,7 +95,9 @@ class NativePreparedMCPTests(unittest.TestCase):
         try:
             with (patch.object(inspection_mcp,'_NativeAcceptedLaunch') as factory,
                     patch('secrets.token_hex') as nonce):
-                for call in (lambda:owner.execute_prepared(**self.args()),lambda:owner.inspect('synthetic-read')):
+                for call in (lambda:owner.execute_prepared(**self.args()),
+                            lambda:owner.execute_file_publication(**self.file_args()),
+                            lambda:owner.inspect('synthetic-read')):
                     with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_call_active'):call()
                 factory.assert_not_called();nonce.assert_not_called()
         finally:owner._gate.release()
@@ -111,7 +114,9 @@ class NativePreparedMCPTests(unittest.TestCase):
                     self.assertIs(owner.execute_prepared(**self.args()),result)
                     self.assertEqual(canonical_bytes(result),before)
                     self.assertIs(owner._held_launch,launch);self.assertTrue(owner._unavailable)
-                    for call in (lambda:owner.execute_prepared(**self.args()),lambda:owner.inspect('synthetic-read')):
+                    for call in (lambda:owner.execute_prepared(**self.args()),
+                            lambda:owner.execute_file_publication(**self.file_args()),
+                            lambda:owner.inspect('synthetic-read')):
                         with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_unavailable'):call()
                     factory.assert_called_once();parent.assert_called_once_with(launch)
                 self.assertTrue(result['inspection_required']);self.assertFalse(result['retry_authorized'])
@@ -240,6 +245,136 @@ class NativePreparedMCPTests(unittest.TestCase):
         self.assertEqual(len(guards),1)
         self.assertLess(guards[0].lineno,branches['execute-mcp'].lineno)
 
+    def file_args(self,run='synthetic-prepared'):
+        return {'run_id':run,'source_locator':'incoming/synthetic.bin',
+            'target_locator':'synthetic/output.bin','request_id':'synthetic-request',
+            'expected_digest':None}
+
+    def test_file_publication_preserves_raw_result_exact_wire_and_fresh_nonces(self):
+        owner=self.owner();result=self.failure();launches=[object(),object()]
+        args=self.file_args();del args['expected_digest']  # Exercise default None.
+        nonnull='sha256:'+'e'*64
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=launches) as factory,
+                patch.object(inspection_mcp,'run_native_parent',return_value={'result':result,'exit_code':10}) as parent,
+                patch('secrets.token_hex',side_effect=['a'*32,'b'*32,'c'*32,'d'*32])):
+            for arguments in (args,args|{'expected_digest':nonnull}):
+                self.assertIs(owner.execute_file_publication(**arguments),result)
+                self.assertIsNone(owner._held_launch);self.assertFalse(owner._unavailable)
+        self.assertEqual([c.args[0] for c in parent.call_args_list],launches)
+        invocations=[parse_json_bytes(c.kwargs['invocation_bytes']) for c in factory.call_args_list]
+        for call,value,expected in zip(factory.call_args_list,invocations,(None,nonnull)):
+            self.assertIs(call.kwargs['_inspection_only'],False)
+            self.assertEqual(value['run_id'],args['run_id'])
+            self.assertEqual(value['request'],{'operation':'execute',
+                'native_file_publication_request_version':'1.0',
+                'source_locator':args['source_locator'],'target_locator':args['target_locator'],
+                'request_id':args['request_id'],'expected_digest':expected})
+        self.assertEqual([(v['channel_id'],v['operation_nonce']) for v in invocations],
+            [('a'*32,'b'*32),('c'*32,'d'*32)])
+
+    def test_file_publication_bad_types_refuse_before_startup_without_poisoning(self):
+        owner=self.owner()
+        changes=[{'run_id':'../outside'},{'source_locator':1},{'target_locator':None},
+            {'request_id':False},{'expected_digest':True}]
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch') as factory,
+                patch('secrets.token_hex') as nonce):
+            for change in changes:
+                with self.subTest(change=change),self.assertRaises((PhaseError,ValueError)):
+                    owner.execute_file_publication(**(self.file_args()|change))
+            factory.assert_not_called();nonce.assert_not_called()
+        self.assertIsNone(owner._held_launch);self.assertFalse(owner._unavailable)
+
+    def test_file_publication_mcp_bridge_reaches_both_real_guards_before_any_preparation(self):
+        # Synthetic process/stdio delivery only; actual installation guard intact.
+        for version in ('1.1','1.2'):
+            registry=(installation._native_inspection_file_create_registry() if version=='1.1'
+                else installation._native_lifecycle_registry())
+            manifest=canonical_bytes({'native_read_installation_version':version,
+                'registry_snapshot_digest':registry.digest,'contract':{'id':'file_create.v1'}})
+            owner=inspection_mcp._InspectionMCPCallOwner(config_bytes=b'',expected_config_digest=None,
+                manifest_bytes=manifest,expected_manifest_digest=digest_bytes(manifest))
+            def shell(**kwargs):
+                invocation=parse_json_bytes(kwargs['invocation_bytes'])
+                return SimpleNamespace(_inspection_only=kwargs['_inspection_only'],check_runtime=Mock(),
+                    invocation=invocation,_manifest_bytes=kwargs['manifest_bytes'],
+                    installation_digest=kwargs['expected_manifest_digest'],run_id=invocation['run_id'],
+                    operation_nonce=invocation['operation_nonce'],channel_id=invocation['channel_id'])
+            with (self.subTest(version=version),
+                    patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=shell),
+                    patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
+                    patch.object(entrypoint,'_deliver_linux_frame') as deliver,
+                    patch.object(preparation,'_prepare_file_publication',side_effect=AssertionError('scratch reached')) as prepare,
+                    patch.object(LinuxNativeChannelV2,'__init__',side_effect=AssertionError('channel reached')) as channel2,
+                    patch.object(LinuxNativeChannelV3,'__init__',side_effect=AssertionError('channel reached')) as channel3,
+                    patch.object(evidence.EvidenceStore,'__init__',side_effect=AssertionError('evidence reached')) as store,
+                    patch.object(PhaseApplication,'run',side_effect=AssertionError('Core reached')) as core):
+                def parent(launch):
+                    self.assertEqual(entrypoint.run_native_core(launch),10)
+                    return deliver.call_args.args[0]
+                with patch.object(inspection_mcp,'run_native_parent',side_effect=parent):
+                    result=owner.execute_file_publication(**self.file_args())
+                prepare.assert_not_called();channel2.assert_not_called();channel3.assert_not_called()
+                store.assert_not_called();core.assert_not_called()
+            self.assertEqual(result['error'],'ntfs.native_profile_not_qualified')
+            self.assertFalse(result['success']);self.assertFalse(result['mutation_attempted'])
+            self.assertIsNone(result['receipt_digest']);self.assertIsNone(owner._held_launch)
+
+    def test_real_sdk_file_publication_schema_and_legacy_read_only_toolset(self):
+        async def exchange(factory,legacy=False):
+            from mcp import ClientSession,StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            import phase_tool
+            root=Path(phase_tool.__file__).resolve(strict=True).parent.parent
+            code=('from phase_tool.mutation.ntfs.inspection_mcp import '+factory+'; '+factory+
+                "(config_bytes=b'',expected_config_digest=None,manifest_bytes=b'',"
+                "expected_manifest_digest=None).run(transport='stdio')")
+            env=os.environ.copy();env.update(PYTHONPATH=str(root),PYTHONDONTWRITEBYTECODE='1')
+            async with stdio_client(StdioServerParameters(command=sys.executable,args=['-B','-c',code],env=env)) as (reader,writer):
+                async with ClientSession(reader,writer) as session:
+                    await session.initialize();tools=(await session.list_tools()).tools
+                    if legacy:
+                        self.assertEqual([t.name for t in tools],['phase_inspect'])
+                        unknown=await session.call_tool('phase_execute_file_publication',self.file_args())
+                        self.assertTrue(unknown.isError)
+                        # Unknown tool must not consume the read-only owner.
+                        refused=await session.call_tool('phase_inspect',{'run_id':'synthetic-read'})
+                    else:
+                        self.assertEqual([t.name for t in tools],['phase_execute_prepared',
+                            'phase_execute_file_publication','phase_inspect'])
+                        tool=tools[1];schema=tool.inputSchema
+                        self.assertEqual(set(schema['properties']),set(self.file_args()))
+                        self.assertEqual(set(schema['required']),{'run_id','source_locator','target_locator','request_id'})
+                        self.assertIs(schema['additionalProperties'],False)
+                        bad=[{'run_id':1},{'source_locator':True},{'source_locator':[]},
+                            {'target_locator':None},{'target_locator':{}},{'request_id':17},
+                            {'expected_digest':False},{'expected_digest':17},{'expected_digest':[]}]
+                        bad.extend({key:'synthetic-forbidden'} for key in ('source_root','target_root',
+                            'preparation_root','evidence_root','candidate_path','maximum_candidate_bytes',
+                            'native_file_publication_request_version','publication_version','operation',
+                            'contract_binding','registry','provider'))
+                        for change in bad:
+                            rejected=await session.call_tool(tool.name,self.file_args()|change)
+                            self.assertTrue(rejected.isError,change)
+                            text=' '.join(getattr(c,'text','') for c in rejected.content)
+                            self.assertNotIn('ntfs.accepted_launch_binding_required',text)
+                            self.assertNotIn('ntfs.inspection_mcp_unavailable',text)
+                        refused=await session.call_tool(tool.name,self.file_args())
+                    self.assertTrue(refused.isError);self.assertIsNone(refused.structuredContent)
+                    self.assertIn('ntfs.accepted_launch_binding_required',
+                        ' '.join(getattr(c,'text','') for c in refused.content))
+                    if not legacy:
+                        # Same finite owner remains poisoned across all three APIs.
+                        for name,args in [('phase_execute_prepared',self.args()),
+                                ('phase_execute_file_publication',self.file_args()),
+                                ('phase_inspect',{'run_id':'synthetic-read'})]:
+                            blocked=await session.call_tool(name,args)
+                            self.assertTrue(blocked.isError)
+                            self.assertIn('ntfs.inspection_mcp_unavailable',
+                                ' '.join(getattr(c,'text','') for c in blocked.content))
+        async def both():
+            await exchange('_prepared_server');await exchange('_inspection_server',legacy=True)
+        asyncio.run(asyncio.wait_for(both(),timeout=30))
+
     def test_real_sdk_prepared_schema_rejects_coercion_and_selectors_before_startup(self):
         async def exchange():
             from mcp import ClientSession,StdioServerParameters
@@ -253,12 +388,13 @@ class NativePreparedMCPTests(unittest.TestCase):
             async with stdio_client(StdioServerParameters(command=sys.executable,args=['-B','-c',code],env=env)) as (reader,writer):
                 async with ClientSession(reader,writer) as session:
                     await session.initialize();tools=(await session.list_tools()).tools
-                    self.assertEqual([t.name for t in tools],['phase_execute_prepared','phase_inspect'])
+                    self.assertEqual([t.name for t in tools],['phase_execute_prepared',
+                        'phase_execute_file_publication','phase_inspect'])
                     schema=tools[0].inputSchema
                     self.assertEqual(set(schema['properties']),set(self.args()))
                     self.assertEqual(set(schema['required']),{'run_id','candidate_path','input_paths'})
                     self.assertIs(schema['additionalProperties'],False)
-                    self.assertIs(tools[1].inputSchema['additionalProperties'],False)
+                    self.assertTrue(all(t.inputSchema['additionalProperties'] is False for t in tools))
                     bad=[dict(run_id=17),dict(candidate_path=17),dict(input_paths={'source':17}),
                         dict(maximum_candidate_bytes=True),dict(maximum_candidate_bytes=1.5),
                         dict(maximum_candidate_bytes='1234'),dict(maximum_candidate_bytes=0),

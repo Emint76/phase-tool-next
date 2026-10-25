@@ -47,7 +47,7 @@ phase.native.command version 1.0 envelope are unchanged. This new request return
 the raw execute result; it cannot claim high-level publication verification.
 Fresh inspect uses the existing separate read-only invocation. A bounded,
 explicitly versioned literal publication-facts projection and the high-level
-Windows/MCP adapter remain unfinished. Native file2 and bundle entrypoints are
+Windows/MCP publication-verification adapter remain unfinished. Native file2 and bundle entrypoints are
 also unfinished. No published descriptor, historical binding or receipt schema
 is changed by these preparation sources.
 
@@ -57,3 +57,36 @@ generations, refusal before preparation/Core/channel, closed request grammar,
 the distinct version name, and rejection of an ordinary Host installation.
 They establish neither G01 nor positive native execution. Source review and AST
 parsing are not execution; the tests require exact-HEAD CI acceptance.
+
+## Isolated raw MCP bridge, candidate only
+
+The existing fixed prepared MCP server additionally exposes
+`phase_execute_file_publication(run_id, source_locator, target_locator,
+request_id, expected_digest=null)`. It builds the exact request above and calls
+the same finite owner and `_call` as `phase_execute_prepared`. It returns the
+unchanged raw Core CommandResult. It is not `phase_publish_file`, does not
+implement PublishFileResult and does not claim high-level verification.
+
+Only StrictStr fields and optional null digest are accepted. Caller-selected
+roots, paths to candidates, profiles, contracts, versions, operations and maxima
+are forbidden MCP arguments. Semantic locator/request/digest checks remain in
+existing Core preparation. The adapter performs no source or target I/O.
+The legacy inspection-only server still lists only `phase_inspect`; ordinary
+CLI/MCP and production Hermes configuration are unchanged.
+
+The same nonblocking call gate refuses contention without a queue. Definite
+responses use fresh launch/channel/nonce per call. Typed uncertainty or delivery
+failure retains the same actual launch and makes all methods unavailable.
+Disconnecting or waiting does not establish worker exit or authorize retry.
+Fresh inspect uses the existing read-only invocation with a new accepted
+launch/process and nonce. An uncertain owner cannot make that call; use a
+separate accepted inspection-only owner/process. Waiting or disconnecting never
+resets the uncertain owner. Neither execute nor inspect qualifies an unaccepted
+installation or bypasses the real guard.
+
+New tests exercise exact wire/raw-result identity, early shape rejection, both
+real profile refusals and SDK StrictStr/extra-forbid/legacy toolsets. Existing
+concurrency and uncertainty checks cover the new method through the same owner.
+These are software and negative admission components; positive native MCP,
+A05/G01, the high-level literal correlation/reuse closure, file2/bundle lifecycle
+and native rollback remain NOT_VERIFIED or unfinished as stated above.

@@ -82,6 +82,18 @@ def _file_publication_inspection_request(request_id, target_locator, expected_di
     return request
 
 
+def _version1_publication_inspection_request(request_id, target_locator,
+        expected_current_digest, expected_digest, expected_receipt_digest):
+    from .entrypoint import _native_version1_inspection_expectations
+    request = {'operation':'inspect',
+        'native_version1_publication_inspection_request_version':'1.0',
+        'request_id':request_id,'target_locator':target_locator,
+        'expected_current_digest':expected_current_digest,'expected_digest':expected_digest,
+        'expected_receipt_digest':expected_receipt_digest}
+    _native_version1_inspection_expectations(request)
+    return request
+
+
 class _InspectionMCPCallOwner:
     """One shared finite call owner; legacy read-only entry stays read-only.
 
@@ -157,6 +169,9 @@ class _InspectionMCPCallOwner:
                 and result['exit_code']==response['exit_code'],
                 'ntfs.parent_command_binding_mismatch')
             _require_command_run_binding(result,run_id)
+            from .parent_result import _require_version1_inspection_delivery
+            _require_version1_inspection_delivery(result, request=request,
+                run_id=run_id, inspection_only=inspection_only)
             if _include_canonical_result:
                 from .parent_result import validate_native_file_result_delivery
                 reference=validate_native_file_result_delivery(response,request=request,run_id=run_id,
@@ -197,6 +212,19 @@ class _InspectionMCPCallOwner:
             return self.inspect(run_id)
         request = _file_publication_inspection_request(request_id, target_locator,
             expected_digest, expected_receipt_digest)
+        return self._call(run_id, request, inspection_only=True)
+
+    def inspect_version1_publication(self, run_id: StrictStr, request_id: StrictStr,
+            target_locator: StrictStr, expected_current_digest: StrictStr,
+            expected_receipt_digest: StrictStr, expected_digest: StrictStr | None = None) -> dict:
+        """Fresh raw inspection with caller literals and the CURRENT receipt pin.
+
+        expected_current_digest denotes pre-publication bytes in the original
+        candidate, not the new current file. Known-run unary inspection remains
+        available when unknown execute delivery supplied no ACK receipt.
+        """
+        request = _version1_publication_inspection_request(request_id, target_locator,
+            expected_current_digest, expected_digest, expected_receipt_digest)
         return self._call(run_id, request, inspection_only=True)
 
     def _inspect_file_result(self,run_id,request_id,target_locator,expected_digest,expected_receipt_digest):
@@ -364,6 +392,7 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
     server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
     server.tool(name='phase_publish_file')(owner.publish_file)
     server.tool(name='phase_execute_version1_publication')(owner.execute_version1_publication)
+    server.tool(name='phase_inspect_version1_publication')(owner.inspect_version1_publication)
     server.tool(name='phase_inspect')(owner.inspect_prepared)
     return _closed_arguments(server)
 

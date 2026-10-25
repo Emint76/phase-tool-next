@@ -354,3 +354,27 @@ def validate_native_file_result_delivery(value, *, request, run_id, channel_id,
     return validate_native_file_inspection_result(value['result'], value['canonical_result'],
         request=request, run_id=run_id, manifest_bytes=manifest_bytes,
         expected_manifest_digest=expected_manifest_digest, registry=registry)
+
+
+def _require_version1_inspection_delivery(result, *, request, run_id, inspection_only):
+    """Correlate raw bound-inspect delivery, never evidence or fresh authority.
+
+    Callers retain existing full schema/command/run/channel checks first. Only
+    the separate version1 request is recognized; legacy grammars are unchanged.
+    A failed raw result keeps its original error/facts, without a success claim.
+    """
+    if type(request) is not dict or (
+            'native_version1_publication_inspection_request_version' not in request):
+        return
+    from .entrypoint import _native_version1_inspection_expectations
+    _native_version1_inspection_expectations(request)
+    _require(inspection_only is True, 'ntfs.fixed_inspection_role_required')
+    _require_command_run_binding(result, run_id)
+    _require(result['command'] == 'inspect', 'ntfs.version1_inspection_binding_mismatch')
+    if result['success'] is True:
+        _require(result['exit_code'] == 0 and result['target_verified'] is True
+            and result['error'] is None and result['blockers'] == []
+            and result['terminal_status'] == 'succeeded_verified'
+            and result['execution_disposition'] in {'executed','reused_existing'}
+            and result['receipt_digest'] == request['expected_receipt_digest'],
+            'ntfs.version1_inspection_binding_mismatch')

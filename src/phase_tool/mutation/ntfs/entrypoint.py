@@ -255,6 +255,32 @@ def _native_file_inspection_expectations(request):
     return result
 
 
+def _native_version1_inspection_expectations(request):
+    """Pure caller assertions, using the existing exact version1 candidate."""
+    import re
+    from ...canonical import profile_digest
+    from .preparation import _version1_publication_candidate
+    _require(type(request) is dict and set(request) == {'operation',
+        'native_version1_publication_inspection_request_version','request_id',
+        'target_locator','expected_current_digest','expected_digest','expected_receipt_digest'}
+        and request['operation'] == 'inspect'
+        and type(request['native_version1_publication_inspection_request_version']) is str
+        and request['native_version1_publication_inspection_request_version'] == '1.0',
+        'ntfs.fixed_native_request_required')
+    candidate, _ = _version1_publication_candidate(request['request_id'],
+        request['target_locator'], request['expected_current_digest'])
+    def digest(value):
+        return type(value) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', value) is not None
+    _require(digest(request['expected_receipt_digest']), 'ntfs.invalid_expected_receipt_digest')
+    _require(request['expected_digest'] is None or digest(request['expected_digest']),
+        'publish.invalid_expected_digest')
+    capture = {'_expected_candidate_digest': profile_digest('candidate', candidate),
+        '_expected_receipt_digest': request['expected_receipt_digest']}
+    if request['expected_digest'] is not None:
+        capture['_expected_frozen_input'] = ('payload', request['expected_digest'])
+    return capture
+
+
 def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root_bindings,
         _expected_candidate_digest=None, _expected_frozen_input=None, _expected_receipt_digest=None,
         _canonical_result_context=None):
@@ -309,7 +335,10 @@ def run_native_inspection(launch):
     _require(launch._inspection_only, 'ntfs.fixed_inspection_role_required')
     identities=_linux_stdio_identity()
     request=launch.invocation['request']
-    capture = _native_file_inspection_expectations(request)
+    version1_inspection = (type(request) is dict
+        and 'native_version1_publication_inspection_request_version' in request)
+    capture = (_native_version1_inspection_expectations(request) if version1_inspection
+        else _native_file_inspection_expectations(request))
     from .parent_result import _native_file_result_mode
     include_result=_native_file_result_mode(request)
     reference=None
@@ -317,8 +346,10 @@ def run_native_inspection(launch):
     if capture:
         from ...publish_file import CONTRACT_BINDING
         manifest = parse_json_bytes(launch._manifest_bytes, maximum_bytes=2*1024**2)
-        binding = registry.contract_bindings().get(CONTRACT_BINDING)
-        _require(binding is not None and manifest.get('contract') == binding,
+        exact = 'publish_new_version.v1@1.0.0' if version1_inspection else CONTRACT_BINDING
+        binding = registry.contract_bindings().get(exact)
+        _require(binding is not None and manifest.get('contract') == binding
+            and (not version1_inspection or manifest.get('native_read_installation_version') == '1.2'),
             'ntfs.original_single_effect_required')
     try:
         history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))

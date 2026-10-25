@@ -320,6 +320,9 @@ class _NativeWindowsParent:
                             and type(result.get('exit_code')) is int and result['exit_code']==40
                             and value['exit_code']==40,
                             'ntfs.parent_uncertainty_delivery_required')
+                    from .parent_result import _require_version1_inspection_delivery
+                    _require_version1_inspection_delivery(value['result'], request=request,
+                        run_id=self._launch.run_id, inspection_only=self._inspection_only)
                     self._finished=True
                     # Ingress is consumed. The retained process owner performs
                     # the sole strict pipe seal after it establishes actual exit.

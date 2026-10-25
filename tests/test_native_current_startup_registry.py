@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from phase_tool import command_result, evidence, installation
 from phase_tool.application import PhaseApplication
-from phase_tool.canonical import canonical_bytes
+from phase_tool.canonical import canonical_bytes,digest_bytes
 from phase_tool.command_result import validate_command_result
 from phase_tool.errors import PhaseError
 from phase_tool.installation import _native_inspection_file_create_registry
@@ -80,6 +80,41 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
     def test_original_endpoint_bad_query_refuses_before_current_registry(self):
         launch,query=self.original_shell()
         query['registry']='synthetic-untrusted-selection'
+        with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
+                patch.object(original_endpoint,'_native_registry_for_manifest',
+                    side_effect=AssertionError('registry reached')) as selected):
+            with self.assertRaisesRegex(PhaseError,'ntfs.original_query_binding_mismatch'):
+                original_endpoint.native_original_query(launch,query)
+            selected.assert_not_called()
+
+    def test_query11_both_actual_profile_guards_refuse_before_reader_or_literal_check(self):
+        for version in ('1.1','1.2'):
+            registry=(installation._native_inspection_file_create_registry() if version=='1.1'
+                else installation._native_lifecycle_registry())
+            launch,query=self.original_shell()
+            launch._manifest_bytes=canonical_bytes({'native_read_installation_version':version,
+                'registry_snapshot_digest':registry.digest,'contract':{'id':'file_create.v1'}})
+            launch._manifest_digest=digest_bytes(launch._manifest_bytes)
+            query.update(native_original_query_version='1.1',action='read_executing',
+                intent_digest='sha256:'+'d'*64,installation_digest=launch._manifest_digest,
+                publication_request={'request_id':'synthetic-create','target_locator':'synthetic.txt','expected_digest':None})
+            with (self.subTest(version=version),patch.object(_NativeAcceptedLaunch,'check_runtime'),
+                    patch.object(original_endpoint,'_resolve_native_file_create_read_binding',
+                        side_effect=AssertionError('reader binding reached')) as binding,
+                    patch.object(original_endpoint,'_require_publication_original',
+                        side_effect=AssertionError('literal helper reached')) as literal):
+                with self.assertRaisesRegex(PhaseError,'ntfs.native_profile_not_qualified'):
+                    original_endpoint.native_original_query(launch,query)
+                binding.assert_not_called();literal.assert_not_called()
+
+    def test_query11_version1_role_refuses_before_registry_no_downgrade(self):
+        launch,query=self.original_shell()
+        launch._manifest_bytes=canonical_bytes({'native_read_installation_version':'1.2',
+            'contract':{'id':'publish_new_version.v1'}})
+        launch._manifest_digest=digest_bytes(launch._manifest_bytes)
+        query.update(native_original_query_version='1.1',action='read_executing',
+            intent_digest='sha256:'+'d'*64,installation_digest=launch._manifest_digest,
+            publication_request={'request_id':'synthetic-create','target_locator':'synthetic.txt','expected_digest':None})
         with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
                 patch.object(original_endpoint,'_native_registry_for_manifest',
                     side_effect=AssertionError('registry reached')) as selected):

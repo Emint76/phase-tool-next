@@ -90,3 +90,36 @@ concurrency and uncertainty checks cover the new method through the same owner.
 These are software and negative admission components; positive native MCP,
 A05/G01, the high-level literal correlation/reuse closure, file2/bundle lifecycle
 and native rollback remain NOT_VERIFIED or unfinished as stated above.
+
+
+## Original reader literal assertion (source-only next slice)
+
+The fixed file1 publication request uses original query1.1 on the same existing
+read-executing exchange. Its closed publication_request contains request_id,
+target_locator and nullable expected_digest. Query1.0 remains exactly seven
+fields for generic prepared, version1 and no-dispatch paths. Query1.1 is forbidden
+for version1, planned/no-intent and unknown generations; there is no downgrade.
+
+After the existing real reader and binding parser verify the SAME expected
+intent digest, the endpoint reuses _require_file_publication_evidence on the
+FULL original intent and plan. This checks the exact candidate built by the
+existing publication helper, contract, idempotency key, target and frozen content.
+The parsed context/effect and optional expected digest are correlated as well.
+Only the existing evidence-root/runtime tail and checked reader process/pipe
+finalization permit delivery. The returned five-field tuple, worker wire,
+CommandResult, Core lifecycle and receipt formats remain unchanged.
+
+This assertion adds no metadata store, launch state, endpoint, journal, queue or
+version owner. An echoed query is consistency under the accepted G01 boundary;
+it does not authenticate loaded code. Component mocks exercise protocol and
+finalization only. Real guard tests continue to refuse before any evidence
+reader/helper. New source tests have not been executed at this draft checkpoint.
+
+Literal assertion is a prerequisite, not a verified high-level PublishFileResult.
+Fresh independent inspect and execute/receipt/context correlation are still
+required. In particular reused_existing has no current intent/plan or execute
+read; it remains an unfinished high-level path. Its future verification must
+reuse existing historical receipt/inspect recursion, without inventing a current
+original or deriving success only from matching target bytes. A05/G01 and real
+positive native CLI/MCP, recovery, rollback and full family qualification remain
+NOT_VERIFIED. Production installations are unchanged.

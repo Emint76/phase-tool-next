@@ -139,7 +139,15 @@ def run_native_core(launch):
         and request['operation']=='execute' and request['native_file_publication_request_version']=='1.0'
         and all(type(request[k]) is str for k in ('source_locator','target_locator','request_id'))
         and (request['expected_digest'] is None or type(request['expected_digest']) is str))
-    _require(prepared_request or publication_request, 'ntfs.fixed_native_request_required')
+    version1_publication_request = (type(request) is dict and set(request)=={'operation',
+        'native_version1_publication_request_version','source_locator','target_locator',
+        'request_id','expected_current_digest','expected_digest'}
+        and request['operation']=='execute' and request['native_version1_publication_request_version']=='1.0'
+        and all(type(request[k]) is str for k in ('source_locator','target_locator',
+            'request_id','expected_current_digest'))
+        and (request['expected_digest'] is None or type(request['expected_digest']) is str))
+    _require(prepared_request or publication_request or version1_publication_request,
+        'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
     # admission still refuses the unqualified candidate, even empty requirements.
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
@@ -168,6 +176,22 @@ def run_native_core(launch):
                 response=app._failure('execute',error)
             else:
                 # Never catch a Core result/failure as an early preparation error.
+                response=app.run('execute',contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
+                    contract_digest=manifest['contract']['package_digest'],candidate_path=candidate_path,
+                    evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
+                    input_paths=inputs,root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()},
+                    expected_inputs=expected,_expected_candidate_bytes=candidate_bytes)
+        elif version1_publication_request:
+            from .preparation import _prepare_version1_publication
+            try:
+                candidate_path, inputs, expected, candidate_bytes = _prepare_version1_publication(app,
+                    source_locator=request['source_locator'], target_locator=request['target_locator'],
+                    request_id=request['request_id'], expected_current_digest=request['expected_current_digest'],
+                    expected_digest=request['expected_digest'])
+            except (PhaseError,OSError,ValueError) as error:
+                # Preparation only. Core errors cannot become pre-write refusals.
+                response=app._failure('execute',error)
+            else:
                 response=app.run('execute',contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
                     contract_digest=manifest['contract']['package_digest'],candidate_path=candidate_path,
                     evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,

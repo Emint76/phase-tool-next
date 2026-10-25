@@ -50,6 +50,25 @@ def _file_publication_request(source_locator,target_locator,request_id,expected_
         'request_id':request_id,'expected_digest':expected_digest}
 
 
+def _version1_publication_request(source_locator, target_locator, request_id,
+        expected_current_digest, expected_digest):
+    """Closed caller literals validated before the existing gate/nonce/launch."""
+    import re
+    from ...paths import safe_relative_locator
+    from .preparation import _version1_publication_candidate
+    _require(type(source_locator) is str, 'ntfs.fixed_native_request_required')
+    source_locator = safe_relative_locator(source_locator)
+    candidate, _ = _version1_publication_candidate(request_id, target_locator,
+        expected_current_digest)
+    _require(expected_digest is None or (type(expected_digest) is str
+        and re.fullmatch(r'sha256:[0-9a-f]{64}', expected_digest)),
+        'publish.invalid_expected_digest')
+    return {'operation': 'execute', 'native_version1_publication_request_version': '1.0',
+        'source_locator': source_locator, 'target_locator': candidate['target_locator'],
+        'request_id': request_id, 'expected_current_digest': expected_current_digest,
+        'expected_digest': expected_digest}
+
+
 def _file_publication_inspection_request(request_id, target_locator, expected_digest, expected_receipt_digest,
         *, _include_canonical_result=False):
     """Shared pure validator runs before any owner gate, nonce or launch."""
@@ -214,6 +233,21 @@ class _InspectionMCPCallOwner:
         return self._call(run_id,request,inspection_only=False)
 
 
+    def execute_version1_publication(self, run_id: StrictStr, source_locator: StrictStr,
+            target_locator: StrictStr, request_id: StrictStr, expected_current_digest: StrictStr,
+            expected_digest: StrictStr | None = None) -> dict:
+        """One raw version1 Core request through the same finite call owner.
+
+        Returns unchanged CommandResult, never PublishFileResult or a verified
+        highlevel claim. The fixed installation supplies all roots and bindings.
+        Inspect a known run independently after unknown delivery; do not retry.
+        No timestamp, key or root substitution masks an idempotency conflict.
+        """
+        request = _version1_publication_request(source_locator, target_locator,
+            request_id, expected_current_digest, expected_digest)
+        return self._call(run_id, request, inspection_only=False)
+
+
     def publish_file(self,run_id:StrictStr,source_locator:StrictStr,
             target_locator:StrictStr,request_id:StrictStr,
             expected_digest:StrictStr|None=None)->dict:
@@ -329,6 +363,7 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
     server.tool(name='phase_execute_prepared')(owner.execute_prepared)
     server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
     server.tool(name='phase_publish_file')(owner.publish_file)
+    server.tool(name='phase_execute_version1_publication')(owner.execute_version1_publication)
     server.tool(name='phase_inspect')(owner.inspect_prepared)
     return _closed_arguments(server)
 

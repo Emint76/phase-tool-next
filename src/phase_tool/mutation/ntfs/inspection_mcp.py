@@ -39,6 +39,16 @@ def _prepared_request(candidate_path,input_paths,expected_inputs,maximum_candida
         'expected_inputs':expected,'maximum_candidate_bytes':maximum_candidate_bytes}
 
 
+def _file_publication_request(source_locator,target_locator,request_id,expected_digest):
+    """Exact raw execute grammar; semantic checks remain in Core preparation."""
+    _require(all(type(v) is str for v in (source_locator,target_locator,request_id))
+        and (expected_digest is None or type(expected_digest) is str),
+        'ntfs.fixed_native_request_required')
+    return {'operation':'execute','native_file_publication_request_version':'1.0',
+        'source_locator':source_locator,'target_locator':target_locator,
+        'request_id':request_id,'expected_digest':expected_digest}
+
+
 class _InspectionMCPCallOwner:
     """One shared finite call owner; legacy read-only entry stays read-only.
 
@@ -116,6 +126,20 @@ class _InspectionMCPCallOwner:
         return self._call(run_id,request,inspection_only=False)
 
 
+    def execute_file_publication(self,run_id:StrictStr,source_locator:StrictStr,
+            target_locator:StrictStr,request_id:StrictStr,
+            expected_digest:StrictStr|None=None)->dict:
+        """Execute file1 from the fixed preparation namespace through Core.
+
+        Returns the unchanged raw CommandResult, not PublishFileResult. This
+        adapter reads or stages nothing and cannot choose roots or a profile.
+        Inspect through a fresh accepted read-only invocation; after uncertainty
+        the same owner remains unavailable and retains its actual launch.
+        """
+        request=_file_publication_request(source_locator,target_locator,request_id,expected_digest)
+        return self._call(run_id,request,inspection_only=False)
+
+
 def _closed_arguments(server):
     # Same SDK validation pattern as the ordinary MCP adapter. Do not import
     # that default server or instantiate its Host application in this contour.
@@ -145,6 +169,7 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
             'After uncertainty use a fresh independent read-only inspection process; do not retry.',
         json_response=True)
     server.tool(name='phase_execute_prepared')(owner.execute_prepared)
+    server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
     server.tool(name='phase_inspect')(owner.inspect)
     return _closed_arguments(server)
 

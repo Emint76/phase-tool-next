@@ -49,6 +49,63 @@ def _original_query_publication(query):
     return value
 
 
+
+def _original_query_version1_publication(query):
+    """Closed query1.2 caller literals, never authority or original evidence.
+
+    Historical query1.0 and file1 query1.1 stay exact. A separate key prevents
+    interpreting file1 literals as version1. Existing full original parsing,
+    saved validators, deterministic archive and transfer still own all facts.
+    """
+    _require(type(query) is dict and type(query.get('native_original_query_version')) is str,
+        'ntfs.original_query_binding_mismatch')
+    if query['native_original_query_version']!='1.2':
+        return None
+    _require(set(query)==_QUERY_FIELDS|{'version1_publication_request'}
+        and query['action']=='read_executing' and query['intent_digest'] is not None,
+        'ntfs.original_query_binding_mismatch')
+    value=query['version1_publication_request']
+    def digest(v):
+        return type(v) is str and re.fullmatch('sha256:[0-9a-f]{64}',v) is not None
+    _require(type(value) is dict and set(value)=={'request_id','target_locator',
+        'expected_current_digest','expected_digest'}
+        and type(value['request_id']) is str and len(value['request_id'])<=128
+        and re.fullmatch('[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*',value['request_id']) is not None
+        and type(value['target_locator']) is str and digest(value['expected_current_digest'])
+        and (value['expected_digest'] is None or digest(value['expected_digest'])),
+        'ntfs.original_query_binding_mismatch')
+    from ...paths import safe_relative_locator
+    _require(safe_relative_locator(value['target_locator'])==value['target_locator'],
+        'ntfs.original_query_binding_mismatch')
+    return value
+
+
+def _require_version1_publication_original(*,intent,plan,parsed,query,binding):
+    """Compare caller literals AFTER the existing real reader/full parser.
+
+    Hashes here correlate data; they do not authenticate the producer or grant
+    a root, worker, GO, qualification, recovery or successful publication.
+    """
+    from .handoff import ParsedNativeVersion1
+    from ...canonical import digest_bytes
+    value=_original_query_version1_publication(query)
+    _require(value is not None and type(parsed) is ParsedNativeVersion1,
+        'ntfs.original_query_binding_mismatch')
+    context=parse_json_bytes(parsed.context_bytes)
+    effect=parse_json_bytes(parsed.effect_bytes)
+    expected={'operation_id':value['request_id'],'idempotency_key':value['request_id'],
+        'target_locator':value['target_locator'],'input_binding':'payload',
+        'expected_current_digest':value['expected_current_digest']}
+    _require(context['run_id']==query['run_id']
+        and context['intent_digest']==query['intent_digest']
+        and plan['effects']==[effect] and intent['contract']==binding
+        and canonical_bytes(intent['candidate']['storage']['value'])==canonical_bytes(expected)
+        and intent['idempotency']['key']==value['request_id'],
+        'ntfs.original_version1_publication_mismatch')
+    _require(value['expected_digest'] is None or value['expected_digest']==digest_bytes(parsed.content_bytes),
+        'ntfs.original_version1_payload_mismatch')
+
+
 def _require_publication_original(*,intent,plan,parsed,query,binding):
     """Literal correlation ONLY after the real reader and parser have verified.
 
@@ -82,7 +139,8 @@ def native_original_query(launch,query):
     from ...evidence import _confirm_native_original_absent
     _require(type(launch) is _NativeAcceptedLaunch,'ntfs.accepted_launch_binding_required')
     launch.check_runtime()
-    publication=_original_query_publication(query)
+    version1_publication=_original_query_version1_publication(query)
+    publication=None if version1_publication is not None else _original_query_publication(query)
     _require(type(query['run_id']) is str
         and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',query['run_id']) is not None
         and query['run_id'] not in {'.','..'}
@@ -95,6 +153,7 @@ def native_original_query(launch,query):
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
     _require(publication is None or not launch._version1,'ntfs.original_query_binding_mismatch')
+    _require(version1_publication is None or launch._version1,'ntfs.original_query_binding_mismatch')
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)  # Accepted static generation only.
     _native_qualified_profile(registry,registry.guarantee_profile_bindings().get(
         'phase.native.ntfs.authority.v1@1.0.0'))  # Candidate always refuses, even empty requirements.
@@ -120,6 +179,10 @@ def native_original_query(launch,query):
             parsed=binding.read(run_id=query['run_id'],intent_digest=digest)
             if publication is not None:
                 _require_publication_original(intent=intent,plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
+                    parsed=parsed,query=query,binding=launch.manifest['contract'])
+            if version1_publication is not None:
+                _require_version1_publication_original(intent=intent,
+                    plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
                     parsed=parsed,query=query,binding=launch.manifest['contract'])
             if launch._version1:
                 value=parsed

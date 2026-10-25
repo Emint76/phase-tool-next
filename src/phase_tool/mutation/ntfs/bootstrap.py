@@ -115,7 +115,17 @@ def _original_query_request(launch,action,digest):
         'intent_digest':digest,'operation_nonce':launch.operation_nonce,'channel_id':launch.channel_id,
         'installation_digest':launch.installation_digest}
     request=launch.invocation['request']
-    if action=='read_executing' and not launch._version1 and type(request) is dict and (
+    if action=='read_executing' and type(request) is dict and (
+            'native_version1_publication_request_version' in request):
+        _require(launch._version1 and set(request)=={'operation',
+            'native_version1_publication_request_version','source_locator','target_locator',
+            'request_id','expected_current_digest','expected_digest'}
+            and request['operation']=='execute' and request['native_version1_publication_request_version']=='1.0'
+            and type(request['source_locator']) is str,'ntfs.fixed_native_request_required')
+        query['native_original_query_version']='1.2'
+        query['version1_publication_request']={key:request[key] for key in (
+            'request_id','target_locator','expected_current_digest','expected_digest')}
+    elif action=='read_executing' and not launch._version1 and type(request) is dict and (
             'native_file_publication_request_version' in request):
         _require(set(request)=={'operation','native_file_publication_request_version','source_locator',
             'target_locator','request_id','expected_digest'}
@@ -123,8 +133,9 @@ def _original_query_request(launch,action,digest):
             and type(request['source_locator']) is str,'ntfs.fixed_native_request_required')
         query['native_original_query_version']='1.1'
         query['publication_request']={key:request[key] for key in ('request_id','target_locator','expected_digest')}
-    from .original_endpoint import _original_query_publication
-    _original_query_publication(query)  # Exact generation/shape; never downgrade.
+    from .original_endpoint import _original_query_publication,_original_query_version1_publication
+    if _original_query_version1_publication(query) is None:
+        _original_query_publication(query)  # Exact generation/shape; never downgrade.
     return query
 
 

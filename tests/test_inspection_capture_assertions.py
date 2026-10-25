@@ -214,3 +214,118 @@ class InspectionCaptureTests(unittest.TestCase):
         bad = application.inspect(**kwargs, **dict(self.expected, _expected_candidate_digest="sha256:" + "0" * 64))
         self.assertFalse(bad.payload["success"])
         self.assertEqual(bad.payload["error"], "inspection.captured_candidate_mismatch")
+
+    def test_opt_in_current_result_is_detached_and_default_result_is_unchanged(self):
+        outcome = self.execute()
+        before = self.snapshot()
+        default = self.read(**self.expected)
+        self.assertNotIn("canonical_result", default)
+        self.assertEqual(self.read(**self.expected, _include_canonical_result=False), default)
+        details = self.read(**self.expected, _include_canonical_result=True)
+        self.assertEqual({k:v for k,v in details.items() if k!="canonical_result"}, default)
+        self.assertEqual(details["canonical_result"], outcome.receipt["canonical_result"])
+        self.assertEqual(details["canonical_result"]["state"]["digest"], digest_bytes(self.payload))
+        self.assertEqual(details["canonical_result"]["state"]["length"], len(self.payload))
+        details["canonical_result"]["state"]["length"] = 999
+        self.assertEqual(self.read(_include_canonical_result=True)["canonical_result"],
+            outcome.receipt["canonical_result"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_multihop_returns_current_reference_without_projecting_prior_or_new_walk(self):
+        first = self.execute()
+        second = self.execute("projection-second")
+        self.execute("projection-third")
+        def current(receipt):
+            receipt["prior_verified_receipt_digest"] = second.receipt_digest
+            # Valid fixture history differs from the prior. This timestamp is
+            # not a new observation or an authenticity/freshness assertion.
+            receipt["canonical_result"]["observed_at"] = "2026-10-25T01:02:03Z"
+        receipt = self.rewrite("receipt.json", current, "projection-third")
+        before = self.snapshot()
+        with patch("phase_tool.inspection.inspect_run", wraps=inspect_run) as recursion:
+            got = self.read("projection-third", **self.expected, _include_canonical_result=True)
+        self.assertEqual(recursion.call_count, 2)
+        self.assertTrue(all("_include_canonical_result" not in call.kwargs
+            for call in recursion.call_args_list))
+        self.assertEqual(got["canonical_result"], receipt["canonical_result"])
+        self.assertNotEqual(got["canonical_result"], first.receipt["canonical_result"])
+        self.assertEqual(got["receipt_digest"], profile_digest("receipt", receipt))
+        self.assertEqual(got["run_id"], "projection-third")
+        self.assertIsNone(got["intent_digest"])
+        self.assertIsNone(got["effect_plan_digest"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_planned_missing_and_rejected_receipts_never_project_successful_result(self):
+        planned = self.core.run(self.request, execute=False)
+        self.assertEqual(planned.receipt["terminal_status"], "validated_planned")
+        self.assertIsNone(self.read(_include_canonical_result=True).get("canonical_result"))
+        self.assert_error("inspection.captured_request_unavailable",
+            _include_canonical_result=True, **self.expected)
+        (self.run_root() / "receipt.json").unlink()  # Disposable planned fixture.
+        self.assertIsNone(self.read(_include_canonical_result=True).get("canonical_result"))
+        bad = replace(self.request, run_id="projection-rejected", contract_digest="sha256:"+"0"*64)
+        self.assertEqual(self.core.run(bad, execute=True).receipt["terminal_status"], "rejected")
+        self.assertIsNone(self.read("projection-rejected",
+            _include_canonical_result=True).get("canonical_result"))
+
+    def test_application_details_share_one_inspection_and_preserve_public_payload(self):
+        outcome = self.execute()
+        app = PhaseApplication(registry=self.registry)
+        kwargs = dict(evidence_root=self.evidence, run_id=self.request.run_id,
+            root_bindings=self.request.root_bindings, **self.expected)
+        default = app.inspect(**kwargs)
+        before = self.snapshot()
+        with patch("phase_tool.application.inspect_run", wraps=inspect_run) as boundary:
+            response, reference = app._inspect_with_result(**kwargs, _include_canonical_result=True)
+        self.assertEqual(boundary.call_count, 1)
+        self.assertEqual(response.payload, default.payload)
+        self.assertEqual(response.exit_code, default.exit_code)
+        self.assertEqual(reference, outcome.receipt["canonical_result"])
+        self.assertEqual(app._inspect_with_result(**kwargs)[1], None)
+        self.assertEqual(self.snapshot(), before)
+        wrong = dict(kwargs, _expected_candidate_digest="sha256:"+"0"*64)
+        failed, reference = app._inspect_with_result(**wrong, _include_canonical_result=True)
+        self.assertFalse(failed.payload["success"])
+        self.assertEqual(failed.payload["error"], "inspection.captured_candidate_mismatch")
+        self.assertIsNone(reference)
+
+    def test_projection_flag_is_strict_before_read_and_existing_failures_are_preserved(self):
+        for value in (None, 0, 1, "", [], {}):
+            with self.subTest(value=value):
+                with patch("phase_tool.inspection.validate_run_id",
+                        side_effect=AssertionError("run resolution reached")):
+                    self.assert_error("inspection.invalid_result_projection", _include_canonical_result=value)
+                app = PhaseApplication(registry=self.registry)
+                with patch("phase_tool.application.inspect_run",
+                        side_effect=AssertionError("inspection reached")) as boundary:
+                    response, reference = app._inspect_with_result(
+                        evidence_root=self.evidence, run_id=self.request.run_id,
+                        root_bindings=self.request.root_bindings, _include_canonical_result=value)
+                self.assertEqual(boundary.call_count, 0)
+                self.assertFalse(response.payload["success"])
+                self.assertEqual(response.payload["error"], "inspection.invalid_result_projection")
+                self.assertIsNone(reference)
+        self.execute()
+        self.assert_error("inspection.captured_candidate_mismatch", _include_canonical_result=True,
+            **dict(self.expected, _expected_candidate_digest="sha256:"+"0"*64))
+        (self.target / "result.bin").write_bytes(b"synthetic-tampered-projection")
+        self.assert_error("inspection.target_mismatch", _include_canonical_result=True, **self.expected)
+
+    def test_empty_and_one_MiB_actual_core_results_project_exact_digest_and_length(self):
+        for size in (0, 1024**2):
+            with self.subTest(size=size):
+                payload = b"x"*size
+                self.source.write_bytes(payload)
+                value = dict(self.value, operation_id=f"projection-{size}",
+                    idempotency_key=f"projection-{size}", target_locator=f"projection-{size}.bin")
+                path = self.root / f"projection-{size}.json"
+                path.write_bytes(canonical_bytes(value))
+                request = replace(self.request, candidate_path=path, run_id=f"projection-{size}")
+                outcome = self.core.run(request, execute=True)
+                self.assertEqual(outcome.exit_code, 0, outcome.receipt)
+                got = self.read(request.run_id, _include_canonical_result=True,
+                    _expected_candidate_digest=profile_digest("candidate", value),
+                    _expected_frozen_input=("payload", digest_bytes(payload)))
+                self.assertEqual(got["canonical_result"], outcome.receipt["canonical_result"])
+                self.assertEqual(got["canonical_result"]["state"]["digest"], digest_bytes(payload))
+                self.assertEqual(got["canonical_result"]["state"]["length"], size)

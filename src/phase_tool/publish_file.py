@@ -27,6 +27,8 @@ TARGET_ROOT_BINDING = "phase_result_root"
 MAX_BYTES = min(_MAX_CONTENT_BYTES, _MATERIALIZED_TARGET_LIMITS["mechanism.exclusive_create_v1"])
 
 
+_PUBLICATION_EVIDENCE_FIELDS = ("run_id", "terminal_status", "execution_disposition", "mutation_attempted", "receipt_digest", "intent_digest", "effect_plan_digest")
+
 class PublishFileResult(BaseModel):
     """New closed result schema; historical command/receipt schemas are unchanged."""
 
@@ -51,6 +53,62 @@ class PublishFileResult(BaseModel):
     inspection_required: bool = False
     error: str | None = None
     exit_code: int = 10
+
+
+def _native_file_publication_ack(result: dict, ack: dict) -> bool:
+    """Project a validated ACK into the existing result; no I/O or authority.
+
+    The caller first retains the original ACK in its same finite owner.
+    In particular, nullable mutation/intent/plan facts are never inferred away.
+    True permits one fresh inspect, not success or retry.
+    """
+    for field in ("receipt_digest", "intent_digest", "effect_plan_digest",
+            "execution_disposition", "mutation_attempted"):
+        result[field] = ack[field]
+    if (ack.get("stage3_command_result_version") == "1.2"
+            or ack.get("inspection_required") is True or ack["exit_code"] == 40
+            or ack["mutation_attempted"] is None):
+        result.update(status="indeterminate", exit_code=40, inspection_required=True,
+            error=ack["error"] or "publish_file.execution_unknown")
+        return False
+    if ack["success"] is not True:
+        uncertain = ack["mutation_attempted"] is not False
+        code = ack["error"] or "publish_file.execution_failed"
+        result.update(status="indeterminate" if uncertain else "rejected_before_write",
+            exit_code=40 if uncertain else 10,
+            inspection_required=uncertain or code.startswith("idempotency."), error=code)
+        return False
+    # Preserve a possible/known commit before any later correlation can fail.
+    result.update(status="committed_unverified", exit_code=30, inspection_required=True)
+    if not (ack["command"] == "execute" and ack["run_id"] == result["run_id"]
+            and ack["exit_code"] == 0 and ack["error"] is None and ack["blockers"] == []
+            and ack["terminal_status"] == "succeeded_verified" and ack["receipt_digest"]
+            and ack["execution_disposition"] in {"executed", "reused_existing"}):
+        raise PhaseError("publish_file.evidence_mismatch")
+    # Raw execute target_verified=None is normal; only fresh inspect verifies it.
+    return True
+
+
+def _native_file_publication_inspected(result: dict, ack: dict, inspected: dict,
+        reference: dict | None) -> None:
+    """Reuse the Host adapter's seven-field correlation after native validation.
+
+    Parent/MCP already validate the closed frame and CURRENT reference against
+    the fixed manifest/schema. This function does not read or walk evidence,
+    authenticate history, qualify storage, create a receipt or reread source.
+    It leaves success false until the same caller finishes serialization/gate.
+    """
+    if inspected["success"] is not True:
+        raise PhaseError(inspected["error"] or "publish_file.inspection_failed")
+    if any(ack[field] != inspected[field] for field in _PUBLICATION_EVIDENCE_FIELDS):
+        raise PhaseError("publish_file.evidence_mismatch")
+    if not (inspected["exit_code"] == 0 and inspected["error"] is None
+            and inspected["blockers"] == [] and inspected["target_verified"] is True
+            and inspected["terminal_status"] == "succeeded_verified"
+            and inspected["receipt_digest"] and type(reference) is dict):
+        raise PhaseError("publish_file.not_verified")
+    state = reference["state"]
+    result.update(content_digest=state["digest"], content_length=state["length"])
 
 
 def _root(path: Path, *, existing: bool) -> Path:
@@ -239,7 +297,7 @@ def publish_file(
         ).payload
         if not inspected["success"]:
             raise PhaseError(inspected["error"] or "publish_file.inspection_failed")
-        compared = ("run_id", "terminal_status", "execution_disposition", "mutation_attempted", "receipt_digest", "intent_digest", "effect_plan_digest")
+        compared = _PUBLICATION_EVIDENCE_FIELDS
         if any(payload[key] != inspected[key] for key in compared):
             raise PhaseError("publish_file.evidence_mismatch")
         if inspected["target_verified"] is not True or not result.receipt_digest or payload["terminal_status"] != "succeeded_verified":

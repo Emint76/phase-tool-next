@@ -12,7 +12,8 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field, StrictInt, StrictStr
 
-from ...canonical import canonical_bytes
+from ...canonical import canonical_bytes, parse_json_bytes
+from ...errors import PhaseError
 from ...command_result import validate_command_result
 from ...evidence import validate_run_id
 from ...installation import _native_registry_for_manifest
@@ -76,6 +77,7 @@ class _InspectionMCPCallOwner:
         self._gate=threading.Lock()
         self._held_launch=None
         self._unavailable=False
+        self._publication_ack=None  # One transient ACK, never a durable journal or retry record.
 
     def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False):
         from .parent_result import _native_file_result_mode
@@ -86,6 +88,35 @@ class _InspectionMCPCallOwner:
         validate_run_id(run_id)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None
+        value=None
+        try:
+            value=self._call_locked(run_id,request,inspection_only=inspection_only,
+                _include_canonical_result=_include_canonical_result)
+        except BaseException as error:
+            self._unavailable=True
+            primary=error
+        finally:
+            try:self._gate.release()
+            except BaseException as error:
+                self._unavailable=True
+                if primary is None:primary=error
+                else:
+                    try:primary.add_note('Native MCP call gate: '+type(error).__name__)
+                    except BaseException:pass
+        if primary is not None:raise primary
+        return value
+
+    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_retain_launch=False):
+        from .parent_result import _native_file_result_mode
+        _require(type(_include_canonical_result) is bool
+            and _include_canonical_result is _native_file_result_mode(request)
+            and (not _include_canonical_result or inspection_only is True),
+            'ntfs.file_result_request_version_required')
+        validate_run_id(run_id)
+        _require(type(_retain_launch)is bool and (not _retain_launch
+            or (inspection_only is False and not _include_canonical_result
+                and type(request)is dict and request.get('operation')=='execute')),
+            'ntfs.publication_retention_required')
         result=None
         reference=None
         try:
@@ -121,19 +152,13 @@ class _InspectionMCPCallOwner:
                 # or Docker CLI exit is not proof of native worker completion.
                 self._unavailable=True
             else:
-                self._held_launch=None  # Parent established checked finalization.
-        except BaseException as error:
+                # Highlevel classification may still find a schema-valid
+                # nullable/partial ACK indeterminate. Keep this SAME actual
+                # launch until that classification, after checked finalization.
+                if not _retain_launch:self._held_launch=None
+        except BaseException:
             self._unavailable=True
-            primary=error
-        finally:
-            try:self._gate.release()
-            except BaseException as error:
-                self._unavailable=True
-                if primary is None:primary=error
-                else:
-                    try:primary.add_note('Native MCP call gate: '+type(error).__name__)
-                    except BaseException:pass
-        if primary is not None:raise primary
+            raise
         return (result,reference) if _include_canonical_result else result
 
     def inspect(self,run_id:StrictStr)->dict:
@@ -189,6 +214,90 @@ class _InspectionMCPCallOwner:
         return self._call(run_id,request,inspection_only=False)
 
 
+    def publish_file(self,run_id:StrictStr,source_locator:StrictStr,
+            target_locator:StrictStr,request_id:StrictStr,
+            expected_digest:StrictStr|None=None)->dict:
+        """Fixed file1 execute then fresh CURRENT inspection under the SAME gate.
+
+        Core owns all preparation/effects/receipts. The original validated ACK
+        remains in this finite owner before any fallible projection/rendering.
+        SDK/stdio loss after return is unknown delivery, never permission to retry.
+        """
+        import re
+        from ...installation import _resolve_native_file_create_read_binding
+        from ...paths import safe_relative_locator
+        from ...publish_file import (CONTRACT_BINDING, PublishFileResult,
+            _native_file_publication_ack, _native_file_publication_inspected)
+
+        request=_file_publication_request(source_locator,target_locator,request_id,expected_digest)
+        validate_run_id(run_id)
+        safe_relative_locator(source_locator);safe_relative_locator(target_locator)
+        _require(len(request_id)<=128 and re.fullmatch(r'[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*',request_id),
+            'publish_file.invalid_request_id')
+        _require(expected_digest is None or re.fullmatch(r'sha256:[0-9a-f]{64}',expected_digest),
+            'publish_file.invalid_expected_digest')
+        registry=_native_registry_for_manifest(self._startup['manifest_bytes'],
+            self._startup['expected_manifest_digest'])
+        binding=_resolve_native_file_create_read_binding(manifest_bytes=self._startup['manifest_bytes'],
+            expected_manifest_digest=self._startup['expected_manifest_digest'],registry=registry)
+        manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
+        _require(manifest['contract']==registry.contract_bindings().get(CONTRACT_BINDING)
+            and manifest['native_read_installation_version']in {'1.1','1.2'},
+            'ntfs.original_single_effect_required')
+        result=PublishFileResult(status='rejected_before_write',request_id=request_id,run_id=run_id,
+            evidence_root=manifest['evidence_root'],target_locator=target_locator,
+            contract_digest=manifest['contract']['package_digest']).model_dump()
+        _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
+        primary=None
+        handed_off=False
+        verified=None
+        try:
+            _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
+            self._publication_ack=None
+            result.update(status='indeterminate',mutation_attempted=None,exit_code=40,inspection_required=True)
+            handed_off=True
+            ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
+            self._publication_ack=ack  # Plain store BEFORE copying, models, diagnostics or another invocation.
+            can_inspect=_native_file_publication_ack(result,ack)
+            if result['status']=='indeterminate':self._unavailable=True
+            elif not self._unavailable:self._held_launch=None
+            if can_inspect:
+                inspection_request=_file_publication_inspection_request(request_id,target_locator,
+                    expected_digest,ack['receipt_digest'],_include_canonical_result=True)
+                inspected,reference=self._call_locked(run_id,inspection_request,
+                    inspection_only=True,_include_canonical_result=True)
+                _native_file_publication_inspected(result,ack,inspected,reference)
+                candidate=dict(result,success=True,status='verified',target_verified=True,
+                    inspection_required=False,error=None,exit_code=0)
+                verified=PublishFileResult.model_validate(candidate).model_dump()
+                canonical_bytes(verified)  # Fail here, while the ACK/gate are still owned.
+        except BaseException as error:
+            self._unavailable=True
+            primary=error
+            if handed_off:
+                result.update(success=False,target_verified=False,inspection_required=True,
+                    error=error.code if type(error)is PhaseError else 'publish_file.failure')
+        finally:
+            try:self._gate.release()
+            except BaseException as error:
+                self._unavailable=True
+                verified=None
+                if primary is not None:
+                    try:primary.add_note('Native MCP call gate: '+type(error).__name__)
+                    except BaseException:pass
+                else:
+                    primary=error
+                    if handed_off:
+                        result.update(success=False,target_verified=False,inspection_required=True,
+                            error=(result['error'] if result['error'] is not None
+                                else 'publish_file.gate_finalization_failed'))
+        if primary is not None and not handed_off:raise primary
+        # No model/serialization call follows checked release. Failed rendering
+        # returns the already constructed plain result, preserving ACK fields.
+        return verified if verified is not None and not self._unavailable else result
+
+
+
 def _closed_arguments(server):
     # Same SDK validation pattern as the ordinary MCP adapter. Do not import
     # that default server or instantiate its Host application in this contour.
@@ -219,6 +328,7 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
         json_response=True)
     server.tool(name='phase_execute_prepared')(owner.execute_prepared)
     server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
+    server.tool(name='phase_publish_file')(owner.publish_file)
     server.tool(name='phase_inspect')(owner.inspect_prepared)
     return _closed_arguments(server)
 

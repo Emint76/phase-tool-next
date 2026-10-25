@@ -255,6 +255,18 @@ class NativeFileResultHostTests(unittest.TestCase):
     def fixture(self,payload=None):
         fixture=host_fixtures.NativeFileInspectionHostTests(methodName='runTest')
         self.addCleanup(fixture.doCleanups);fixture.setUp()
+        # The fixed native V5 context and default Host registry have distinct
+        # package bindings. Use the SAME existing fixed registry for this real
+        # Host/Core fixture; no registry/guard/provider is patched or redefined.
+        from dataclasses import replace
+        from phase_tool.core import PhaseCore
+        registry,(manifest,_)=manifests()
+        binding=registry.contract_bindings()['file_create.v1@1.0.0']
+        self.assertEqual(binding,manifest['contract'])
+        self.assertNotEqual(fixture.request.contract_digest,binding['package_digest'])
+        fixture.registry=registry;fixture.core=PhaseCore(registry)
+        fixture.app=PhaseApplication(registry=registry)
+        fixture.request=replace(fixture.request,contract_digest=binding['package_digest'])
         if payload is not None:
             fixture.payload=payload;fixture.source.write_bytes(payload)
         return fixture
@@ -273,6 +285,15 @@ class NativeFileResultHostTests(unittest.TestCase):
                 run_id=outcome.run_id,root_bindings=f.request.root_bindings,
                 _canonical_result_context=context,**entrypoint._native_file_inspection_expectations(request))
         finally:authority.seal.assert_called_once_with(intent_digest=None)
+
+    def test_default_host_binding_remains_distinct_and_rejects_native_context(self):
+        # Reproduce the former fixture mismatch as a deliberate negative case.
+        f=host_fixtures.NativeFileInspectionHostTests(methodName='runTest')
+        self.addCleanup(f.doCleanups);f.setUp();outcome=f.execute()
+        p=protocol()
+        self.assertNotEqual(f.request.contract_digest,p.manifest['contract']['package_digest'])
+        with self.assertRaisesRegex(PhaseError,'ntfs.file_result_binding_mismatch'):
+            self.inspect(f,outcome)
 
     def test_actual_host_create_reuse_current_ack_and_one_inspection(self):
         from phase_tool import application

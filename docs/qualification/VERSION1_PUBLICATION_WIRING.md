@@ -36,21 +36,24 @@ input adapter is needed to enter existing Core from the fixed input namespace;
 the raw MCP method is only the transport adapter. Existing mechanisms own every
 other guarantee. File2, bundles, version2 and FULL are not enabled.
 
-Known-run inspection remains the existing independent read-only route. A
-version1 caller-literal/receipt-pinned inspection grammar and highlevel version
-correlator are unfinished; file1 inspection literals must not be reused for
-version1. Existing recover_publication excludes publish_new_version.v1; no new
+Known-run inspection remains the existing independent read-only route. The separate candidate
+[version1 bound inspection](VERSION1_BOUND_INSPECTION.md) supplies a closed raw
+caller-literal/CURRENT-receipt grammar. Its new tests await exact-HEAD CI; a
+verified highlevel version correlator remains unfinished. File1 inspection
+literals must not be reused for version1. Existing recover_publication excludes publish_new_version.v1; no new
 automatic recovery is supplied here.
 
-New focused tests are UNEXECUTED until exact-HEAD CI artifacts are retained and
-checked. They cover closed request/schema, query1.2 mapping, exact candidate,
+At examined commit e493c92a, retained CI40221427144 has1490 cases in each Python
+lane:1489 PASS/one historicalSKIP, including all14 focused methods. Two independent
+offline byte audits accepted the ordinary Linux artifacts; this is not native
+qualification. The focused methods cover closed request/schema, query1.2 mapping, exact candidate,
 archive collision, real unmocked native guard, gate/unknown-delivery retention,
 real SDK invalid-startup refusal and qualified Host Core version/archive/fresh
 inspection under explicit synthetic process boundaries. They do not establish
 accepted native preparation, G01, Windows byte persistence or safety admission.
 
-The existing request fingerprint includes frozen_at. A deterministic default
-clock negative regression is proposed: unchanged candidate/payload/root/key at
+The existing request fingerprint includes frozen_at. The deterministic default
+clock negative regression passed in that ordinary Linux CI: unchanged candidate/payload/root/key at
 T1 after success atT0 must conflict without modifying current/archive/prior
 receipt. An explicit T0 control tests exact-fingerprint reuse only; it is not a
 runtime retry strategy. No timestamp/key substitution, fingerprint change or

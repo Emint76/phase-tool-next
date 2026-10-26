@@ -9,6 +9,8 @@ Root-wide unresolved scanning/locks, guarantee admission, fresh observations,
 possible-dispatch/GO, worker exit and Core receipts remain mandatory outside.
 """
 from __future__ import annotations
+from dataclasses import dataclass
+import re
 from .handoff import ParsedNativeFileCreate, ParsedNativeVersion1
 from jsonschema import Draft202012Validator, FormatChecker
 from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes, profile_digest
@@ -33,21 +35,24 @@ def _canonical(raw: bytes):
     return value
 
 
-def _parse_original(*, intent_bytes: bytes, plan_bytes: bytes,
-    pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
-    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
-    installed_native_binding: bytes, installed_root_grants: bytes,
-    installed_implementation_binding: bytes, _execution_requested: bool,
-    _version1: bool = False) -> ParsedNativeFileCreate | ParsedNativeVersion1:
-    """Validate exact buffers before a future installation-owned handoff.
+@dataclass(frozen=True)
+class _OriginalControlProjection:
+    """Declared lineage only: no actual payload, FD, filesystem or GO authority."""
+    context_bytes: bytes
+    grant_bytes: bytes
+    effect_bytes: bytes
+    timestamp: str
+    input_binding: str
+    content_digest: str
+    content_length: int
 
-    Installed buffers are supplied by the FUTURE closed selector, not a broker
-    request or self-asserted credentials. Their authentication/actual graph and
-    root/evidence observations are NOT performed here. This parser is unselected
-    and cannot dispatch through normal Core while A05/G01 remains unverified.
-    The first structural subset is existing single frozen-input file_create-v1,
-    <=1MiB, existing parents. No new contract/limits or recovery permission.
-    """
+
+def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
+    registry: RegistrySnapshot, expected_run_id: str, expected_intent_digest: str,
+    installed_core_binding: bytes, installed_native_binding: bytes,
+    installed_implementation_binding: bytes, _execution_requested: bool,
+    _version1: bool):
+    """Existing checks BEFORE payload verification; never a complete projection."""
     _require(type(_version1) is bool and type(_execution_requested) is bool,
         'ntfs.original_closed_role_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
@@ -122,13 +127,35 @@ def _parse_original(*, intent_bytes: bytes, plan_bytes: bytes,
     _require(len(inputs)==1 and inputs[0]['binding_id']==value['input_binding']
         and inputs[0]['freeze_strategy']=='copy_and_hash','ntfs.original_frozen_input_required')
     frozen=inputs[0]
-    maximum = 16*1024**2 if _version1 else 1024**2
-    _require(type(blob_bytes) is bytes and len(blob_bytes)<=maximum,'mechanism.content_too_large')
-    digest=digest_bytes(blob_bytes)
-    _require(type(effect['content_length']) is int and effect['content_length']==len(blob_bytes)
+    return intent,plan,contract
+
+
+def _original_content_binding(intent: dict, plan: dict, digest: str, length: int) -> None:
+    """Compare declarations with supplied data, without asserting its origin."""
+    effect=plan['effects'][0];frozen=intent['inputs'][0]
+    _require(type(effect['content_length']) is int and effect['content_length']==length
         and frozen['blob_digest']==frozen['digest']==effect['content_digest']==digest
         and effect['content_source']=={'kind':'frozen_input','binding_id':frozen['binding_id'],'source_digest':digest}
         and intent['evidence']['content_blob_digests']==[],'ntfs.original_content_binding_mismatch')
+
+
+def _verify_original_blob_bytes(intent: dict, plan: dict, blob_bytes: bytes,
+                                *, _version1: bool) -> None:
+    maximum = 16*1024**2 if _version1 else 1024**2
+    _require(type(blob_bytes) is bytes and len(blob_bytes)<=maximum,'mechanism.content_too_large')
+    digest=digest_bytes(blob_bytes)
+    _original_content_binding(intent,plan,digest,len(blob_bytes))
+
+
+def _original_control_suffix(*, intent: dict, plan: dict, contract,
+    registry: RegistrySnapshot, pre_validator_bytes: bytes,
+    installed_root_grants: bytes, expected_intent_digest: str,
+    _version1: bool) -> _OriginalControlProjection:
+    """Existing checks AFTER the payload slot; no actual-content proof here."""
+    effect=plan['effects'][0];candidate=intent['candidate'];value=candidate['storage']['value']
+    inputs=intent['inputs'];binding=intent['contract']
+    implementation=intent['implementation_binding']
+    operation='publish_new_version' if _version1 else 'create'
     root_records=intent['idempotency']['root_identities']
     _canonical(installed_root_grants)
     _require(canonical_bytes(root_records)==installed_root_grants and len(root_records)==1,'ntfs.original_installed_roots_mismatch')
@@ -153,11 +180,72 @@ def _parse_original(*, intent_bytes: bytes, plan_bytes: bytes,
         'installation_digest':native['installation']['descriptor_digest'],
         'implementation_artifact_digest':implementation['authority']['provider']['artifact_digest'],
         'operation_nonce':native['operation_nonce']}
-    if _version1:
-        return ParsedNativeVersion1(canonical_bytes(_version1_context(context)),canonical_bytes(grants[0].as_dict()),
-            canonical_bytes(effect),blob_bytes,intent['created_at'])
-    return ParsedNativeFileCreate(canonical_bytes(_context(context)),canonical_bytes(grants[0].as_dict()),
-        canonical_bytes(effect),blob_bytes,intent['created_at'])
+    checked_context=_version1_context(context) if _version1 else _context(context)
+    return _OriginalControlProjection(canonical_bytes(checked_context),canonical_bytes(grants[0].as_dict()),
+        canonical_bytes(effect),intent['created_at'],effect['input_binding'],effect['content_digest'],
+        effect['content_length'])
+
+
+def _parse_original_controls(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes, _execution_requested: bool,
+    _version1: bool = False) -> _OriginalControlProjection:
+    """Same complete control semantics, DECLARED content only, never a handoff.
+
+    This private seam adds no installed role or file2 selection. Historical full
+    wrappers below MUST verify actual bytes before the shared suffix. A future
+    closed composition must independently bind its own real verified snapshot.
+    """
+    intent,plan,contract=_original_control_prefix(
+        intent_bytes=intent_bytes,plan_bytes=plan_bytes,registry=registry,
+        expected_run_id=expected_run_id,expected_intent_digest=expected_intent_digest,
+        installed_core_binding=installed_core_binding,installed_native_binding=installed_native_binding,
+        installed_implementation_binding=installed_implementation_binding,
+        _execution_requested=_execution_requested,_version1=_version1)
+    effect=plan['effects'][0]
+    length,digest=effect['content_length'],effect['content_digest']
+    maximum=16*1024**2 if _version1 else 1024**2
+    _require(type(length) is int and 0<=length<=maximum
+        and type(digest) is str and re.fullmatch('sha256:[0-9a-f]{64}',digest) is not None,
+        'ntfs.original_declared_content_bound')
+    _original_content_binding(intent,plan,digest,length)
+    return _original_control_suffix(
+        intent=intent,plan=plan,contract=contract,registry=registry,
+        pre_validator_bytes=pre_validator_bytes,installed_root_grants=installed_root_grants,
+        expected_intent_digest=expected_intent_digest,_version1=_version1)
+
+
+def _parse_original(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, blob_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes, _execution_requested: bool,
+    _version1: bool = False) -> ParsedNativeFileCreate | ParsedNativeVersion1:
+    """Validate exact buffers before a future installation-owned handoff.
+
+    Installed buffers are supplied by the FUTURE closed selector, not a broker
+    request or self-asserted credentials. Their authentication/actual graph and
+    root/evidence observations are NOT performed here. This parser is unselected
+    and cannot dispatch through normal Core while A05/G01 remains unverified.
+    The first structural subset is existing single frozen-input file_create-v1,
+    <=1MiB, existing parents. No new contract/limits or recovery permission.
+    """
+    intent,plan,contract=_original_control_prefix(
+        intent_bytes=intent_bytes,plan_bytes=plan_bytes,registry=registry,
+        expected_run_id=expected_run_id,expected_intent_digest=expected_intent_digest,
+        installed_core_binding=installed_core_binding,installed_native_binding=installed_native_binding,
+        installed_implementation_binding=installed_implementation_binding,
+        _execution_requested=_execution_requested,_version1=_version1)
+    _verify_original_blob_bytes(intent,plan,blob_bytes,_version1=_version1)
+    projection=_original_control_suffix(
+        intent=intent,plan=plan,contract=contract,registry=registry,
+        pre_validator_bytes=pre_validator_bytes,installed_root_grants=installed_root_grants,
+        expected_intent_digest=expected_intent_digest,_version1=_version1)
+    result_type=ParsedNativeVersion1 if _version1 else ParsedNativeFileCreate
+    return result_type(projection.context_bytes,projection.grant_bytes,projection.effect_bytes,
+        blob_bytes,projection.timestamp)
 
 
 def parse_original_file_create(*, intent_bytes: bytes, plan_bytes: bytes,

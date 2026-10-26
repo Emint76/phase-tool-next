@@ -20,7 +20,7 @@ concurrency:
 jobs:
   posix-production:
     name: posix-production (${{ matrix.python }})
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

@@ -304,7 +304,7 @@ class _InspectionMCPCallOwner:
             expected_manifest_digest=self._startup['expected_manifest_digest'],registry=registry)
         manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
         _require(manifest['contract']==registry.contract_bindings().get(CONTRACT_BINDING)
-            and manifest['native_read_installation_version']in {'1.1','1.2'},
+            and manifest['native_read_installation_version']in {'1.1','1.2','1.4'},
             'ntfs.original_single_effect_required')
         result=PublishFileResult(status='rejected_before_write',request_id=request_id,run_id=run_id,
             evidence_root=manifest['evidence_root'],target_locator=target_locator,

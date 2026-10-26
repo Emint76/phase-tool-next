@@ -351,7 +351,7 @@ def run_native_inspection(launch):
         exact = 'publish_new_version.v1@1.0.0' if version1_inspection else CONTRACT_BINDING
         binding = registry.contract_bindings().get(exact)
         _require(binding is not None and manifest.get('contract') == binding
-            and (not version1_inspection or manifest.get('native_read_installation_version') == '1.2'),
+            and (not version1_inspection or manifest.get('native_read_installation_version') in {'1.2','1.4'}),
             'ntfs.original_single_effect_required')
     try:
         history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))

@@ -1421,6 +1421,8 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
         expected_manifest_digest=read_binding.manifest_digest, registry=read_binding.registry)
     manifest=parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
     root=Path(manifest['evidence_root']);registry=read_binding.registry
+    _require(manifest['native_read_installation_version']!='1.4' or history_bindings is not None,
+        'ntfs.original_history_binding_mismatch')
     bindings=((read_binding,) if history_bindings is None else
         _validate_native_history_bindings(read_binding,history_bindings))
     static=tuple((row,parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2)) for row in bindings)
@@ -1637,13 +1639,38 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
                 for path in attachments.values():
                     control(path)
                 blobs=run/'blobs'
-                if blobs.exists():
+                selected_manifest=parse_json_bytes(selected.manifest_bytes,maximum_bytes=2*1024**2)
+                if selected_manifest['native_read_installation_version']=='1.4':
+                    # Add full fixed-role verification, never replace native
+                    # profile/proof policy with successful content validation.
+                    digest=profile_digest('intent',intent)
+                    _require(receipt['evidence']['intent_digest']==digest
+                        and receipt.get('implementation_binding')==intent['implementation_binding']
+                        and set(attachments)=={'effect-plan.json','validator-results.json'},
+                        'ntfs.original_history_unresolved')
+                    validators,_=control(attachments['validator-results.json'])
+                    _require(validators==receipt['validator_results'],'ntfs.original_attachment_mismatch')
+                    expected_blobs={row['blob_digest'].removeprefix('sha256:') for row in intent['inputs']
+                        if row['blob_digest'] is not None}
+                    def check_planned_blobs():
+                        safe_info(blobs,directory=True)
+                        with os.scandir(blobs) as frozen:
+                            actual=set()
+                            for item in frozen:
+                                safe_info(blobs/item.name,directory=False)
+                                actual.add(item.name)
+                        _require(actual==expected_blobs,'ntfs.original_frozen_input_required')
+                    check_planned_blobs()
+                    selected.validate_planned(run_id=entry.name,intent_digest=digest)
+                    check_planned_blobs();check_anchors()
+                elif blobs.exists():
+                    # Historical proofless fallback bound remains unchanged.
                     with os.scandir(blobs) as frozen:
                         for item in frozen:
                             _require(item.stat(follow_symlinks=False).st_size<=1024**2,
                                 'ntfs.original_frozen_input_required')
-                # Reuse metadata-only verification, including registry profile
-                # coverage. A synthetic/unavailable profile continues to refuse.
+                # KEEP the native-installation refusal. Full content alone
+                # never closes a proofless native original or grants authority.
                 inspect_run(root,entry.name,registry)
 
     yielded=False;primary_error=None

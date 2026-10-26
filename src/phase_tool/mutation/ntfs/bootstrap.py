@@ -46,7 +46,7 @@ def _normalized_linux_contour(value,keys):
 def _native_history_manifest_buffers(raw, expected_digest, *, active_bytes, active_digest):
     """Pure accepted-config correlation; no authentication, I/O or authority.
 
-    Exactly two V5 manifest1.2 roles in fixed order. Trust belongs to the
+    Exact V5 pair1.2 or V7 triple1.4 in fixed order. Trust belongs to the
     externally accepted immutable config namespace, never to these hashes.
     """
     _require(type(raw) is bytes and len(raw)<=2*1024**2
@@ -55,11 +55,19 @@ def _native_history_manifest_buffers(raw, expected_digest, *, active_bytes, acti
     value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
     _require(type(value) is dict and canonical_bytes(value)==raw
         and set(value)=={'history_manifest_set_version','manifests'}
-        and value['history_manifest_set_version']=='1.0'
-        and type(value['manifests']) is list and len(value['manifests'])==2,
+        and type(value['history_manifest_set_version']) is str
+        and value['history_manifest_set_version'] in {'1.0','1.1'}
+        and type(value['manifests']) is list,
+        'ntfs.accepted_history_shape')
+    roles=('file_create.v1','publish_new_version.v1')
+    generation='1.2'
+    if value['history_manifest_set_version']=='1.1':
+        roles+=('file_create.v2',)
+        generation='1.4'
+    _require(len(value['manifests'])==len(roles),
         'ntfs.accepted_history_shape')
     buffers=[]
-    for role,row in zip(('file_create.v1','publish_new_version.v1'),value['manifests']):
+    for role,row in zip(roles,value['manifests'],strict=True):
         _require(type(row) is dict and set(row)=={'manifest_base64','manifest_digest'}
             and type(row['manifest_base64']) is str and type(row['manifest_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',row['manifest_digest']) is not None,
@@ -72,7 +80,7 @@ def _native_history_manifest_buffers(raw, expected_digest, *, active_bytes, acti
             'ntfs.accepted_history_binding_mismatch')
         manifest=parse_json_bytes(leaf,maximum_bytes=2*1024**2)
         _require(type(manifest) is dict and canonical_bytes(manifest)==leaf
-            and manifest.get('native_read_installation_version')=='1.2'
+            and manifest.get('native_read_installation_version')==generation
             and type(manifest.get('contract')) is dict and manifest['contract'].get('id')==role,
             'ntfs.accepted_history_shape')
         buffers.append((leaf,row['manifest_digest']))
@@ -172,9 +180,15 @@ class _NativeAcceptedLaunch:
             and invocation['run_id'] not in {'.','..'}
             and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
                 for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3'}
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4'}
             and type(manifest.get('root_grants')) is list and len(manifest['root_grants'])==1,
             'ntfs.accepted_launch_binding_required')
+        _require(manifest['native_read_installation_version']!='1.4'
+            or (self._history_manifest_set[0] is not None
+                and type(manifest.get('contract')) is dict
+                and manifest['contract'].get('id') in {
+                    'file_create.v1','publish_new_version.v1','file_create.v2'}),
+            'ntfs.accepted_history_binding_mismatch')
         self._owner=os.getpid(),threading.get_ident()
         self._config_bytes,self._manifest_bytes,self._invocation_bytes=config_bytes,manifest_bytes,invocation_bytes
         self._manifest_digest=expected_manifest_digest
@@ -212,13 +226,13 @@ class _NativeAcceptedLaunch:
     @property
     def _version1(self):
         manifest = self.manifest
-        return (manifest['native_read_installation_version'] == '1.2'
+        return (manifest['native_read_installation_version'] in {'1.2','1.4'}
             and manifest['contract']['id'] == 'publish_new_version.v1')
 
     @property
     def _file2(self):
         manifest=self.manifest
-        return (manifest['native_read_installation_version']=='1.3'
+        return (manifest['native_read_installation_version'] in {'1.3','1.4'}
             and manifest['contract']['id']=='file_create.v2')
 
     def check_runtime(self):

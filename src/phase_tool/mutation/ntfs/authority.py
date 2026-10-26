@@ -52,13 +52,22 @@ class _NativeFileCreateAuthority:
         self._manifest = parse_json_bytes(read_binding.manifest_bytes)
         self._version1 = self._manifest['contract']['id'] == 'publish_new_version.v1'
         self._file2 = self._manifest['contract']['id']=='file_create.v2'
-        _require((not self._version1 or self._manifest['native_read_installation_version'] == '1.2')
-            and (type(channel) is LinuxNativeChannelV4 and self._file2
-                if self._manifest['native_read_installation_version']=='1.3' else
-                not self._file2 and (type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1
-                if self._manifest['native_read_installation_version'] == '1.2'
-                else type(channel) is LinuxNativeChannelV2 and not self._version1)),
-            'ntfs.fixed_role_mismatch')
+        generation = self._manifest['native_read_installation_version']
+        _require(generation in {'1.1','1.2','1.3','1.4'}, 'ntfs.fixed_role_mismatch')
+        if generation == '1.4':
+            # Composition generation does not create a worker/channel protocol.
+            matching = (type(channel) is LinuxNativeChannelV4 if self._file2 else
+                type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1)
+            _require(self._manifest['contract']['id'] in {
+                'file_create.v1','publish_new_version.v1','file_create.v2'} and matching,
+                'ntfs.fixed_role_mismatch')
+        else:
+            _require((not self._version1 or generation == '1.2')
+                and (type(channel) is LinuxNativeChannelV4 and self._file2
+                    if generation == '1.3' else
+                    not self._file2 and (type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1
+                    if generation == '1.2' else type(channel) is LinuxNativeChannelV2 and not self._version1)),
+                'ntfs.fixed_role_mismatch')
         from ...evidence import validate_run_id
         validate_run_id(run_id)
         self._run_id = run_id

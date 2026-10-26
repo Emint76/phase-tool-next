@@ -110,7 +110,7 @@ def _prepare_version1_publication(application, *, source_locator, target_locator
     manifest = installation._check_preparation_namespace(root_bindings=roots,
         evidence_root=Path(manifest['evidence_root']), maximum_candidate_bytes=1024**2)
     binding = application._binding('publish_new_version.v1@1.0.0')
-    _require(manifest['native_read_installation_version'] == '1.2'
+    _require(manifest['native_read_installation_version'] in {'1.2','1.4'}
         and manifest['contract'] == binding, 'ntfs.original_single_effect_required')
     validate_run_id(installation.authority._run_id)
     _, candidate_bytes = _version1_publication_candidate(request_id,

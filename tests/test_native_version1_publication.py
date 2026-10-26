@@ -159,7 +159,7 @@ class NativeVersion1PublicationTests(unittest.TestCase):
 
     def test_new_wire_selects_existing_query12_and_wrong_role_refuses(self):
         from phase_tool.mutation.ntfs.bootstrap import _original_query_request
-        launch=SimpleNamespace(_version1=True,run_id='synthetic-version',
+        launch=SimpleNamespace(_version1=True,_file2=False,run_id='synthetic-version',
             operation_nonce='a'*32,channel_id='b'*32,installation_digest='sha256:'+'c'*64,
             invocation={'request':self.request()})
         intent='sha256:'+'d'*64

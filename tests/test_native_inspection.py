@@ -54,13 +54,17 @@ class NativeInspectionSelectionTests(unittest.TestCase):
         self.assertEqual(descriptor['implementation']['version'], '1.1.0')
         raw = resources.files('phase_tool').joinpath('mutation/ntfs/authority.py').read_bytes()
         self.assertNotEqual(descriptor['implementation']['artifact_digest'], digest_bytes(raw))
-        current=installation._native_lifecycle_registry()
+        prior=installation._native_lifecycle_registry()
+        with self.assertRaisesRegex(PhaseError,'guarantee_profile.implementation_digest_mismatch'):
+            prior.resolve_guarantee_profile(prior.guarantee_profile_bindings()[
+                'phase.native.ntfs.candidate.authority.v3@1.0.0'])
+        current=installation._native_file2_registry()
         current_descriptor=current.resolve_guarantee_profile(current.guarantee_profile_bindings()[
-            'phase.native.ntfs.candidate.authority.v3@1.0.0'])
+            'phase.native.ntfs.candidate.authority.v4@1.0.0'])
         self.assertEqual(current_descriptor['classification'],'qualification_candidate')
         self.assertEqual(current_descriptor['provided_guarantees'],[])
         self.assertEqual(current_descriptor['conformance'],[])
-        self.assertEqual(current_descriptor['implementation']['version'],'1.2.0')
+        self.assertEqual(current_descriptor['implementation']['version'],'1.3.0')
         self.assertEqual(current_descriptor['implementation']['artifact_digest'],digest_bytes(raw))
         self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0',current.guarantee_profile_bindings())
         self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0', new.guarantee_profile_bindings())
@@ -129,7 +133,7 @@ class NativeInspectionSelectionTests(unittest.TestCase):
 class NativeInspectionBranchTests(unittest.TestCase):
     def shell(self):
         # Never a constructed/admitted installation. Pure branch fixture only.
-        value = object.__new__(_NativeFileCreateAuthority); value._inspection_only = True; value._version1=False
+        value = object.__new__(_NativeFileCreateAuthority); value._inspection_only = True; value._version1=False; value._file2=False
         return value
 
     def test_all_mutating_authority_entries_refuse_before_read_or_dispatch(self):
@@ -236,7 +240,7 @@ class NativeInspectionParentTests(unittest.TestCase):
         p._owner = os.getpid(), threading.get_ident(); p._inspection_only = True
         p._consumed = True; p._finished = False; p._failed = False; p._spawn_attempted = False
         p._go_attempted = False; p._worker = None; p._worker_count = 0
-        p._no_dispatch_finished = False; p._version1=False; p._channel_version='1.1'
+        p._no_dispatch_finished = False; p._version1=False; p._file2=False; p._channel_version='1.1'
         p._launch = SimpleNamespace(channel_id='a'*32, run_id='synthetic-read', check_runtime=Mock(),
             _manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1])
         frame = {'protocol': 'phase.native.command', 'version': '1.0', 'channel_id': 'a'*32,

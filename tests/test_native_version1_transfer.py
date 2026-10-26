@@ -100,7 +100,7 @@ class Version1FiniteTransferTests(unittest.TestCase):
             spawn_worker=Mock(return_value=process),worker_pipe=Mock(return_value=pipe),
             send_worker_original=Mock(),finalize_worker=Mock(),check_runtime=Mock())
         owner=object.__new__(parent._NativeWindowsParent)
-        owner._launch=launch;owner._version1=True;owner._inspection_only=False;owner._consumed=True
+        owner._launch=launch;owner._version1=True;owner._file2=False;owner._inspection_only=False;owner._consumed=True
         owner._spawn_attempted=False;owner._go_attempted=False;owner._worker=None;owner._worker_count=0
         owner._worker_finalized=False;owner._partial_bytes=None;owner._ready_wire=None;owner._completion_wire=None
         fact={'process_witness_version':'1.0','pid':123,'wait_result':0,'exit_code':0,'worker_exit_established':True}
@@ -127,7 +127,7 @@ class Version1FiniteTransferTests(unittest.TestCase):
             spawn_worker=Mock(return_value=process),worker_pipe=Mock(return_value=pipe),
             send_worker_original=Mock(),finalize_worker=Mock(),check_runtime=Mock())
         owner=object.__new__(parent._NativeWindowsParent)
-        owner._launch=launch;owner._version1=True;owner._inspection_only=False;owner._consumed=True
+        owner._launch=launch;owner._version1=True;owner._file2=False;owner._inspection_only=False;owner._consumed=True
         owner._spawn_attempted=False;owner._go_attempted=False;owner._worker=None;owner._worker_count=0
         owner._worker_finalized=False;owner._partial_bytes=None;owner._ready_wire=None;owner._completion_wire=None
         witness=SimpleNamespace(wait_for_exit=Mock(return_value=expected['process_witness']))

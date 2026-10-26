@@ -54,6 +54,7 @@ def _facts(binding, manifest, receipt, proof):
     _require(type(ran) is bool and type(no_dispatch) is bool and ran != no_dispatch,
         'ntfs.native_terminal_unresolved')
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
+    file2=manifest['contract']['id']=='file_create.v2'
     grant = manifest['root_grants'][0]
     _require(set(physical['observations']) <= {'pre_operation','post_operation'},
         'ntfs.native_proof_shape')
@@ -61,7 +62,10 @@ def _facts(binding, manifest, receipt, proof):
         _require(set(wrapped) == {'run_id','observation'} and wrapped['run_id'] == receipt['run_id'],
             'ntfs.native_proof_shape')
         item = wrapped['observation']
-        if not version1:
+        if file2:
+            from .file2_execution import validate_file2_observation
+            validate_file2_observation(item,grant,item['locator'])
+        elif not version1:
             _observation(item, grant, item['locator'])
     if no_dispatch:
         _require(not version1 or not physical['observations'],'ntfs.native_proof_shape')
@@ -89,6 +93,10 @@ def _facts(binding, manifest, receipt, proof):
     from .parent_result import validate_version1_parent_completion,validate_version1_parent_finalization,validate_version1_pair
     completion_check = validate_version1_parent_completion if version1 else validate_parent_completion
     finalization_check = validate_version1_parent_finalization if version1 else validate_parent_finalization
+    if file2:
+        from .file2_execution import validate_file2_parent_completion,validate_file2_parent_finalization
+        completion_check=validate_file2_parent_completion
+        finalization_check=validate_file2_parent_finalization
     checked = completion_check(raw, context=context, grant_data=grant, effect=effect)
     _require(len(receipt['effect_receipts']) == 1
         and checked['effect_receipt'] == receipt['effect_receipts'][0]
@@ -318,10 +326,16 @@ def verify_native_terminal_proof(binding, run_root, receipt):
         for path in blobs.iterdir():
             _require(re.fullmatch('[0-9a-f]{64}',path.name) is not None,
                 'ntfs.original_frozen_input_required')
-            data = read_bounded_file(path,16*1024**2 if manifest['contract']['id'] == 'publish_new_version.v1' else 1024**2)
             digest = 'sha256:'+path.name
-            _require(digest_bytes(data) == digest, 'ntfs.original_evidence_bytes_mismatch')
-            files['blobs/'+path.name] = digest,len(data)
+            if manifest['contract']['id']=='file_create.v2':
+                from ...streaming import FILE_LIMIT,hash_file
+                actual,length=hash_file(path,FILE_LIMIT)
+                _require(actual==digest,'ntfs.original_evidence_bytes_mismatch')
+            else:
+                data=read_bounded_file(path,16*1024**2 if manifest['contract']['id']=='publish_new_version.v1' else 1024**2)
+                _require(digest_bytes(data)==digest,'ntfs.original_evidence_bytes_mismatch')
+                length=len(data)
+            files['blobs/'+path.name]=digest,length
     binding.check_evidence_root()
     return {'attachment_digest':proof_digest,'target_identity':identity,
         'immutable_files':files,'proof':proof}

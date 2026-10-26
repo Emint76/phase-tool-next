@@ -147,6 +147,8 @@ class _NativeFileCreateReadBinding:
         manifest = parse_json_bytes(self.manifest_bytes, maximum_bytes=2*1024**2)
         _require(self.registry.digest == manifest['registry_snapshot_digest']
             == canonical_digest(self.registry.to_document()), 'ntfs.original_registry_mismatch')
+        if manifest['native_read_installation_version']=='1.3':
+            return self._read_file2(run_id=run_id,intent_digest=intent_digest,execution_requested=True)
         version1 = manifest['native_read_installation_version'] == '1.2' and manifest['contract']['id'] == 'publish_new_version.v1'
         reader = read_original_version1_buffers if version1 else read_original_file_create_buffers
         parser = parse_original_version1 if version1 else parse_original_file_create
@@ -165,6 +167,9 @@ class _NativeFileCreateReadBinding:
         from .mutation.ntfs.reader import read_original_file_create_buffers,read_original_version1_buffers
         from .mutation.ntfs.intent import validate_planned_file_create_original,validate_planned_version1_original
         manifest = parse_json_bytes(self.manifest_bytes, maximum_bytes=2*1024**2)
+        if manifest['native_read_installation_version']=='1.3':
+            self._read_file2(run_id=run_id,intent_digest=intent_digest,execution_requested=False)
+            return
         version1 = manifest['native_read_installation_version'] == '1.2' and manifest['contract']['id'] == 'publish_new_version.v1'
         reader = read_original_version1_buffers if version1 else read_original_file_create_buffers
         parser = validate_planned_version1_original if version1 else validate_planned_file_create_original
@@ -177,6 +182,30 @@ class _NativeFileCreateReadBinding:
             pre_validator_bytes=pre,blob_bytes=content,registry=self.registry,
             expected_run_id=run_id,expected_intent_digest=intent_digest,
             **self._parser_bindings(intent))
+
+    def _read_file2(self,*,run_id,intent_digest,execution_requested):
+        from .canonical import canonical_bytes,canonical_digest,parse_json_bytes
+        from .mutation.ntfs.native import _require
+        from .mutation.ntfs.reader import _read_original_control_buffers,_verify_file2_original_blob
+        from .mutation.ntfs.intent import _parse_file2_control_projection
+        manifest=parse_json_bytes(self.manifest_bytes,maximum_bytes=2*1024**2)
+        _require(manifest['native_read_installation_version']=='1.3'
+            and manifest['contract']['id']=='file_create.v2'
+            and self.registry.digest==manifest['registry_snapshot_digest']
+            ==canonical_digest(self.registry.to_document()),'ntfs.original_registry_mismatch')
+        original,plan,pre=_read_original_control_buffers(evidence_root=Path(manifest['evidence_root']),
+            installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),registry=self.registry,
+            run_id=run_id,expected_intent_digest=intent_digest)
+        intent=parse_json_bytes(original,maximum_bytes=2*1024**2)
+        projection=_parse_file2_control_projection(intent_bytes=original,plan_bytes=plan,
+            pre_validator_bytes=pre,registry=self.registry,expected_run_id=run_id,
+            expected_intent_digest=intent_digest,_execution_requested=execution_requested,
+            **self._parser_bindings(intent))
+        _verify_file2_original_blob(evidence_root=Path(manifest['evidence_root']),
+            installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),
+            intent=intent,projection=projection)
+        self.check_evidence_root()
+        return projection
 
     def _parser_bindings(self, intent: dict) -> dict[str, bytes]:
         """Same immutable expectations for reader/parser and original-intent gate.
@@ -241,8 +270,9 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         == canonical_digest(registry.to_document()), 'ntfs.original_registry_mismatch')
     binding = manifest['contract']
     version = manifest.get('native_read_installation_version')
-    _require(binding['version'] == '1.0.0' and (binding['id'] == 'file_create.v1'
-        or (version == '1.2' and binding['id'] == 'publish_new_version.v1')),
+    _require(binding['version'] == '1.0.0' and ((binding['id'] == 'file_create.v1' and version != '1.3')
+        or (version == '1.2' and binding['id'] == 'publish_new_version.v1')
+        or (version == '1.3' and binding['id'] == 'file_create.v2')),
         'ntfs.original_single_effect_required')
     contract = registry.resolve_contract(binding['id'], binding['version'], binding['package_digest'],
         core_version=manifest['core']['version'])
@@ -261,9 +291,9 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         'composition': native['composition'], 'evidence_identity': native['evidence_identity'],
         'root_grants': schema['properties']['idempotency']['properties']['root_identities'],
         'evidence_root': {'type': 'string', 'minLength': 1}}
-    _require(type(version) is str and version in {'1.0', '1.1', '1.2'},
+    _require(type(version) is str and version in {'1.0', '1.1', '1.2', '1.3'},
         'ntfs.original_installation_version_unsupported')
-    if version in {'1.1','1.2'}:
+    if version in {'1.1','1.2','1.3'}:
         # New static generation binds MIX preparation and opaque projections.
         # Historical 1.0 keys/semantics and intent1.2 bytes remain unchanged.
         properties.update({
@@ -286,7 +316,7 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
     _require(len(grants) == 1 and {grants[0].binding} == {row['binding_id'] for row in scope['roots']}
         and grants[0].binding == contract.document['canonical_result']['root_binding']
         and grants[0].binding not in scope['forbidden_root_bindings'], 'ntfs.original_root_binding_mismatch')
-    if version in {'1.1','1.2'}:
+    if version in {'1.1','1.2','1.3'}:
         preparation = PurePosixPath(manifest['preparation_root'])
         _require(preparation.is_absolute() and str(preparation) == manifest['preparation_root']
             and str(preparation) != '/' and '..' not in preparation.parts
@@ -433,7 +463,7 @@ class _NativeFileCreateInstallation:
             and type(authority) is _NativeFileCreateAuthority
             and authority.read_binding is read_binding, 'ntfs.closed_native_installation_required')
         manifest = parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
-        _require(manifest['native_read_installation_version'] in {'1.1','1.2'},
+        _require(manifest['native_read_installation_version'] in {'1.1','1.2','1.3'},
             'ntfs.original_preparation_root_required')
         self.read_binding, self.authority = read_binding, authority
         self.history_bindings = (None if history_bindings is None else
@@ -492,8 +522,9 @@ class _NativeFileCreateInstallation:
         # Existing Core capture/freeze owns all bytes and their stable read checks.
         # This is admission of prepared paths, never a copy-out or target reader.
         version1 = manifest['native_read_installation_version'] == '1.2' and manifest['contract']['id'] == 'publish_new_version.v1'
+        file2=manifest['native_read_installation_version']=='1.3' and manifest['contract']['id']=='file_create.v2'
         prepared = [(Path(request.candidate_path),1024**2),
-            *((Path(p),16*1024**2 if version1 else 1024**2) for p in request.input_paths.values())]
+            *((Path(p),2*1024**3 if file2 else 16*1024**2 if version1 else 1024**2) for p in request.input_paths.values())]
         for path,maximum in prepared:
             _require(path.is_absolute() and path == Path(os.path.abspath(path)),
                 'ntfs.prepared_input_outside_root')
@@ -642,9 +673,10 @@ def _native_registry_for_manifest(manifest_bytes, expected_manifest_digest):
     _require(type(manifest) is dict and canonical_bytes(manifest) == manifest_bytes,
         'ntfs.original_installation_shape')
     version = manifest.get('native_read_installation_version')
-    _require(type(version) is str and version in {'1.1','1.2'},
+    _require(type(version) is str and version in {'1.1','1.2','1.3'},
         'ntfs.original_installation_version_unsupported')
-    registry = _native_inspection_file_create_registry() if version == '1.1' else _native_lifecycle_registry()
+    registry = (_native_file2_registry() if version=='1.3' else
+        _native_inspection_file_create_registry() if version=='1.1' else _native_lifecycle_registry())
     _require(manifest.get('registry_snapshot_digest') == registry.digest
         == canonical_digest(registry.to_document()),'ntfs.original_registry_mismatch')
     return registry
@@ -692,9 +724,50 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
         _require(history_manifest_set_bytes is None and history_manifest_set_digest is None,
             'ntfs.original_history_binding_mismatch')
         factory=_native_file_create_installation
+    elif version=='1.3':
+        _require(history_manifest_set_bytes is None and history_manifest_set_digest is None,
+            'ntfs.original_history_binding_mismatch')
+        factory=_native_file2_installation
     else:
         factory=_native_lifecycle_installation
         extra={'history_manifest_set_bytes':history_manifest_set_bytes,
             'history_manifest_set_digest':history_manifest_set_digest}
     return factory(manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest,
         run_id=run_id,operation_nonce=operation_nonce,channel_id=channel_id,_inspection_only=_inspection_only,**extra)
+
+
+def _native_file2_registry():
+    """New immutable unqualified file2 generation; historical V1-V5 unchanged."""
+    registry=_load_native_file_create_registry('registries/native-file2-candidate-v6.json',
+        'sha256:1d7b32b3412178517eee60338fabd18e20a403bf84f8e9c495158eadf7b48ac9',
+        'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
+    expected={'id':'file_create.v2','version':'1.0.0','package_digest':'sha256:aa6b901831f24dc0e5d7d131e5bf0633a8bdcdaa7ffeb5dedacc6e1d5d329634'}
+    if registry.contract_bindings().get('file_create.v2@1.0.0')!=expected:
+        raise PhaseError('ntfs.native_registry_selection_mismatch')
+    from . import __version__
+    registry.resolve_contract(expected['id'],expected['version'],expected['package_digest'],core_version=__version__)
+    return registry
+
+
+def _native_file2_installation(*,manifest_bytes,expected_manifest_digest,
+    run_id,operation_nonce,channel_id,_inspection_only=False):
+    """Fixed1.3 create2 only; no cross-contract history or qualification grant."""
+    from .canonical import canonical_bytes,parse_json_bytes
+    from .mutation.ntfs.native import _require
+    from .mutation.ntfs.authority import _NativeFileCreateAuthority
+    from .mutation.ntfs.channel_v4 import LinuxNativeChannelV4
+    _require(type(_inspection_only) is bool,'ntfs.fixed_role_required')
+    registry=_native_file2_registry()
+    exact=registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
+    _require(exact is not None,'ntfs.native_profile_not_qualified')
+    profile=_native_qualified_profile(registry,exact)
+    binding=_resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest,registry=registry)
+    manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
+    _require(manifest['native_read_installation_version']=='1.3'
+        and manifest['contract']['id']=='file_create.v2'
+        and manifest['authority']['profile']==profile.as_dict(),'ntfs.original_implementation_mismatch')
+    channel=LinuxNativeChannelV4(channel_id=channel_id,_inspection_only=_inspection_only)
+    authority=_NativeFileCreateAuthority(binding,profile,canonical_bytes(manifest['root_projections']),channel,
+        run_id=run_id,operation_nonce=operation_nonce,_inspection_only=_inspection_only)
+    return registry,_NativeFileCreateInstallation(binding,authority)

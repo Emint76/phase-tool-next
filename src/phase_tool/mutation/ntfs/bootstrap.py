@@ -125,7 +125,7 @@ def _original_query_request(launch,action,digest):
         query['native_original_query_version']='1.2'
         query['version1_publication_request']={key:request[key] for key in (
             'request_id','target_locator','expected_current_digest','expected_digest')}
-    elif action=='read_executing' and not launch._version1 and type(request) is dict and (
+    elif action=='read_executing' and not launch._version1 and not launch._file2 and type(request) is dict and (
             'native_file_publication_request_version' in request):
         _require(set(request)=={'operation','native_file_publication_request_version','source_locator',
             'target_locator','request_id','expected_digest'}
@@ -172,7 +172,7 @@ class _NativeAcceptedLaunch:
             and invocation['run_id'] not in {'.','..'}
             and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
                 for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2'}
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3'}
             and type(manifest.get('root_grants')) is list and len(manifest['root_grants'])==1,
             'ntfs.accepted_launch_binding_required')
         self._owner=os.getpid(),threading.get_ident()
@@ -214,6 +214,12 @@ class _NativeAcceptedLaunch:
         manifest = self.manifest
         return (manifest['native_read_installation_version'] == '1.2'
             and manifest['contract']['id'] == 'publish_new_version.v1')
+
+    @property
+    def _file2(self):
+        manifest=self.manifest
+        return (manifest['native_read_installation_version']=='1.3'
+            and manifest['contract']['id']=='file_create.v2')
 
     def check_runtime(self):
         _require(self._owner==(os.getpid(),threading.get_ident())
@@ -392,6 +398,12 @@ class _NativeAcceptedLaunch:
     def send_worker_original(self,pipe,parsed,*,_handshake_deadline_ns=None):
         from .windows_pipe import WindowsPipeFrames
         _require(type(pipe) is WindowsPipeFrames,'ntfs.original_parsed_data_required')
+        if self._file2:
+            from .file2_execution import _file2_projection_value
+            _require(type(_handshake_deadline_ns) is int,'ntfs.file2_owned_deadline_required')
+            pipe.send_frame(canonical_bytes({'native_worker_original_version':'2.0',
+                'channel_id':self.channel_id,'projection':_file2_projection_value(parsed)}),_handshake_deadline_ns)
+            return
         if self._version1:
             from .original_transfer import original_version1_frames
             _require(type(parsed) is ParsedNativeVersion1 and type(_handshake_deadline_ns) is int,
@@ -487,6 +499,9 @@ class _NativeAcceptedLaunch:
 
     def read_original(self,intent_digest):
         value=self._query_original('read_executing',intent_digest)
+        if self._file2:
+            from .file2_execution import _file2_projection_from_value
+            return _file2_projection_from_value(value)
         if self._version1:
             _require(type(value) is ParsedNativeVersion1,'ntfs.original_version1_tuple_required')
             return value

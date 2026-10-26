@@ -152,7 +152,7 @@ def native_original_query(launch,query):
         and (query['intent_digest'] is None or (type(query['intent_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
-    _require(publication is None or not launch._version1,'ntfs.original_query_binding_mismatch')
+    _require(publication is None or (not launch._version1 and not launch._file2),'ntfs.original_query_binding_mismatch')
     _require(version1_publication is None or launch._version1,'ntfs.original_query_binding_mismatch')
     registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)  # Accepted static generation only.
     _native_qualified_profile(registry,registry.guarantee_profile_bindings().get(
@@ -186,7 +186,10 @@ def native_original_query(launch,query):
                 _require_version1_publication_original(intent=intent,
                     plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
                     parsed=parsed,query=query,binding=launch.manifest['contract'])
-            if launch._version1:
+            if launch._file2:
+                from .file2_execution import _file2_projection_value
+                value=_file2_projection_value(parsed)
+            elif launch._version1:
                 value=parsed
             else:
                 value={'context':parse_json_bytes(parsed.context_bytes),'grant':parse_json_bytes(parsed.grant_bytes),

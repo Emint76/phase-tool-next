@@ -19,6 +19,7 @@ from ...planning import _build_static_plan_after_root_checks, _idempotency_from_
 from ..guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from .channel_v2 import LinuxNativeChannelV2
 from .channel_v3 import LinuxNativeChannelV3
+from .channel_v4 import LinuxNativeChannelV4
 from .native import NativeIdentity, _require
 from .worker import _grant
 from .parent_result import _observation, validate_parent_completion, validate_parent_finalization
@@ -44,16 +45,19 @@ class _NativeFileCreateAuthority:
         self._inspection_only = _inspection_only
         from ...installation import _NativeFileCreateReadBinding
         _require(type(read_binding) is _NativeFileCreateReadBinding
-            and type(profile) is GuaranteeProfileBinding and type(channel) in (LinuxNativeChannelV2,LinuxNativeChannelV3),
+            and type(profile) is GuaranteeProfileBinding and type(channel) in (LinuxNativeChannelV2,LinuxNativeChannelV3,LinuxNativeChannelV4),
             'ntfs.closed_native_installation_required')
         _require(channel._inspection_only is _inspection_only, 'ntfs.fixed_role_mismatch')
         self.read_binding, self.profile, self.channel = read_binding, profile, channel
         self._manifest = parse_json_bytes(read_binding.manifest_bytes)
         self._version1 = self._manifest['contract']['id'] == 'publish_new_version.v1'
+        self._file2 = self._manifest['contract']['id']=='file_create.v2'
         _require((not self._version1 or self._manifest['native_read_installation_version'] == '1.2')
-            and (type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1
+            and (type(channel) is LinuxNativeChannelV4 and self._file2
+                if self._manifest['native_read_installation_version']=='1.3' else
+                not self._file2 and (type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1
                 if self._manifest['native_read_installation_version'] == '1.2'
-                else type(channel) is LinuxNativeChannelV2 and not self._version1),
+                else type(channel) is LinuxNativeChannelV2 and not self._version1)),
             'ntfs.fixed_role_mismatch')
         from ...evidence import validate_run_id
         validate_run_id(run_id)
@@ -177,7 +181,7 @@ class _NativeFileCreateAuthority:
             root_bindings=roots, run_id=run_id, generated_at=timestamp, request_digest=request_digest,
             _native_authority=self)
         _validate_logical_plan(plan, contract, self.registry)
-        _require(len(plan['effects']) == 1 and plan['effects'][0]['content_length'] <= (16*1024**2 if self._version1 else 1024**2),
+        _require(len(plan['effects']) == 1 and plan['effects'][0]['content_length'] <= (2*1024**3 if self._file2 else 16*1024**2 if self._version1 else 1024**2),
             'mechanism.content_too_large')
         return plan
 
@@ -194,7 +198,11 @@ class _NativeFileCreateAuthority:
         _require(slot is None or slot not in self._observations, 'ntfs.duplicate_current_observation')
         reply = self.channel.observe_file(run_id=run_id, root_binding=root_binding,
             locator=locator, expected_identity=expected_identity)
-        value = _observation(reply, grant, locator)
+        if self._file2:
+            from .file2_execution import validate_file2_observation
+            value=validate_file2_observation(reply,grant,locator)
+        else:
+            value = _observation(reply, grant, locator)
         if expected_identity is not None:
             _require(value['native']['exists'] is True
                 and value['native']['native_identity'] == expected_identity, 'ntfs.observer_identity_mismatch')
@@ -270,37 +278,68 @@ class _NativeFileCreateAuthority:
             and plan['effects'] == [effect] and parsed.timestamp == timestamp,
             'ntfs.original_current_invocation_mismatch')
         frozen = frozen_inputs.get(effect['input_binding'])
-        _require(frozen is not None and frozen.digest == digest_bytes(parsed.content_bytes)
-            and frozen.length == len(parsed.content_bytes), 'ntfs.original_content_binding_mismatch')
+        if self._file2:
+            from ...freeze import FrozenInput
+            from .handoff import _OriginalControlProjection
+            _require(type(parsed) is _OriginalControlProjection and type(frozen) is FrozenInput
+                and frozen.binding_id==parsed.input_binding=='payload'
+                and frozen.strategy=='copy_and_hash' and frozen.streamed is True
+                and type(frozen.length) is int and frozen.length==parsed.content_length
+                and frozen.digest==frozen.blob_digest==parsed.content_digest
+                and canonical_bytes(frozen.intent_record())==canonical_bytes(parsed_intent['inputs'][0])
+                and frozen.blob_path==intent_path.parent/'blobs'/parsed.content_digest.removeprefix('sha256:'),
+                'ntfs.original_content_binding_mismatch')
+        else:
+            _require(frozen is not None and frozen.digest == digest_bytes(parsed.content_bytes)
+                and frozen.length == len(parsed.content_bytes), 'ntfs.original_content_binding_mismatch')
         if self._version1:
             from ...contracts import load_contract_hook
             hook = load_contract_hook(contract,_native_authority=self)
             hook.before_effect(parsed_intent['candidate']['storage']['value'],contract,effect,
                 frozen_inputs,roots[effect['target']['root_binding']],Path(self._manifest['evidence_root']),
                 root_bindings=roots)
-        self._dispatch_attempted = True
         from .parent_result import validate_version1_parent_completion,validate_version1_parent_finalization
         completion_check = validate_version1_parent_completion if self._version1 else validate_parent_completion
         finalization_check = validate_version1_parent_finalization if self._version1 else validate_parent_finalization
+        if self._file2:
+            from .file2_execution import validate_file2_parent_completion,validate_file2_parent_finalization
+            completion_check=validate_file2_parent_completion
+            def finalization_check(reply,checked,*,grant_data,effect):
+                return validate_file2_parent_finalization(reply,checked,grant_data=grant_data,
+                    effect=effect,expected_channel_id=self.channel.channel_id)
         validated_receipts = []
         try:
-            execute = self.channel.execute_version1 if self._version1 else self.channel.execute_file_create
-            reply = execute(run_id=plan['run_id'],intent_digest=intent_digest)
-            # Retain exact response BEFORE any validation that could fail. The
-            # Core wrapper, not this role, owns the single proof attachment.
-            self._response_bytes = canonical_bytes(reply)
-            checked = completion_check(reply, context=context,
-                grant_data=parse_json_bytes(parsed.grant_bytes), effect=effect)
-            receipt = checked['effect_receipt']
-            receipt_validator.validate(receipt)
-            _require(receipt['started_at'] == receipt['finished_at'] == timestamp,
-                'ntfs.worker_receipt_binding_mismatch')
-            # Retain an already schema-valid/context-bound receipt through late
-            # observation/owner failures. possible_dispatch still forces the
-            # existing Core to classify interruption as indeterminate.
-            validated_receipts.append(receipt)
-            finalization_check(reply, checked,
-                grant_data=parse_json_bytes(parsed.grant_bytes), effect=effect)
+            from contextlib import nullcontext
+            if self._file2:
+                from .file2_stream import _file2_verified_source
+                compact={k:context[k] for k in ('run_id','intent_digest','installation_digest','operation_nonce')}
+                manager=_file2_verified_source(frozen.blob_path,context_bytes=canonical_bytes(compact),
+                    channel_id=self.channel.channel_id,content_digest=parsed.content_digest,
+                    content_length=parsed.content_length)
+            else:manager=nullcontext(None)
+            with manager as source:
+                self._dispatch_attempted = True
+                if self._file2:
+                    reply=self.channel.execute_file2(run_id=plan['run_id'],intent_digest=intent_digest,
+                        projection=parsed,source=source)
+                else:
+                    execute=self.channel.execute_version1 if self._version1 else self.channel.execute_file_create
+                    reply=execute(run_id=plan['run_id'],intent_digest=intent_digest)
+                # Retain exact response BEFORE any validation that could fail. The
+                # Core wrapper, not this role, owns the single proof attachment.
+                self._response_bytes = canonical_bytes(reply)
+                checked = completion_check(reply, context=context,
+                    grant_data=parse_json_bytes(parsed.grant_bytes), effect=effect)
+                receipt = checked['effect_receipt']
+                receipt_validator.validate(receipt)
+                _require(receipt['started_at'] == receipt['finished_at'] == timestamp,
+                    'ntfs.worker_receipt_binding_mismatch')
+                # Retain an already schema-valid/context-bound receipt through late
+                # observation/owner failures. possible_dispatch still forces the
+                # existing Core to classify interruption as indeterminate.
+                validated_receipts.append(receipt)
+                finalization_check(reply, checked,
+                    grant_data=parse_json_bytes(parsed.grant_bytes), effect=effect)
             self._parent_safety_established = True
             self._server_ingress_sealed = True
             return BrokerExecutionResult([receipt])
@@ -309,24 +348,31 @@ class _NativeFileCreateAuthority:
             # worker completion. Validate that receipt before retaining it in
             # Core's EXISTING interruption/effect attachment; never claim worker
             # quiescence or discharge an original from this partial response.
+            # Negative raw evidence is independent of an optional effect receipt.
+            # Capture it BEFORE any partial-completion validation can throw.
+            from .channel import NativeChannelError
+            remote={}
             try:
-                from .channel import NativeChannelError
-                if type(error) is NativeChannelError and not validated_receipts:
-                    remote=error.details.get('primary',{}).get('details',{}).get('remote_error',{})
-                    if remote.get('code')=='ntfs.parent_execution_unresolved':
-                        try:
-                            from .failure import make_native_parent_failure
-                            self._failure_bytes=make_native_parent_failure(self.read_binding,
-                                run_id=plan['run_id'],intent_digest=intent_digest,
-                                effect_plan_digest=profile_digest('effect-plan',plan),
-                                operation_nonce=self._operation_nonce,remote=remote)
-                        except BaseException as reporting_error:
-                            try:error.add_note('Native failure capture unavailable: '+type(reporting_error).__name__)
-                            except BaseException:pass
-                        # Optional diagnostic formatting MUST NOT discard an
-                        # independently schema/context-valid partial receipt.
-                        partial=remote['details']['parent_partial']
-                        self._response_bytes=canonical_bytes(partial)
+                if type(error) is NativeChannelError:
+                    primary=error.details.get('primary')
+                    details=primary.get('details') if type(primary) is dict else None
+                    value=details.get('remote_error') if type(details) is dict else None
+                    if type(value) is dict:remote=value
+                if remote.get('code')=='ntfs.parent_execution_unresolved':
+                    from .failure import make_native_parent_failure
+                    self._failure_bytes=make_native_parent_failure(self.read_binding,
+                        run_id=plan['run_id'],intent_digest=intent_digest,
+                        effect_plan_digest=profile_digest('effect-plan',plan),
+                        operation_nonce=self._operation_nonce,remote=remote)
+            except BaseException as reporting_error:
+                try:error.add_note('Native failure capture unavailable: '+type(reporting_error).__name__)
+                except BaseException:pass
+            try:
+                if self._file2 and not validated_receipts:
+                    captured=self.channel.captured_file2_completion()
+                    if captured is not None:
+                        self._response_bytes=captured
+                        partial=parse_json_bytes(captured,maximum_bytes=2*1024**2)
                         checked=completion_check(partial,context=context,
                             grant_data=parse_json_bytes(parsed.grant_bytes),effect=effect)
                         receipt=checked['effect_receipt']
@@ -334,6 +380,18 @@ class _NativeFileCreateAuthority:
                         _require(receipt['started_at']==receipt['finished_at']==timestamp,
                             'ntfs.worker_receipt_binding_mismatch')
                         validated_receipts.append(receipt)
+                if remote.get('code')=='ntfs.parent_execution_unresolved' and not validated_receipts:
+                    # Optional diagnostic formatting MUST NOT discard an
+                    # independently schema/context-valid partial receipt.
+                    partial=remote['details']['parent_partial']
+                    self._response_bytes=canonical_bytes(partial)
+                    checked=completion_check(partial,context=context,
+                        grant_data=parse_json_bytes(parsed.grant_bytes),effect=effect)
+                    receipt=checked['effect_receipt']
+                    receipt_validator.validate(receipt)
+                    _require(receipt['started_at']==receipt['finished_at']==timestamp,
+                        'ntfs.worker_receipt_binding_mismatch')
+                    validated_receipts.append(receipt)
             except BaseException as secondary:
                 try:error.add_note('Native partial completion validation: '+type(secondary).__name__)
                 except BaseException:pass

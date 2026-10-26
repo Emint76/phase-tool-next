@@ -50,7 +50,9 @@ class _NativeWindowsParent:
         self._sequence=0
         self._failed=False
         self._version1=launch._version1
-        self._channel_version='1.2' if launch.manifest['native_read_installation_version']=='1.2' else '1.1'
+        self._file2=launch._file2
+        self._file2_exchange_deadline=None
+        self._channel_version={'1.1':'1.1','1.2':'1.2','1.3':'1.3'}[launch.manifest['native_read_installation_version']]
         self._inspection_only=launch._inspection_only
         _require(type(self._inspection_only) is bool,'ntfs.fixed_role_required')
         self._consumed=self._inspection_only  # Read role has no unused GO slot.
@@ -79,7 +81,7 @@ class _NativeWindowsParent:
         kind=value.get('kind')
         # Irreversibly consume before parsing/binding/spawn/read failure. A
         # buffered/repeated GO or finish cannot restore an unused worker slot.
-        if kind in {'execute_file_create','execute_version1','finish_without_execution'}:
+        if kind in {'execute_file_create','execute_version1','execute_file2','finish_without_execution'}:
             _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
             _require(not self._consumed,'ntfs.parent_execution_consumed')
             self._consumed=True
@@ -97,19 +99,23 @@ class _NativeWindowsParent:
             locator=safe_relative_locator(value['locator'])
             expected=(None if value['expected_identity'] is None
                 else NativeIdentity.parse(value['expected_identity']))
-            if self._version1:
+            if self._file2:
+                from .file2_execution import observe_file2_file,validate_file2_observation
+                answer=validate_file2_observation(observe_file2_file(_grant(grant),locator,expected=expected),grant,locator)
+            elif self._version1:
                 from .version1_observation import observe_version1_file,validate_version1_observation
                 answer=validate_version1_observation(observe_version1_file(_grant(grant),locator,expected=expected),grant,locator)
             else:
                 answer=_observation(observe_file(_grant(grant),locator,expected=expected),grant,locator)
-        elif kind in {'execute_file_create','execute_version1'}:
-            _require(kind==('execute_version1' if self._version1 else 'execute_file_create'),
+        elif kind in {'execute_file_create','execute_version1','execute_file2'}:
+            _require(kind==('execute_file2' if self._file2 else 'execute_version1' if self._version1 else 'execute_file_create'),
                 'ntfs.original_closed_role_required')
             _require(set(value)==_COMMON and value['run_id']==self._launch.run_id
                 and type(value['intent_digest']) is str
                 and _DIGEST.fullmatch(value['intent_digest']) is not None,
                 'ntfs.parent_request_binding_mismatch')
-            answer=self._execute(value['intent_digest'])
+            if self._file2:self._file2_exchange_deadline=_deadline()
+            answer=self._execute(value['intent_digest'],_common={k:value[k] for k in _COMMON})
         elif kind=='finish_without_execution':
             _require(set(value)==_COMMON|{'operation_nonce','installation_digest'}
                 and value['run_id']==self._launch.run_id
@@ -136,7 +142,7 @@ class _NativeWindowsParent:
         self._usable()
         return {key:value[key] for key in _COMMON},answer
 
-    def _execute(self,intent_digest):
+    def _execute(self,intent_digest,*,_common=None):
         _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         _require(self._consumed and not self._spawn_attempted,
             'ntfs.parent_execution_consumed')
@@ -151,7 +157,7 @@ class _NativeWindowsParent:
             and grant==self._launch.root_grant,'ntfs.parent_original_binding_mismatch')
         # Consume before Popen, READY parsing or any possible GO. Failed spawn
         # is terminal too; no second worker, fallback or replacement process.
-        handshake_deadline=_deadline() if self._version1 else None
+        handshake_deadline=self._file2_exchange_deadline if self._file2 else _deadline() if self._version1 else None
         self._spawn_attempted=True
         self._worker=self._launch.spawn_worker()
         self._worker_count=1
@@ -162,22 +168,28 @@ class _NativeWindowsParent:
         try:
             witness=WindowsProcessWitness(self._worker)
             pipe=self._launch.worker_pipe(self._worker)
-            if self._version1:
+            if self._version1 or self._file2:
                 self._launch.send_worker_original(pipe,parsed,_handshake_deadline_ns=handshake_deadline)
             else:
                 self._launch.send_worker_original(pipe,parsed)
-            raw,_=pipe.receive_frame(handshake_deadline if self._version1 else _deadline(),maximum_bytes=512*1024)
-            self._ready_wire=raw
-            from .worker import validate_version1_worker_ready,validate_version1_worker_completion
-            ready_check=validate_version1_worker_ready if self._version1 else validate_worker_ready
-            completion_check=validate_version1_worker_completion if self._version1 else validate_worker_completion
-            ready_check(raw,context=context,grant_data=grant,effect=effect,
-                content=parsed.content_bytes,expected_pid=self._worker.pid,
-                **({'timestamp':parsed.timestamp} if self._version1 else {}))
-            self._go_attempted=True
-            pipe.send_frame(canonical_bytes({'command':'execute_version1' if self._version1 else 'execute_file_create',
-                'context':context}),handshake_deadline if self._version1 else _deadline())
-            raw,_=pipe.receive_frame(_deadline(),maximum_bytes=512*1024)
+            if self._file2:
+                self._transfer_file2(pipe,parsed,handshake_deadline,_common)
+                from .file2_execution import validate_file2_worker_completion
+                completion_check=validate_file2_worker_completion
+                raw,_=pipe.receive_frame(handshake_deadline,maximum_bytes=512*1024)
+            else:
+                raw,_=pipe.receive_frame(handshake_deadline if self._version1 else _deadline(),maximum_bytes=512*1024)
+                self._ready_wire=raw
+                from .worker import validate_version1_worker_ready,validate_version1_worker_completion
+                ready_check=validate_version1_worker_ready if self._version1 else validate_worker_ready
+                completion_check=validate_version1_worker_completion if self._version1 else validate_worker_completion
+                ready_check(raw,context=context,grant_data=grant,effect=effect,
+                    content=parsed.content_bytes,expected_pid=self._worker.pid,
+                    **({'timestamp':parsed.timestamp} if self._version1 else {}))
+                self._go_attempted=True
+                pipe.send_frame(canonical_bytes({'command':'execute_version1' if self._version1 else 'execute_file_create',
+                    'context':context}),handshake_deadline if self._version1 else _deadline())
+                raw,_=pipe.receive_frame(_deadline(),maximum_bytes=512*1024)
             self._completion_wire=raw
             completion=completion_check(raw,context=context,grant_data=grant,effect=effect,
                 expected_pid=self._worker.pid)
@@ -205,7 +217,7 @@ class _NativeWindowsParent:
                     else:secondary.append(error)
         # Retain structured partial facts BEFORE late RO/runtime/reporting failure.
         # This is transient diagnosis, never a second receipt or success proof.
-        partial={'parent_execution_version':'1.1' if self._version1 else '1.0','context':context,'completion':completion,
+        partial={'parent_execution_version':'1.2' if self._file2 else '1.1' if self._version1 else '1.0','context':context,'completion':completion,
             'process_witness':process_fact,'owner_finalization':{
                 'worker_stdin':'closed' if self._worker_finalized else 'unknown',
                 'worker_stdout':'closed' if self._worker_finalized else 'unknown',
@@ -217,7 +229,11 @@ class _NativeWindowsParent:
             try:
                 _require(completion is not None and self._worker_finalized,
                     'ntfs.worker_finalization_unknown')
-                if self._version1:
+                if self._file2:
+                    from .file2_execution import observe_file2_file,validate_file2_observation
+                    after=observe_file2_file(_grant(grant),effect['target']['relative_locator'])
+                    validate_file2_observation(after,grant,effect['target']['relative_locator'])
+                elif self._version1:
                     from .version1_observation import observe_version1_file
                     from .parent_result import validate_version1_pair
                     after={'observation_pair_version':'1.0',
@@ -249,6 +265,49 @@ class _NativeWindowsParent:
                 'worker_completion_wire':captured(self._completion_wire),
                 'possible_dispatch':self._go_attempted,'retry_authorized':False}) from primary
         return partial
+
+    def _transfer_file2(self,pipe,parsed,deadline,common):
+        """One owned exchange, bounded data forwarding; no worker/GO retry.
+
+        The ALL-RO original endpoint has already ACTUALLY exited before this
+        worker was spawned. Parent data checks supplement, never replace, the
+        worker's complete first pass and per-chunk replay verification.
+        """
+        from .file2_stream import _File2TwoPassReceiver,_CHUNK,_MAX_FRAME,_token
+        from .file2_execution import _file2_header,validate_file2_worker_ready
+        from ...canonical import digest_bytes
+        _require(type(deadline) is int and type(common) is dict,'ntfs.file2_owned_deadline_required')
+        context=parse_json_bytes(parsed.context_bytes)
+        compact={k:context[k] for k in ('run_id','intent_digest','installation_digest','operation_nonce')}
+        receiver=_File2TwoPassReceiver(context_bytes=canonical_bytes(compact),
+            channel_id=self._launch.channel_id,content_digest=parsed.content_digest,
+            content_length=parsed.content_length)
+        count=(parsed.content_length+_CHUNK-1)//_CHUNK
+        for _ in range(count+2):
+            raw,_=self._pipe.receive_frame(deadline,maximum_bytes=_MAX_FRAME)
+            _require(receiver.feed(raw) is None,'ntfs.file2_sequence_unavailable')
+            pipe.send_frame(raw,deadline)
+        ready_token=receiver.ready_frame()
+        raw,_=pipe.receive_frame(deadline,maximum_bytes=16384)
+        self._ready_wire=raw
+        ready=validate_file2_worker_ready(raw,projection=parsed,
+            channel_id=self._launch.channel_id,expected_pid=self._worker.pid)
+        _require(canonical_bytes(ready['ready_token'])==ready_token,'ntfs.file2_ready_mismatch')
+        self._pipe.send_frame(canonical_bytes(common|{'ok':True,'value':{
+            'file2_stage':'ready','worker_ready':ready},'error':None}),deadline)
+        rewound,_=self._pipe.receive_frame(deadline,maximum_bytes=16384)
+        receiver.accept_rewound(rewound)
+        header_digest=digest_bytes(_file2_header(parsed,self._launch.channel_id))
+        go=_token(header_digest,'go')
+        receiver.accept_go(go)
+        self._go_attempted=True  # BEFORE sole GO can leave. Never reset or retry.
+        pipe.send_frame(canonical_bytes({'command':'execute_file2','context':context,
+            'rewound_token':parse_json_bytes(rewound),'go_token':parse_json_bytes(go)}),deadline)
+        for _ in range(count+1):
+            raw,_=self._pipe.receive_frame(deadline,maximum_bytes=_MAX_FRAME)
+            receiver.feed(raw)  # Validate before forwarding to the worker.
+            pipe.send_frame(raw,deadline)
+        receiver.finish()
 
     def serve(self):
         """Core requests and its final serialized response share owned framing.
@@ -346,7 +405,9 @@ class _NativeWindowsParent:
                     response=common|{'ok':False,'value':None,'error':remote}
                 else:
                     response=common|{'ok':True,'value':answer,'error':None}
-                self._pipe.send_frame(canonical_bytes(response),_deadline())
+                response_deadline=(self._file2_exchange_deadline if self._file2
+                    and value.get('kind')=='execute_file2' else _deadline())
+                self._pipe.send_frame(canonical_bytes(response),response_deadline)
         except BaseException:
             self._failed=True
             # Never fabricate a positive ACK or recover the control stream.

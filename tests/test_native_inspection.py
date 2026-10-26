@@ -59,13 +59,25 @@ class NativeInspectionSelectionTests(unittest.TestCase):
             prior.resolve_guarantee_profile(prior.guarantee_profile_bindings()[
                 'phase.native.ntfs.candidate.authority.v3@1.0.0'])
         current=installation._native_file2_registry()
-        current_descriptor=current.resolve_guarantee_profile(current.guarantee_profile_bindings()[
-            'phase.native.ntfs.candidate.authority.v4@1.0.0'])
+        exact=current.guarantee_profile_bindings()['phase.native.ntfs.candidate.authority.v4@1.0.0']
+        with self.assertRaisesRegex(PhaseError,'guarantee_profile.implementation_digest_mismatch'):
+            current.resolve_guarantee_profile(exact)
+        current_descriptor=parse_json_bytes(current.resource_bytes(
+            'descriptors/guarantee/phase.native.ntfs.candidate.authority.v4.json'))
+        self.assertEqual(digest_bytes(canonical_bytes(current_descriptor)),exact['descriptor_digest'])
         self.assertEqual(current_descriptor['classification'],'qualification_candidate')
         self.assertEqual(current_descriptor['provided_guarantees'],[])
         self.assertEqual(current_descriptor['conformance'],[])
         self.assertEqual(current_descriptor['implementation']['version'],'1.3.0')
-        self.assertEqual(current_descriptor['implementation']['artifact_digest'],digest_bytes(raw))
+        self.assertNotEqual(current_descriptor['implementation']['artifact_digest'],digest_bytes(raw))
+        shared=installation._native_shared_history_registry()
+        shared_descriptor=shared.resolve_guarantee_profile(shared.guarantee_profile_bindings()[
+            'phase.native.ntfs.candidate.authority.v5@1.0.0'])
+        self.assertEqual(shared_descriptor['implementation']['artifact_digest'],digest_bytes(raw))
+        self.assertEqual(shared_descriptor['classification'],'qualification_candidate')
+        self.assertEqual(shared_descriptor['provided_guarantees'],[])
+        self.assertEqual(shared_descriptor['conformance'],[])
+        self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0',shared.guarantee_profile_bindings())
         self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0',current.guarantee_profile_bindings())
         self.assertNotIn('phase.native.ntfs.authority.v1@1.0.0', new.guarantee_profile_bindings())
         for version, sha in [('v1', 'fa2a9aff5f576d15b5a71574a11bd3a7a994a38346540ff6d7e7a74335cfa2c7'),

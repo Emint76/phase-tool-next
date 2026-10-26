@@ -127,8 +127,14 @@ def test_v6_preserves_history_and_trust_while_appending_only_new_package_and_can
     assert new['trust_roots']==old['trust_roots']
     assert len(new['entries'])==len(old['entries'])+2
     registry=_native_file2_registry()
-    descriptor=registry.resolve_guarantee_profile(registry.guarantee_profile_bindings()[
-        'phase.native.ntfs.candidate.authority.v4@1.0.0'])
+    exact=registry.guarantee_profile_bindings()['phase.native.ntfs.candidate.authority.v4@1.0.0']
+    # V6 bytes remain exact; a different authority artifact requires its matching
+    # historical wheel. Never repin or accept the old descriptor in place.
+    descriptor=parse_json_bytes(registry.resource_bytes(
+        'descriptors/guarantee/phase.native.ntfs.candidate.authority.v4.json'))
+    assert digest_bytes(canonical_bytes(descriptor))==exact['descriptor_digest']
+    with pytest.raises(PhaseError,match='guarantee_profile.implementation_digest_mismatch'):
+        registry.resolve_guarantee_profile(exact)
     assert descriptor['classification']=='qualification_candidate'
     assert descriptor['provided_guarantees']==descriptor['conformance']==[]
     assert 'phase.native.ntfs.authority.v1@1.0.0' not in registry.guarantee_profile_bindings()

@@ -59,7 +59,10 @@ def fixture(tmp_path,content=b'synthetic file2 content',*,executing=True):
     assert not (roots['target']/'synthetic.bin').exists()
     host_run=roots['host-evidence']/'.phase'/'runs'/request.run_id
     pre=parse_json_bytes((host_run/'attachments'/'validator-results.json').read_bytes())
-    shell=buffers(registry)[0]
+    # Structural native CLAIMS come from the historical data-only fixture.
+    # Its file1 package must stay unique; actual Core planning and read-binding
+    # resolution still use V6. Do not rewrite current flags or trusted packages.
+    shell=buffers(BundledRegistry.load())[0]
     intent=deepcopy(outcome.intent);plan=deepcopy(outcome.effect_plan)
     intent.update(phase_intent_version='1.2',execution_requested=executing,
         native_binding=deepcopy(shell['native_binding']))

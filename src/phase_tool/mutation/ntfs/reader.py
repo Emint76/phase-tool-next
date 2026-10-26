@@ -132,3 +132,35 @@ def read_original_version1_buffers(*, evidence_root: Path,
     return _read_original_buffers(evidence_root=evidence_root,
         installed_evidence_identity=installed_evidence_identity,registry=registry,
         run_id=run_id,expected_intent_digest=expected_intent_digest,_maximum_bytes=16*1024**2)
+
+
+def _verify_file2_original_blob(*, evidence_root: Path,
+    installed_evidence_identity: bytes, intent: dict, projection) -> None:
+    """Actual complete RO file2 hash, bounded memory, no snapshot/temp/target I/O.
+
+    Only the installed read binding calls AFTER the fixed complete control parser.
+    A declaration projection by itself never proves content or installation.
+    """
+    from .handoff import _OriginalControlProjection
+    from ...streaming import FILE_LIMIT, hash_file
+    _require(sys.platform.startswith('linux') and type(projection) is _OriginalControlProjection,
+        'ntfs.original_file2_projection_required')
+    _require(intent['contract']['id']=='file_create.v2' and len(intent['inputs'])==1,
+        'ntfs.original_file2_effect_required')
+    frozen=intent['inputs'][0]
+    _require(frozen['binding_id']==projection.input_binding=='payload'
+        and frozen['freeze_strategy']=='copy_and_hash'
+        and frozen['blob_digest']==frozen['digest']==projection.content_digest
+        and type(projection.content_length) is int and 0<=projection.content_length<=FILE_LIMIT,
+        'ntfs.original_content_binding_mismatch')
+    expected=_evidence_identity(installed_evidence_identity);root=Path(evidence_root)
+    _require(root.is_absolute(),'ntfs.original_evidence_root_required')
+    qualify_host_authority_roots({'phase_evidence_root':root})
+    _require(_linux_filesystem_type(root)=='ext4','ntfs.original_ext4_evidence_required')
+    _check_original_root_identity(root,expected)
+    validate_run_id(intent['run_id'])
+    blob=root/'.phase'/'runs'/intent['run_id']/'blobs'/projection.content_digest.removeprefix('sha256:')
+    actual=hash_file(blob,FILE_LIMIT)
+    _require(actual==(projection.content_digest,projection.content_length),
+        'ntfs.original_evidence_bytes_mismatch')
+    _check_original_root_identity(root,expected)

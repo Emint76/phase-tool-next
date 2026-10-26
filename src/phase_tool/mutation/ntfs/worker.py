@@ -141,7 +141,7 @@ def validate_version1_worker_completion(raw: bytes, *, context: dict, grant_data
 
 
 def _worker_context(value: object, version: str) -> dict:
-    _require(version in ('1.0','1.1'),'ntfs.worker_protocol_unsupported')
+    _require(version in ('1.0','1.1','1.2'),'ntfs.worker_protocol_unsupported')
     _require(type(value) is dict and set(value) == _CONTEXT, 'ntfs.worker_context_shape')
     result = parse_json_bytes(canonical_bytes(value))
     _require(result['worker_protocol'] == 'phase.native.file-worker' and result['worker_version'] == version,
@@ -165,6 +165,11 @@ def _context(value: object) -> dict:
 def _version1_context(value: object) -> dict:
     """Closed version1 generation; operation data cannot select a wire version."""
     return _worker_context(value,'1.1')
+
+
+def _file2_context(value: object) -> dict:
+    """Code-owned file2 worker context; never selected by operation data."""
+    return _worker_context(value,'1.2')
 
 
 def _grant(value: object) -> NativeRootGrant:

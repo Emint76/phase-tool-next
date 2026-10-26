@@ -9,9 +9,8 @@ Root-wide unresolved scanning/locks, guarantee admission, fresh observations,
 possible-dispatch/GO, worker exit and Core receipts remain mandatory outside.
 """
 from __future__ import annotations
-from dataclasses import dataclass
 import re
-from .handoff import ParsedNativeFileCreate, ParsedNativeVersion1
+from .handoff import ParsedNativeFileCreate, ParsedNativeVersion1, _OriginalControlProjection
 from jsonschema import Draft202012Validator, FormatChecker
 from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes, profile_digest
 from ...evidence import validate_intent
@@ -20,7 +19,7 @@ from ...planning import _validate_logical_plan
 from ...preconditions import verify_saved_precondition_results
 from ...registry import RegistrySnapshot
 from .native import _require
-from .worker import _grant, _context, _version1_context
+from .worker import _grant, _context, _version1_context, _file2_context
 
 _CONTROL_LIMIT=2*1024**2
 _EFFECT_FIELDS={'effect_id','kind','target','input_binding','content_source','content_digest',
@@ -35,25 +34,14 @@ def _canonical(raw: bytes):
     return value
 
 
-@dataclass(frozen=True)
-class _OriginalControlProjection:
-    """Declared lineage only: no actual payload, FD, filesystem or GO authority."""
-    context_bytes: bytes
-    grant_bytes: bytes
-    effect_bytes: bytes
-    timestamp: str
-    input_binding: str
-    content_digest: str
-    content_length: int
-
-
 def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
     registry: RegistrySnapshot, expected_run_id: str, expected_intent_digest: str,
     installed_core_binding: bytes, installed_native_binding: bytes,
     installed_implementation_binding: bytes, _execution_requested: bool,
-    _version1: bool):
+    _version1: bool, _file2: bool = False):
     """Existing checks BEFORE payload verification; never a complete projection."""
-    _require(type(_version1) is bool and type(_execution_requested) is bool,
+    _require(type(_version1) is bool and type(_file2) is bool and not (_version1 and _file2)
+        and type(_execution_requested) is bool,
         'ntfs.original_closed_role_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
     intent=_canonical(intent_bytes)
@@ -94,6 +82,12 @@ def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
             and effect['ordinal']==0 and effect['request_digest'] is None,
             'ntfs.original_version1_effect_required')
     else:
+        if _file2:
+            _require(contract.document['identity']['id']=='file_create.v2'
+                and contract.document['identity']['version']=='1.0.0'
+                and plan['mechanism']['id']=='mechanism.exclusive_create_v2'
+                and plan['mechanism']['version']=='1.0.0',
+                'ntfs.original_file2_effect_required')
         _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
             and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
             and effect['lock_scope'] is None and effect['durability_policy_id']=='file_data_synced'
@@ -150,7 +144,7 @@ def _verify_original_blob_bytes(intent: dict, plan: dict, blob_bytes: bytes,
 def _original_control_suffix(*, intent: dict, plan: dict, contract,
     registry: RegistrySnapshot, pre_validator_bytes: bytes,
     installed_root_grants: bytes, expected_intent_digest: str,
-    _version1: bool) -> _OriginalControlProjection:
+    _version1: bool, _file2: bool = False) -> _OriginalControlProjection:
     """Existing checks AFTER the payload slot; no actual-content proof here."""
     effect=plan['effects'][0];candidate=intent['candidate'];value=candidate['storage']['value']
     inputs=intent['inputs'];binding=intent['contract']
@@ -174,13 +168,13 @@ def _original_control_suffix(*, intent: dict, plan: dict, contract,
         'ntfs.original_precondition_bytes_required')
     verify_saved_precondition_results(registry,contract,intent,plan,pre_validator_bytes)
     native=intent['native_binding']
-    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.1' if _version1 else '1.0','run_id':intent['run_id'],
+    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.2' if _file2 else '1.1' if _version1 else '1.0','run_id':intent['run_id'],
         'intent_digest':expected_intent_digest,'effect_plan_digest':intent['effect_plan_digest'],
         'native_binding_digest':digest_bytes(canonical_bytes(native)),
         'installation_digest':native['installation']['descriptor_digest'],
         'implementation_artifact_digest':implementation['authority']['provider']['artifact_digest'],
         'operation_nonce':native['operation_nonce']}
-    checked_context=_version1_context(context) if _version1 else _context(context)
+    checked_context=_file2_context(context) if _file2 else _version1_context(context) if _version1 else _context(context)
     return _OriginalControlProjection(canonical_bytes(checked_context),canonical_bytes(grants[0].as_dict()),
         canonical_bytes(effect),intent['created_at'],effect['input_binding'],effect['content_digest'],
         effect['content_length'])
@@ -299,3 +293,31 @@ def validate_planned_version1_original(*, intent_bytes: bytes, plan_bytes: bytes
         expected_intent_digest=expected_intent_digest,installed_core_binding=installed_core_binding,
         installed_native_binding=installed_native_binding,installed_root_grants=installed_root_grants,
         installed_implementation_binding=installed_implementation_binding,_execution_requested=False,_version1=True)
+
+
+def _parse_file2_control_projection(*, intent_bytes: bytes, plan_bytes: bytes,
+    pre_validator_bytes: bytes, registry: RegistrySnapshot,
+    expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes,
+    installed_native_binding: bytes, installed_root_grants: bytes,
+    installed_implementation_binding: bytes, _execution_requested: bool) -> _OriginalControlProjection:
+    """Fixed file_create.v2 declarations; actual bounded blob hash is MANDATORY in read binding.
+
+    No size/role selector, content handoff, snapshot, FD, path or GO authority.
+    File1/version1 wrappers never enter this different fixed contract branch.
+    """
+    intent,plan,contract=_original_control_prefix(
+        intent_bytes=intent_bytes,plan_bytes=plan_bytes,registry=registry,
+        expected_run_id=expected_run_id,expected_intent_digest=expected_intent_digest,
+        installed_core_binding=installed_core_binding,installed_native_binding=installed_native_binding,
+        installed_implementation_binding=installed_implementation_binding,
+        _execution_requested=_execution_requested,_version1=False,_file2=True)
+    effect=plan['effects'][0]
+    length,digest=effect['content_length'],effect['content_digest']
+    _require(type(length) is int and 0<=length<=2*1024**3
+        and type(digest) is str and re.fullmatch('sha256:[0-9a-f]{64}',digest) is not None
+        and effect['input_binding']=='payload','ntfs.original_file2_content_bound')
+    _original_content_binding(intent,plan,digest,length)
+    return _original_control_suffix(
+        intent=intent,plan=plan,contract=contract,registry=registry,
+        pre_validator_bytes=pre_validator_bytes,installed_root_grants=installed_root_grants,
+        expected_intent_digest=expected_intent_digest,_version1=False,_file2=True)

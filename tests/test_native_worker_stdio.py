@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from phase_tool.canonical import canonical_bytes, parse_json_bytes
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import worker
+from phase_tool.mutation.ntfs import worker, uncertainty
 from phase_tool.mutation.ntfs.windows_pipe import WindowsPipeFrames
 from tests.test_native_worker import context, grant, EFFECT, CONTENT
 
@@ -46,17 +46,21 @@ class FramedNativeWorkerTests(unittest.TestCase):
             self.peer_records['effects']+=1
             if operation_error:raise operation_error
             return {'status':'indeterminate'},{'worker_exit_established':False}
-        diagnostic=worker._error_record
-        calls=[0]
+        diagnostic=uncertainty._error_record
+        self.diagnostic_calls=[]
+        self.diagnostic_faults=[]
         def report(error):
-            calls[0]+=1
-            if diagnostic_error and calls[0]==1:raise PhaseError('synthetic.diagnostic')
+            self.diagnostic_calls.append(error)
+            if diagnostic_error and len(self.diagnostic_calls)==1:
+                fault=PhaseError('synthetic.diagnostic')
+                self.diagnostic_faults.append(fault)
+                raise fault
             return diagnostic(error)
         clock=iter(clock_values)
         with patch.object(worker,'os',SimpleNamespace(name='nt',getpid=os.getpid)), \
              patch.object(worker,'time',SimpleNamespace(perf_counter_ns=lambda:next(clock))), \
              patch.object(worker,'execute_file_create',side_effect=effect), \
-             patch.object(worker,'_error_record',side_effect=report):
+             patch.object(uncertainty,'_error_record',side_effect=report):
             worker.run_file_create_worker(peer,context(),grant(),EFFECT,CONTENT,'synthetic-time')
         return [parse_json_bytes(raw) for raw in self.peer_records['sent']]
 
@@ -121,11 +125,50 @@ class FramedNativeWorkerTests(unittest.TestCase):
         self.assertEqual(self.peer_records['seals'],1)
 
     def test_diagnostic_failure_still_seals_borrowed_transport(self):
-        peer=self.peer()
-        with self.assertRaises(PhaseError) as error:self.invoke(peer,operation_error=PhaseError('synthetic.operation'),diagnostic_error=True)
-        self.assertEqual(error.exception.details['primary']['code'],'synthetic.operation')
-        self.assertEqual(error.exception.details['transport']['code'],'synthetic.diagnostic')
-        self.assertEqual(self.peer_records['seals'],1)
+        primary=PhaseError('synthetic.operation')
+        frames=self.invoke(self.peer(),operation_error=primary,diagnostic_error=True)
+        self.assertEqual(len(self.diagnostic_calls),1)
+        self.assertIs(self.diagnostic_calls[0],primary)
+        self.assertEqual(len(self.diagnostic_faults),1)
+        self.assertEqual(self.diagnostic_faults[0].code,'synthetic.diagnostic')
+        self.assertEqual((self.peer_records['effects'],self.peer_records['seals']),(1,1))
+        self.assertEqual(len(frames),2)
+        self.assertEqual(frames[0]['worker_ready_version'],'1.0')
+        completion=frames[1]
+        self.assertEqual(completion['error']['type'],'unavailable')
+        self.assertIsNone(completion['error']['code'])
+        self.assertEqual(completion['error']['details'],{'reporting_error':True})
+        self.assertIsNone(completion['effect_receipt'])
+        self.assertIsNone(completion['physical_evidence'])
+        self.assertIs(completion['worker_exit_established'],False)
+
+    def test_diagnostic_failure_with_seal_failure_retains_raw_errors(self):
+        primary=PhaseError('synthetic.operation')
+        finalization=PhaseError('synthetic.seal')
+        with self.assertRaises(PhaseError) as caught:
+            self.invoke(self.peer(seal_error=finalization),
+                operation_error=primary,diagnostic_error=True)
+        unavailable=caught.exception
+        self.assertEqual(unavailable.code,'ntfs.worker_completion_or_finalization_unavailable')
+        self.assertIs(unavailable.primary_error,primary)
+        self.assertIsNone(unavailable.transport_error)
+        self.assertIs(unavailable.finalization_error,finalization)
+        self.assertIs(unavailable.__cause__,finalization)
+        self.assertEqual(unavailable.details['primary']['code'],'synthetic.operation')
+        self.assertEqual(unavailable.details['finalization']['code'],'synthetic.seal')
+        self.assertIsNone(unavailable.details['transport'])
+        self.assertIs(unavailable.details['worker_exit_established'],False)
+        self.assertEqual(len(self.diagnostic_faults),1)
+        self.assertEqual(len(self.diagnostic_calls),3)
+        self.assertIs(self.diagnostic_calls[0],primary)
+        self.assertIs(self.diagnostic_calls[1],primary)
+        self.assertIs(self.diagnostic_calls[2],finalization)
+        frames=[parse_json_bytes(raw)for raw in self.peer_records['sent']]
+        self.assertEqual(len(frames),2)
+        self.assertEqual(frames[-1]['error']['type'],'unavailable')
+        self.assertIsNone(frames[-1]['effect_receipt'])
+        self.assertIs(frames[-1]['worker_exit_established'],False)
+        self.assertEqual((self.peer_records['effects'],self.peer_records['seals']),(1,1))
 
     def test_wrong_type_and_subclass_are_rejected_before_transport(self):
         class Derived(WindowsPipeFrames):pass

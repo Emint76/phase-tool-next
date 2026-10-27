@@ -875,8 +875,8 @@ def _native_shared_history_installation(*,manifest_bytes,expected_manifest_diges
 
 def _native_experimental_file1_registry():
     """New closed experiment generation; old registries/descriptors unchanged."""
-    return _load_native_file_create_registry('registries/native-file1-experiment-v1.json',
-        'sha256:ea098facbfacef1e34795f2b2f43ba39cd3a4a298549584e86e0cf924d024eaf',
+    return _load_native_file_create_registry('registries/native-file1-experiment-v3.json',
+        'sha256:5aa8cf119e754e5ca78524e353fdeb17490729cdfd0719ef42f94207eaa926b5',
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
 
 
@@ -915,7 +915,8 @@ def _native_experimental_file1_installation(*, manifest_bytes, expected_manifest
     run_id, operation_nonce, channel_id, _inspection_only=False, admission):
     from dataclasses import replace
     from .canonical import canonical_bytes, parse_json_bytes
-    from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission, _ExperimentalFile1Authority
+    from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
+    from .mutation.ntfs.experimental_authority import _ExperimentalFile1Authority
     from .mutation.ntfs.channel_v2 import LinuxNativeChannelV2
     from .mutation.ntfs.native import _require
     _require(type(admission) is _ExperimentalFile1Admission and type(_inspection_only) is bool,

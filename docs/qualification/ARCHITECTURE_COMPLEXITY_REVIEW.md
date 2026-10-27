@@ -153,3 +153,19 @@ bounded-IPC part of the existing executor row. It reuses CPython nonblocking
 pipe support, has no resource-acquisition/cancellation subsystem and owns no
 durable operation state. Four owned pipe-only cases do not replace ordinary
 Core contract execution, native inspect or missing qualification evidence.
+
+
+## Bounded experiment admission correction
+
+The closed admission document is an attachment of the existing EvidenceStore;
+its hash also identifies the installation. It binds the run, target/root and
+frozen inputs so an experimental result cannot be mistaken for qualified
+production evidence. Normal guards do not accept it implicitly.
+
+The experimental authority subclass reuses existing effects and finalizers.
+Linux-only authority imports are separated from shared admission data because
+Windows has no fcntl module; a real Windows import attempt demonstrated that
+failure. This is a platform import boundary, not another backend, Core or state
+owner. Exact mechanism binding uses id/version/package_digest independently of
+the unchanged contract availability/capability metadata. No new journal, queue,
+idempotency store, recovery path or document history system is introduced.

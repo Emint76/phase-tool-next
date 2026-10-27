@@ -15,11 +15,10 @@ from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
 from ...paths import safe_relative_locator
 from ..guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
-from .authority import _NativeFileCreateAuthority
 from .native import _require
 
 _AUTHORIZATION = 'sha256:6d3646ce58d6045fae41d1b22791c4f05d6cb177c343883fad86cd6ae0b0a40b'
-_PROFILE = 'phase.native.ntfs.experiment.file1@1.0.0'
+_PROFILE = 'phase.native.ntfs.experiment.file1.authority.v1@1.0.0'
 _CONTRACT = {'id': 'file_create.v1', 'version': '1.0.0',
     'package_digest': 'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a'}
 _REQUIRED = {'exclusive_create', 'readback_verification', 'cross_process_serialization'}
@@ -100,7 +99,7 @@ class _ExperimentalFile1Admission:
         impl = desc['implementation']
         _require(desc['classification'] == 'qualification_candidate'
             and desc['provided_guarantees'] == desc['conformance'] == []
-            and impl['artifact'] == 'phase_tool/mutation/ntfs/experimental_file1.py',
+            and impl['artifact'] == 'phase_tool/mutation/ntfs/experimental_authority.py',
             'ntfs.experimental_profile_required')
         manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
         _require(manifest['authority'] == {'usage': 'provider_backed', 'profile': exact,
@@ -113,9 +112,12 @@ class _ExperimentalFile1Admission:
         """Validate obligations structurally; explicitly do NOT certify coverage."""
         self.profile(binding)
         rows = requirements.get('mechanisms', [])
+        # Contracts carry availability/capability metadata; saved plans and
+        # requirement mappings carry the same three-field exact binding.
+        exact = [{k: m[k] for k in ('id', 'version', 'package_digest')} for m in mechanisms]
         _require(len(rows) == len(mechanisms) == 1
             and set(rows[0]['all_of']) == _REQUIRED
-            and rows[0]['mechanism'] == mechanisms[0]
+            and rows[0]['mechanism'] == exact[0]
             == parse_json_bytes(binding.manifest_bytes)['mechanism'],
             'ntfs.experimental_requirements_mismatch')
         try:
@@ -126,7 +128,7 @@ class _ExperimentalFile1Admission:
         else:
             raise PhaseError('ntfs.experimental_requirements_mismatch')
         return {'vocabulary': dict(requirements['vocabulary']), 'mechanisms': [
-            {'mechanism': dict(mechanisms[0]), 'all_of': sorted(_REQUIRED)}]}
+            {'mechanism': dict(exact[0]), 'all_of': sorted(_REQUIRED)}]}
 
     def verify_attachment(self, binding, run_id, receipt=None):
         doc = self.check_binding(binding)
@@ -182,39 +184,14 @@ def _experimental_admission(binding):
     return context
 
 
-class _ExperimentalFile1Authority(_NativeFileCreateAuthority):
-    def _admitted_profile(self):
-        context = _experimental_admission(self.read_binding)
-        _require(context is not None and context.profile(self.read_binding) == self.profile,
-            'ntfs.experimental_admission_required')
-        return self.registry.resolve_guarantee_profile(self.profile.as_dict())
-
-    def require_contract(self, contract):
-        self._usable()
-        operation = contract.document['operation']
-        _require({'id': contract.document['identity']['id'],
-            'version': contract.document['identity']['version'], 'package_digest': contract.package_digest}
-            == self._manifest['contract'] == _CONTRACT
-            and operation['intent'] == 'create' and operation['maximum_effects'] == 1
-            and operation['allowed_effects'] == ['exclusive_create']
-            and operation['mechanism'] == self._manifest['mechanism']
-            and not operation.get('effect_mechanisms'), 'ntfs.original_single_effect_required')
-        return self.read_binding.experimental_admission.assess(self.read_binding,
-            operation['required_guarantees'], [operation['mechanism']])
-
-    def idempotency(self, contract, candidate, frozen, roots):
-        doc = self.read_binding.experimental_admission.check_binding(self.read_binding)
-        value = parse_json_bytes(candidate.canonical_bytes)
-        payload = frozen.get('payload')
-        _require(self._run_id == doc['run_id'] and value['idempotency_key'] == doc['request_id']
-            and value['target_locator'] == doc['target_locator']
-            and digest_bytes(candidate.canonical_bytes) == doc['candidate_digest']
-            and payload is not None and payload.digest == doc['payload_digest']
-            and payload.length == doc['payload_length'], 'ntfs.experimental_input_mismatch')
-        return super().idempotency(contract, candidate, frozen, roots)
 
 
 def _is_native_authority(value):
+    import sys
+    if not sys.platform.startswith('linux'):
+        return False
+    from .authority import _NativeFileCreateAuthority
+    from .experimental_authority import _ExperimentalFile1Authority
     if type(value) is _NativeFileCreateAuthority:
         return getattr(getattr(value, 'read_binding', None), 'experimental_admission', None) is None
     if type(value) is _ExperimentalFile1Authority:

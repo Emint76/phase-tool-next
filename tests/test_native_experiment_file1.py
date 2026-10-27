@@ -5,6 +5,8 @@ import unittest
 
 from phase_tool.canonical import canonical_bytes, digest_bytes
 from phase_tool.errors import PhaseError
+from phase_tool.core import CORE_BINDING
+from phase_tool.registry import BundledRegistry
 from phase_tool.installation import (_native_experimental_file1_registry,
     _native_registry_for_manifest, _native_qualified_profile,
     _resolve_native_file_create_read_binding)
@@ -14,9 +16,23 @@ from .test_native_original_intent import buffers
 from .test_native_static_read_binding import manifest_for
 
 
+def current_buffers(registry):
+    # Reuse historical grammar data, then explicitly select the current exact
+    # package. The candidate registry has two intent1.2 generations; the legacy
+    # fixture intentionally requires only one historical inactive generation.
+    intent, plan, pre, payload, _ = buffers(BundledRegistry.load())
+    exact = registry.contract_bindings()['file_create.v1@1.0.0']
+    contract = registry.resolve_contract(exact['id'],exact['version'],exact['package_digest'],
+        core_version=CORE_BINDING['version'])
+    intent['contract'] = plan['contract'] = deepcopy(exact)
+    intent['core'] = deepcopy(CORE_BINDING)
+    intent['registry_snapshot_digest'] = registry.digest
+    return intent, plan, pre, payload, contract
+
+
 def experiment_fixture():
     registry = _native_experimental_file1_registry()
-    intent, _, _, payload, contract = buffers(registry)
+    intent, _, _, payload, contract = current_buffers(registry)
     grant = deepcopy(intent['idempotency']['root_identities'][0])
     grant['components'] = ['Phase-NTFS-Qualification',
         '11111111-1111-4111-8111-111111111111', 'results']
@@ -34,7 +50,7 @@ def experiment_fixture():
         'qualification': {'A05': 'NOT_VERIFIED', 'G01': 'NOT_VERIFIED'}, 'release_eligible': False}
     cap = _ExperimentalFile1Admission(canonical_bytes(doc))
     manifest = manifest_for(intent, '/synthetic/evidence')
-    profile = registry.guarantee_profile_bindings()['phase.native.ntfs.experiment.file1@1.0.0']
+    profile = registry.guarantee_profile_bindings()['phase.native.ntfs.experiment.file1.authority.v1@1.0.0']
     impl = registry.resolve_guarantee_profile(profile)['implementation']
     manifest.update(native_read_installation_version='1.1',
         installation_id='phase.experiment.file1.' + cap.digest[7:],
@@ -120,7 +136,7 @@ class ExperimentalFile1AdmissionTests(unittest.TestCase):
 
     def test_saved_original_cannot_change_target_or_payload_under_old_admission(self):
         cap, binding, _, _ = experiment_fixture()
-        intent, plan, _, _, _ = buffers(binding.registry)
+        intent, plan, _, _, _ = current_buffers(binding.registry)
         cap.check_original(intent, plan)
         for changed in ('target', 'payload', 'candidate', 'run'):
             other_intent, other_plan = deepcopy(intent), deepcopy(plan)

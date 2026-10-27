@@ -24,6 +24,22 @@ Known transport counterexample #12, binary-version gap #13 and optional history
 index #15 remain distinct. No unsupported prototype counts as delivered.
 No operation is claimed functional merely because its code is present.
 
+### Current software correction and next real operation
+
+The separate bounded file1 admission has source review. Nine new pure Windows
+unit methods pass after correcting a Linux-only import, strict descriptor IDs
+and exact mechanism-binding projection. These are data/admission checks; the
+existing Core → Windows worker → receipt → fresh RO inspect operation remains
+NOT_VERIFIED and is the next execution milestone. No repeated old L1 workloads
+or fake coverage results are used.
+
+The unselected historical base authority retains a five-versus-three mechanism
+comparison defect. The selected experimental subclass corrects that comparison
+without editing old authority bytes/descriptors. Any later ordinary qualified
+selection must address it through an appropriate new immutable implementation.
+Experimental V1/V2 failed before native execution; V3 selects one legal profile
+with empty guarantees/conformance and excludes those invalid prototype entries.
+
 ## Earlier qualification checkpoint (retained history)
 
 ## Current functional milestone

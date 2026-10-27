@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from typing import ClassVar
 import re
 
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
@@ -28,6 +29,13 @@ _NAME = 'experimental-admission.json'
 @dataclass(frozen=True)
 class _ExperimentalFile1Admission:
     raw: bytes
+    _contract: ClassVar[dict] = _CONTRACT
+    _profile: ClassVar[str] = _PROFILE
+    _manifest_version: ClassVar[str] = '1.1'
+    _installation_prefix: ClassVar[str] = 'phase.experiment.file1.'
+    _authority_artifact: ClassVar[str] = 'phase_tool/mutation/ntfs/experimental_authority.py'
+    _minimum_payload_length: ClassVar[int] = 1
+    _maximum_payload_length: ClassVar[int] = 1024**2
 
     def document(self):
         _require(type(self.raw) is bytes and len(self.raw) <= 32768,
@@ -41,7 +49,7 @@ class _ExperimentalFile1Admission:
                 'release_eligible'}, 'ntfs.experimental_admission_shape')
         _require(doc['experimental_admission_version'] == '1.0'
             and doc['authorization_digest'] == _AUTHORIZATION
-            and doc['contract'] == _CONTRACT and doc['release_eligible'] is False
+            and doc['contract'] == self._contract and doc['release_eligible'] is False
             and doc['qualification'] == {'A05': 'NOT_VERIFIED', 'G01': 'NOT_VERIFIED'},
             'ntfs.experimental_admission_scope')
         from ...evidence import validate_run_id
@@ -51,7 +59,7 @@ class _ExperimentalFile1Admission:
             'ntfs.experimental_admission_scope')
         _require(type(doc['target_locator']) is str
             and safe_relative_locator(doc['target_locator']) == doc['target_locator']
-            and type(doc['payload_length']) is int and 0 < doc['payload_length'] <= 1024**2,
+            and type(doc['payload_length']) is int and self._minimum_payload_length <= doc['payload_length'] <= self._maximum_payload_length,
             'ntfs.experimental_admission_scope')
         for key in ('candidate_digest', 'payload_digest', 'wheel_digest'):
             _require(type(doc[key]) is str and re.fullmatch('sha256:[0-9a-f]{64}', doc[key]) is not None,
@@ -82,8 +90,8 @@ class _ExperimentalFile1Admission:
             and binding.experimental_admission is self, 'ntfs.experimental_admission_required')
         doc = self.document()
         manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
-        _require(manifest['native_read_installation_version'] == '1.1'
-            and manifest['installation_id'] == 'phase.experiment.file1.' + self.digest[7:]
+        _require(manifest['native_read_installation_version'] == self._manifest_version
+            and manifest['installation_id'] == self._installation_prefix + self.digest[7:]
             and manifest['contract'] == doc['contract']
             and manifest['root_grants'] == [doc['root_grant']]
             and manifest['evidence_identity'] == doc['evidence_identity']
@@ -93,13 +101,13 @@ class _ExperimentalFile1Admission:
 
     def profile(self, binding):
         self.check_binding(binding)
-        exact = binding.registry.guarantee_profile_bindings().get(_PROFILE)
+        exact = binding.registry.guarantee_profile_bindings().get(self._profile)
         _require(exact is not None, 'ntfs.experimental_profile_required')
         desc = binding.registry.resolve_guarantee_profile(exact)
         impl = desc['implementation']
         _require(desc['classification'] == 'qualification_candidate'
             and desc['provided_guarantees'] == desc['conformance'] == []
-            and impl['artifact'] == 'phase_tool/mutation/ntfs/experimental_authority.py',
+            and impl['artifact'] == self._authority_artifact,
             'ntfs.experimental_profile_required')
         manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
         _require(manifest['authority'] == {'usage': 'provider_backed', 'profile': exact,
@@ -179,7 +187,9 @@ def _experimental_admission(binding):
     context = getattr(binding, 'experimental_admission', None)
     if context is None:
         return None
-    _require(type(context) is _ExperimentalFile1Admission, 'ntfs.experimental_admission_required')
+    from .experimental_file2 import _ExperimentalFile2Admission
+    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalFile2Admission),
+        'ntfs.experimental_admission_required')
     context.check_binding(binding)
     return context
 
@@ -192,8 +202,9 @@ def _is_native_authority(value):
         return False
     from .authority import _NativeFileCreateAuthority
     from .experimental_authority import _ExperimentalFile1Authority
+    from .experimental_file2_authority import _ExperimentalFile2Authority
     if type(value) is _NativeFileCreateAuthority:
         return getattr(getattr(value, 'read_binding', None), 'experimental_admission', None) is None
-    if type(value) is _ExperimentalFile1Authority:
+    if type(value) in (_ExperimentalFile1Authority, _ExperimentalFile2Authority):
         return _experimental_admission(value.read_binding) is not None
     return False

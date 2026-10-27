@@ -76,8 +76,10 @@ not external certification.
 This closes the first positive experimental file1 create-to-inspect milestone.
 Repeat/conflict/interruption/lost-response cases, final deployment, native
 CLI/MCP, install/history compatibility and Windows rollback remain.
-File2/version1 have connected component/Linux implementation evidence, requiring
-full native execution. Version2 and both bundle routes require native integration.
+File2 subsequently completed one separate closed real Core-to-NTFS-to-fresh-inspect
+case at source03f685; see [File2 native result](FIRST_NATIVE_FILE2_RESULT.md).
+Version1 still requires real native lifecycle execution. Version2 and both bundle
+routes require native integration.
 All6 agreed contracts retain their limits/recovery semantics. No parallel Core,
 journal, queue or version system is introduced. Production Phase/Hermes,
 global Windows/Docker and scientific resources remain unchanged.

@@ -12,7 +12,7 @@ worker completion and honest errors remain obligations for claimed support.
 
 | Functional route | Evidence / implementation state | Required completion |
 |---|---|---|
-| file_create.v1 | Windows physical L1 create/collision is retained for exact historical sources; full current Core route NOT_VERIFIED. New explicit admission is under review. | Existing Core → Windows worker → actual bytes/NativeID → receipt → fresh RO inspect in owned MIX; then conflict/interruption/repeat checks. |
+| file_create.v1 | One real closed experimental Core → Windows worker → NTFS file → receipt → fresh RO inspect completed at source0c749; concrete worker wait/exit0. This is not whole-contract qualification. | Complete repeat, conflict, interruption, lost-response and final deployment checks. See [first native result](FIRST_NATIVE_FILE1_RESULT.md). |
 | file_create.v2 | Connected Core/stream/replay source and Linux/component checks only; no accepted full Windows route. | Real same-FD payload replay, boundary sizes, error paths and independent inspect without larger limits/deadlines. |
 | publish_new_version.v1 | Connected history/worker/inspect source and Linux/component checks; native lifecycle NOT_VERIFIED. | Actual current/archive/new bytes and lineage, natural frozen_at repeat behavior, interruption and documented manual handling. |
 | publish_new_version.v2 | Native integration unfinished; existing Host contract remains functional. | Existing contract recovery and preserved version objects through a real native route. |
@@ -24,14 +24,14 @@ Known transport counterexample #12, binary-version gap #13 and optional history
 index #15 remain distinct. No unsupported prototype counts as delivered.
 No operation is claimed functional merely because its code is present.
 
-### Current software correction and next real operation
+### First native operation and next functional routes
 
-The separate bounded file1 admission has source review. Nine new pure Windows
-unit methods pass after correcting a Linux-only import, strict descriptor IDs
-and exact mechanism-binding projection. These are data/admission checks; the
-existing Core → Windows worker → receipt → fresh RO inspect operation remains
-NOT_VERIFIED and is the next execution milestone. No repeated old L1 workloads
-or fake coverage results are used.
+The separate bounded file1 admission completed its first real native Core →
+Windows worker → receipt → fresh RO inspect operation. See the exact
+[first native result](FIRST_NATIVE_FILE1_RESULT.md), retaining the failed first
+attempt and immutable metadata correction. Whole-family qualification and fault
+coverage remain NOT_VERIFIED. File2, version1, version2 and bundles follow;
+completed L1 workloads are not repeated as substitutes.
 
 The unselected historical base authority retains a five-versus-three mechanism
 comparison defect. The selected experimental subclass corrects that comparison
@@ -40,9 +40,13 @@ selection must address it through an appropriate new immutable implementation.
 Experimental V1/V2 failed before native execution; V3 selects one legal profile
 with empty guarantees/conformance and excludes those invalid prototype entries.
 
-## Earlier qualification checkpoint (retained history)
+## Earlier qualification checkpoint (retained history before c1)
 
-## Current functional milestone
+The following earlier status paragraphs describe the checkpoint BEFORE the real
+27 October c1 execution. They are retained as history, not the current result.
+The current first-file1 result is stated above and in FIRST_NATIVE_FILE1_RESULT.md.
+
+## Historical pre-c1 functional milestone
 
 The first native file_create.v1 execute-to-receipt-to-independent-inspect
 remains NOT_VERIFIED. Source connectivity exists for both prepared file_create.v1
@@ -240,6 +244,6 @@ features. Production Hermes/Phase/pcr-rnd remains unchanged. No supported-route
 claim, merge-as-accepted or support release is authorized by partial readiness.
 
 
-The historical single-contract source checkpoint is described in [native version1 lifecycle implementation](NATIVE_VERSION1_LIFECYCLE_IMPLEMENTATION.md). Current V7 three-role source has ordinary Linux regression evidence through CI146; the new pending cleanup changes and their regressions remain UNEXECUTED until their own exact-HEAD CI. All native Core end-to-end outcomes remain NOT_VERIFIED; component models do not admit native authority.
+Historical pre-c1 status: the single-contract source checkpoint is described in [native version1 lifecycle implementation](NATIVE_VERSION1_LIFECYCLE_IMPLEMENTATION.md). At that checkpoint V7 three-role source had ordinary Linux regression evidence through CI146; later cleanup changes and native execution had not yet been accepted. This historical status does not describe the current c1 outcome.
 
-Companion-binding source changes and explicit remaining trust/execution boundaries: [existing Core guard integration](NATIVE_CROSS_CONTRACT_BINDINGS.md). Native success and final-qualification readiness remain NOT_VERIFIED.
+Companion-binding source changes and explicit remaining trust/execution boundaries: [existing Core guard integration](NATIVE_CROSS_CONTRACT_BINDINGS.md). Current source0c749 CI40533885108 succeeds; one closed experimental file1 Core-to-NTFS-to-fresh-inspect operation is independently verified. The other five full native routes, family qualification, failure coverage and final-qualification readiness remain NOT_VERIFIED.

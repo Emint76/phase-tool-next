@@ -586,12 +586,18 @@ class PhaseCore:
                 in mechanisms_by_key
             ],
         }
-        verify_guarantee_coverage(
-            selected_requirements,
-            list(mechanisms_by_key.values()),
-            self.installation.authority_profile_binding,
-            self.registry,
-        )
+        from .mutation.ntfs.experimental_file1 import _experimental_admission
+        binding = getattr(self.installation, 'read_binding', None)
+        admission = None if binding is None else _experimental_admission(binding)
+        if admission is None:
+            verify_guarantee_coverage(
+                selected_requirements,
+                list(mechanisms_by_key.values()),
+                self.installation.authority_profile_binding,
+                self.registry,
+            )
+        else:
+            admission.assess(binding, selected_requirements, list(mechanisms_by_key.values()))
 
     @staticmethod
     def _publish_append_blobs(store: EvidenceStore, plan: dict[str, Any]) -> list[str]:
@@ -673,6 +679,7 @@ class PhaseCore:
         timestamp: str,
         prior_receipt: Mapping[str, Any],
         prior_receipt_digest: str,
+        *, attachment_digests: list[str] | None = None,
     ) -> dict[str, Any]:
         reused_validators = validator_results or [
             dict(item) | {"run_id": request.run_id, "started_at": timestamp, "finished_at": timestamp}
@@ -691,7 +698,7 @@ class PhaseCore:
                 "intent_digest": None,
                 "receipt_digest_policy_id": "digest.phase_canonical_json_v1",
                 "required_attachments_present": True,
-                "attachment_digests": [],
+                "attachment_digests": sorted(attachment_digests or []),
             },
             "retry_disposition": "noop_existing",
             "recovery_required": False,
@@ -872,6 +879,13 @@ class PhaseCore:
         progress_digest: str | None = None
         active_faults = CoreFaults()
         try:
+            from .mutation.ntfs.experimental_file1 import _experimental_admission
+            binding = getattr(self.installation, 'read_binding', None)
+            admission = None if binding is None else _experimental_admission(binding)
+            if admission is not None:
+                _, admission_digest = store.write_canonical('attachments/experimental-admission.json',
+                    admission.document())
+                attachment_digests.append(admission_digest)
             active_faults = _validated_core_faults(CoreFaults() if faults is None else faults)
             lifecycle.append("resolve")
             contract = self.registry.resolve_contract(
@@ -1069,7 +1083,12 @@ class PhaseCore:
         intent: dict[str, Any] | None = None
         effect_receipts: list[dict[str, Any]] = []
         plan_digest: str | None = None
-        attachment_digests: list[str] = []
+        from .mutation.ntfs.experimental_file1 import _experimental_admission
+        binding = getattr(self.installation, 'read_binding', None)
+        admission = None if binding is None else _experimental_admission(binding)
+        if admission is not None:
+            admission.verify_attachment(binding, request.run_id)
+        attachment_digests: list[str] = [] if admission is None else [admission.digest]
         progress_digest: str | None = None
         latest_progress: dict[str, Any] | None = None
         interruption_code: str | None = None
@@ -1082,7 +1101,7 @@ class PhaseCore:
         try:
             reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute, _native_authority=native_authority)
             if execute and reused is not None:
-                receipt = self._reused_receipt(request, [], timestamp, reused[0], reused[1])
+                receipt = self._reused_receipt(request, [], timestamp, reused[0], reused[1], attachment_digests=attachment_digests)
                 validate_receipt(receipt, self.registry)
                 lifecycle.append("receipt")
                 if native_ctx is not None:
@@ -1119,7 +1138,7 @@ class PhaseCore:
                 except OSError as exc:
                     raise PhaseError("idempotency.observation_unavailable") from exc
                 if prior is not None:
-                    receipt = self._reused_receipt(request, validator_results, timestamp, prior[0], prior[1])
+                    receipt = self._reused_receipt(request, validator_results, timestamp, prior[0], prior[1], attachment_digests=attachment_digests)
                     validate_receipt(receipt, self.registry)
                     lifecycle.append("receipt")
                     if native_ctx is not None:
@@ -1517,6 +1536,11 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
                 and receipt['retry_disposition']=='forbidden' and receipt['exit_code']==10
                 and bool(receipt['blockers']), 'ntfs.original_history_unresolved')
         allowed={'effect-plan.json','pre-validator-results.json','validator-results.json'}
+        from .mutation.ntfs.experimental_file1 import _experimental_admission
+        admission = _experimental_admission(selected)
+        if admission is not None:
+            admission.verify_attachment(selected, run_id, receipt)
+            allowed.add('experimental-admission.json')
         _require(set(attachments)<=allowed, 'ntfs.original_history_unresolved')
         actual={digest_bytes(control(path)[1]) for path in attachments.values()}
         _require(actual==set(receipt['evidence']['attachment_digests'])

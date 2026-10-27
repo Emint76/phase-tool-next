@@ -248,8 +248,8 @@ class EffectBroker:
     ) -> None:
         self._native_authority = _native_authority
         if _native_authority is not None:
-            from .ntfs.authority import _NativeFileCreateAuthority
-            if (type(_native_authority) is not _NativeFileCreateAuthority
+            from .ntfs.experimental_file1 import _is_native_authority
+            if (not _is_native_authority(_native_authority)
                 or _native_authority.registry is not registry
                 or _native_authority.profile != authority_profile_binding
                 or authority_provider is not None):

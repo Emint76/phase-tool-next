@@ -1,3 +1,11 @@
+# Native component status and retained historical checkpoints
+
+Current delivery scope: [traceability addendum](TRACEABILITY_DELIVERY_SCOPE.md).
+The [remaining-work ledger](FINAL_QUALIFICATION_REMAINING.md) distinguishes
+actual Windows effects, component-only paths, unfinished routes and prototypes.
+The bounded first file1 admission is under source review; no full native Core
+result or supported release is claimed. The older checkpoint follows unchanged.
+
 # Native component checkpoint: experimental candidate, no admitted route
 
 Later checkpoints: [native file effects](NATIVE_FILE_EFFECTS.md),

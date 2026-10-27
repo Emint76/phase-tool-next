@@ -122,7 +122,7 @@ def _deliver_linux_frame(value,identities,*,_deadline=None):
 def run_native_core(launch):
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
-    from ...installation import (_native_registry_for_manifest,
+    from ...installation import (_native_registry_for_launch,
         _native_installation_for_manifest)
     from .uncertainty import _NativeLifecycleUnresolved
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
@@ -152,13 +152,14 @@ def run_native_core(launch):
         'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
     # admission still refuses the unqualified candidate, even empty requirements.
-    registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
+    registry=_native_registry_for_launch(launch)
     try:
         history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))
         registry,installation=_native_installation_for_manifest(manifest_bytes=launch._manifest_bytes,
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
-            history_manifest_set_bytes=history_bytes,history_manifest_set_digest=history_digest)
+            history_manifest_set_bytes=history_bytes,history_manifest_set_digest=history_digest,
+            _experimental_admission_context=getattr(launch,'_experimental_admission_context',None))
     except (PhaseError,OSError,ValueError) as error:
         # ONLY this pre-installation boundary is a known ordinary refusal.
         # No Core lifecycle, native request or evidence reservation has begun.
@@ -331,7 +332,7 @@ def run_native_inspection(launch):
     """
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
-    from ...installation import (_native_registry_for_manifest,
+    from ...installation import (_native_registry_for_launch,
         _native_installation_for_manifest)
     launch.check_runtime()
     _require(launch._inspection_only, 'ntfs.fixed_inspection_role_required')
@@ -344,7 +345,7 @@ def run_native_inspection(launch):
     from .parent_result import _native_file_result_mode
     include_result=_native_file_result_mode(request)
     reference=None
-    registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)
+    registry=_native_registry_for_launch(launch)
     if capture:
         from ...publish_file import CONTRACT_BINDING
         manifest = parse_json_bytes(launch._manifest_bytes, maximum_bytes=2*1024**2)
@@ -359,7 +360,8 @@ def run_native_inspection(launch):
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
             _inspection_only=True,history_manifest_set_bytes=history_bytes,
-            history_manifest_set_digest=history_digest)
+            history_manifest_set_digest=history_digest,
+            _experimental_admission_context=getattr(launch,'_experimental_admission_context',None))
     except (PhaseError,OSError,ValueError) as error:
         # Only pre-installation refusal: no channel/evidence/target read begun.
         response=PhaseApplication(registry=registry)._failure('inspect',error)

@@ -157,12 +157,14 @@ class _NativeAcceptedLaunch:
     into a running container or assumes docker CLI exit means Linux-exec exit.
     """
     def __init__(self, *, config_bytes, expected_config_digest, manifest_bytes,
-                 expected_manifest_digest, invocation_bytes, _inspection_only: bool = False):
+                 expected_manifest_digest, invocation_bytes, _inspection_only: bool = False,
+                 _experimental_admission_context=None):
         _require(not getattr(self,'_initialization_attempted',False),
             'ntfs.bootstrap_initialization_consumed')
         self._initialization_attempted=True
         _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
         self._inspection_only=_inspection_only
+        self._experimental_admission_context=_experimental_admission_context
         _require(type(config_bytes) is bytes and type(manifest_bytes) is bytes
             and type(expected_config_digest) is str and type(expected_manifest_digest) is str
             and digest_bytes(config_bytes)==expected_config_digest
@@ -200,6 +202,9 @@ class _NativeAcceptedLaunch:
         self._linux_contours_checked=False
         self._held=[]
         self._finalization_attempted=set()
+        if _experimental_admission_context is not None:
+            from ...installation import _native_read_binding_for_launch
+            _native_read_binding_for_launch(self)
         self.check_runtime()
 
     @property

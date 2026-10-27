@@ -44,8 +44,8 @@ _CONTRACT_HOOK_FACTORIES = {
 def load_contract_hook(contract: Any, *, _native_authority: object | None = None,
                        _native_expected_targets: bytes | None = None) -> Any | None:
     if _native_authority is not None:
-        from ..mutation.ntfs.authority import _NativeFileCreateAuthority
-        if type(_native_authority) is not _NativeFileCreateAuthority:
+        from ..mutation.ntfs.experimental_file1 import _is_native_authority
+        if not _is_native_authority(_native_authority):
             raise PhaseError("ntfs.closed_native_installation_required")
         _native_authority.require_contract(contract)
     elif _native_expected_targets is not None:

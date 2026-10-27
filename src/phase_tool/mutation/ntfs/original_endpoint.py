@@ -154,11 +154,9 @@ def native_original_query(launch,query):
         'ntfs.original_query_binding_mismatch')
     _require(publication is None or (not launch._version1 and not launch._file2),'ntfs.original_query_binding_mismatch')
     _require(version1_publication is None or launch._version1,'ntfs.original_query_binding_mismatch')
-    registry=_native_registry_for_manifest(launch._manifest_bytes,launch.installation_digest)  # Accepted static generation only.
-    _native_qualified_profile(registry,registry.guarantee_profile_bindings().get(
-        'phase.native.ntfs.authority.v1@1.0.0'))  # Candidate always refuses, even empty requirements.
-    binding=_resolve_native_file_create_read_binding(manifest_bytes=launch._manifest_bytes,
-        expected_manifest_digest=launch.installation_digest,registry=registry)
+    from ...installation import _native_read_binding_for_launch
+    binding=_native_read_binding_for_launch(launch)
+    registry=binding.registry
     binding.check_evidence_root()
     digest=query['intent_digest']
     if digest is None:

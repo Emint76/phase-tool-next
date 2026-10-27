@@ -25,8 +25,8 @@ class ValidatorRunner:
 
     def __init__(self, registry: RegistrySnapshot, *, _native_authority: object | None = None) -> None:
         if _native_authority is not None:
-            from ..mutation.ntfs.authority import _NativeFileCreateAuthority
-            if type(_native_authority) is not _NativeFileCreateAuthority or _native_authority.registry is not registry:
+            from ..mutation.ntfs.experimental_file1 import _is_native_authority
+            if not _is_native_authority(_native_authority) or _native_authority.registry is not registry:
                 raise PhaseError("ntfs.closed_native_installation_required")
             _native_authority._usable()
         self._native_authority = _native_authority

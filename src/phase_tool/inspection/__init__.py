@@ -140,6 +140,7 @@ def _validate_implementation_binding(
     plan: Mapping[str, Any],
     contract: ResolvedContract,
     registry: RegistrySnapshot,
+    *, _native_authority=None,
 ) -> None:
     mechanism = plan.get("mechanism")
     if binding.get("mechanism") != mechanism or binding.get("effect_plan_digest") != profile_digest("effect-plan", plan):
@@ -198,7 +199,13 @@ def _validate_implementation_binding(
             implementation_version=implementation["version"],
             implementation_artifact_digest=implementation["artifact_digest"],
         )
-        verify_guarantee_coverage(requirements, mechanisms, profile_binding, registry)
+        from ..mutation.ntfs.experimental_file1 import _experimental_admission
+        admission = (None if _native_authority is None else
+            _experimental_admission(_native_authority.read_binding))
+        if admission is None:
+            verify_guarantee_coverage(requirements, mechanisms, profile_binding, registry)
+        else:
+            admission.assess(_native_authority.read_binding, requirements, mechanisms)
 
 
 def _implementation_binding_required(contract: ResolvedContract, registry: RegistrySnapshot) -> bool:
@@ -365,8 +372,8 @@ def inspect_run(
     validate_run_id(run_id)
     registry = registry or BundledRegistry.load()
     if _native_authority is not None:
-        from ..mutation.ntfs.authority import _NativeFileCreateAuthority
-        if type(_native_authority) is not _NativeFileCreateAuthority or _native_authority.registry is not registry:
+        from ..mutation.ntfs.experimental_file1 import _is_native_authority
+        if not _is_native_authority(_native_authority) or _native_authority.registry is not registry:
             raise PhaseError("ntfs.closed_native_installation_required")
         _native_authority._usable()
         _native_authority.require_request_roots(root_bindings or {}, evidence_root)
@@ -415,7 +422,7 @@ def inspect_run(
         if implementation_binding is not None:
             if not isinstance(implementation_binding, Mapping):
                 raise PhaseError("inspection.implementation_binding_mismatch")
-            _validate_implementation_binding(implementation_binding, plan, contract, registry)
+            _validate_implementation_binding(implementation_binding, plan, contract, registry, _native_authority=_native_authority)
         _verify_bound_pre_validators(run_root, intent)
         _verify_intent_blobs(run_root, intent, plan)
         state_classification = None
@@ -516,13 +523,19 @@ def inspect_run(
         if intent_binding is not None:
             if not isinstance(intent_binding, Mapping):
                 raise PhaseError("inspection.implementation_binding_mismatch")
-            _validate_implementation_binding(intent_binding, plan, contract_for_plan, registry)
+            _validate_implementation_binding(intent_binding, plan, contract_for_plan, registry, _native_authority=_native_authority)
         _verify_bound_pre_validators(run_root, intent)
         validators, validators_digest = _read_canonical(run_root / "attachments" / "validator-results.json")
         if validators != receipt["validator_results"]:
             raise PhaseError("inspection.validator_results_mismatch")
         attachment_digests = {plan_attachment_digest, validators_digest}
         claimed = set(receipt["evidence"]["attachment_digests"])
+        if _native_authority is not None:
+            from ..mutation.ntfs.experimental_file1 import _experimental_admission
+            admission = _experimental_admission(_native_authority.read_binding)
+            if admission is not None:
+                admission.verify_attachment(_native_authority.read_binding, run_id, receipt)
+                attachment_digests.add(admission.digest)
         effect_receipts = receipt["effect_receipts"]
         unknown_dispatch_without_receipts = (
             not effect_receipts

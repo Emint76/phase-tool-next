@@ -229,12 +229,18 @@ def _check(binding, receipt, proof):
     manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=_CONTROL)
     from ...installation import _native_qualified_profile
     from ..guarantees import verify_guarantee_coverage
-    profile = _native_qualified_profile(binding.registry,manifest['authority']['profile'])
     contract_binding = manifest['contract']
     contract = binding.registry.resolve_contract(contract_binding['id'],contract_binding['version'],
         contract_binding['package_digest'],core_version=manifest['core']['version'])
-    verify_guarantee_coverage(contract.document['operation']['required_guarantees'],
-        [manifest['mechanism']],profile,binding.registry)
+    from .experimental_file1 import _experimental_admission
+    admission = _experimental_admission(binding)
+    if admission is None:
+        profile = _native_qualified_profile(binding.registry,manifest['authority']['profile'])
+        verify_guarantee_coverage(contract.document['operation']['required_guarantees'],
+            [manifest['mechanism']],profile,binding.registry)
+    else:
+        admission.verify_attachment(binding, receipt['run_id'], receipt)
+        admission.assess(binding,contract.document['operation']['required_guarantees'],[manifest['mechanism']])
     if receipt.get('implementation_binding') is not None:
         _require(receipt['implementation_binding']['authority'] == manifest['authority']
             and receipt['implementation_binding']['mechanism'] == manifest['mechanism'],

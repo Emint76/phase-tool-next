@@ -1,5 +1,31 @@
 # Remaining final qualification — execution addendum
 
+## Current delivery scope and ordered completion list — 27 October
+
+The explicit continuation authorizes a bounded real file1 experiment on the
+existing Windows host before final qualification. See
+[delivery-scope addendum](TRACEABILITY_DELIVERY_SCOPE.md). The earlier stand-only
+milestone and privileged namespace-immutability gate below are historical scope;
+they do not block this authorized experiment. Their historical NOT_VERIFIED
+results remain unchanged. Literal SYMLINK/reparse correctness, input integrity,
+worker completion and honest errors remain obligations for claimed support.
+
+| Functional route | Evidence / implementation state | Required completion |
+|---|---|---|
+| file_create.v1 | Windows physical L1 create/collision is retained for exact historical sources; full current Core route NOT_VERIFIED. New explicit admission is under review. | Existing Core → Windows worker → actual bytes/NativeID → receipt → fresh RO inspect in owned MIX; then conflict/interruption/repeat checks. |
+| file_create.v2 | Connected Core/stream/replay source and Linux/component checks only; no accepted full Windows route. | Real same-FD payload replay, boundary sizes, error paths and independent inspect without larger limits/deadlines. |
+| publish_new_version.v1 | Connected history/worker/inspect source and Linux/component checks; native lifecycle NOT_VERIFIED. | Actual current/archive/new bytes and lineage, natural frozen_at repeat behavior, interruption and documented manual handling. |
+| publish_new_version.v2 | Native integration unfinished; existing Host contract remains functional. | Existing contract recovery and preserved version objects through a real native route. |
+| bundle_create.v1/v2 | Native integration unfinished; observer/stream drafts are prototypes and unselected. | Whole route, manifest and every object, atomic publication, conflicts and contract-permitted recovery. |
+| Shared infrastructure | Existing Core owns intent/idempotency/receipt/recovery; no second journal or queue. | Explicit admission attachment must survive early rejection/reuse and independent verification. |
+| Final delivery | Install/MCP/history/native rollback and final build acceptance remain incomplete. | Test exact artifact on Windows and merge/release under repository rules only after all mandatory delivery gates. |
+
+Known transport counterexample #12, binary-version gap #13 and optional history
+index #15 remain distinct. No unsupported prototype counts as delivered.
+No operation is claimed functional merely because its code is present.
+
+## Earlier qualification checkpoint (retained history)
+
 ## Current functional milestone
 
 The first native file_create.v1 execute-to-receipt-to-independent-inspect

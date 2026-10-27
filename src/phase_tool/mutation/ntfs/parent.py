@@ -338,9 +338,8 @@ class _NativeWindowsParent:
                     if expects_result or value.get('version')=='1.1' or 'canonical_result' in value:
                         _require(self._inspection_only and expects_result,
                             'ntfs.file_result_request_version_required')
-                        from ...installation import _native_registry_for_manifest
-                        registry=_native_registry_for_manifest(self._launch._manifest_bytes,
-                            self._launch.installation_digest)
+                        from ...installation import _native_registry_for_launch
+                        registry=_native_registry_for_launch(self._launch)
                         validate_native_file_result_delivery(value,request=request,
                             run_id=self._launch.run_id,channel_id=self._launch.channel_id,
                             manifest_bytes=self._launch._manifest_bytes,
@@ -369,9 +368,8 @@ class _NativeWindowsParent:
                         _require(value['result'].get('command')=='inspect',
                             'ntfs.parent_command_binding_mismatch')
                         from ...command_result import validate_command_result
-                        from ...installation import _native_registry_for_manifest
-                        validate_command_result(value['result'],_native_registry_for_manifest(
-                            self._launch._manifest_bytes,self._launch.installation_digest))
+                        from ...installation import _native_registry_for_launch
+                        validate_command_result(value['result'],_native_registry_for_launch(self._launch))
                     if self._failed or (self._spawn_attempted and not self._worker_finalized):
                         result=value['result']
                         _require(result.get('stage3_command_result_version')=='1.2'

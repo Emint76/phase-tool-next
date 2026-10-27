@@ -201,7 +201,7 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
         'ntfs.version1_owned_deadline_required')
     primary = transport_error = close_error = None
     from .uncertainty import _diagnostic
-    diagnostic = _diagnostic if _version1 else _error_record
+    diagnostic = _diagnostic  # Both roles retain safe bounded error envelopes.
     binding = None
     completion = None
     try:
@@ -284,11 +284,15 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
         except BaseException as finalization:
             close_error = finalization
     if transport_error is not None or close_error is not None:
-        raise PhaseError('ntfs.worker_completion_or_finalization_unavailable', details={
+        unavailable = PhaseError('ntfs.worker_completion_or_finalization_unavailable', details={
             'primary': None if primary is None else diagnostic(primary),
             'transport': None if transport_error is None else diagnostic(transport_error),
             'finalization': None if close_error is None else diagnostic(close_error),
-            'worker_exit_established': False}) from (transport_error if transport_error is not None else close_error)
+            'worker_exit_established': False})
+        unavailable.primary_error = primary
+        unavailable.transport_error = transport_error
+        unavailable.finalization_error = close_error
+        raise unavailable from (transport_error if transport_error is not None else close_error)
 
 
 

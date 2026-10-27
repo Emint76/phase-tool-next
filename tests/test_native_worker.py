@@ -131,8 +131,10 @@ class NativeWorkerTests(unittest.TestCase):
         self.assertEqual(peer.close_count, 1)
 
     def test_diagnostic_construction_failure_still_closes(self):
+        from phase_tool.mutation.ntfs import uncertainty
         peer = SyntheticPipe(close_error=PhaseError('synthetic.close'))
-        original = worker._error_record
+        primary = PhaseError('synthetic.operation')
+        original = uncertainty._error_record
         calls = 0
         def diagnostic(error):
             nonlocal calls
@@ -140,12 +142,45 @@ class NativeWorkerTests(unittest.TestCase):
             if calls == 1:
                 raise PhaseError('synthetic.diagnostic')
             return original(error)
-        with patch.object(worker, '_error_record', side_effect=diagnostic), self.assertRaises(PhaseError) as caught:
-            self.invoke(peer, effect_error=PhaseError('synthetic.operation'))
-        self.assertEqual(caught.exception.details['primary']['code'], 'synthetic.operation')
-        self.assertEqual(caught.exception.details['transport']['code'], 'synthetic.diagnostic')
-        self.assertEqual(caught.exception.details['finalization']['code'], 'synthetic.close')
-        self.assertEqual(peer.close_count, 1)
+        with patch.object(uncertainty,'_error_record',side_effect=diagnostic), self.assertRaises(PhaseError)as caught:
+            self.invoke(peer,effect_error=primary)
+        self.assertIs(caught.exception.primary_error,primary)
+        self.assertEqual(parse_json_bytes(peer.sent[-1])['error']['type'],'unavailable')
+        self.assertEqual(caught.exception.details['primary']['code'],'synthetic.operation')
+        self.assertIsNone(caught.exception.details['transport'])
+        self.assertEqual(caught.exception.details['finalization']['code'],'synthetic.close')
+        self.assertEqual(peer.close_count,1)
+
+    def test_reparse_status_survives_secondary_close_formatter_failure(self):
+        class BrokenTextError(Exception):
+            def __str__(self):
+                raise RuntimeError('synthetic formatter failure')
+        primary=PhaseError('ntfs.open_failed',details={'ntstatus':'0xc0000280'})
+        cleanup=BrokenTextError()
+        peer=SyntheticPipe(close_error=cleanup)
+        with self.assertRaises(PhaseError)as caught:self.invoke(peer,effect_error=primary)
+        self.assertIs(caught.exception.primary_error,primary)
+        self.assertIs(caught.exception.finalization_error,cleanup)
+        self.assertEqual(caught.exception.details['primary']['details'],{'ntstatus':'0xc0000280'})
+        self.assertEqual(caught.exception.details['finalization']['type'],'unavailable')
+        self.assertIsNone(caught.exception.details['transport'])
+        self.assertEqual((self.executions,peer.close_count),(1,1))
+        self.assertIsNone(parse_json_bytes(peer.sent[-1])['effect_receipt'])
+
+    def test_unrenderable_primary_transport_and_close_keep_all_raw_errors(self):
+        class BrokenTextError(Exception):
+            def __str__(self):
+                raise RuntimeError('synthetic formatter failure')
+        primary,transport,cleanup=(BrokenTextError()for _ in range(3))
+        peer=SyntheticPipe(completion_error=transport,close_error=cleanup)
+        with self.assertRaises(PhaseError)as caught:self.invoke(peer,effect_error=primary)
+        self.assertIs(caught.exception.primary_error,primary)
+        self.assertIs(caught.exception.transport_error,transport)
+        self.assertIs(caught.exception.finalization_error,cleanup)
+        self.assertIs(caught.exception.__cause__,transport)
+        self.assertTrue(all(caught.exception.details[k]['type']=='unavailable'
+            for k in('primary','transport','finalization')))
+        self.assertEqual((self.executions,peer.close_count),(1,1))
 
     def test_invalid_context_is_not_echoed(self):
         peer = SyntheticPipe()

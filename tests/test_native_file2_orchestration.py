@@ -5,6 +5,7 @@ oracles call the bound method bodies with modeled admission/process boundaries;
 they do NOT prove qualification, actual Windows lifetime or native effects.
 Actual Core freeze/RO hash and real Linux pipes are separate component tests.
 """
+import base64
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
@@ -66,7 +67,8 @@ def model_reply(parsed):
 
 
 @pytest.mark.parametrize('fault',['none','source_close','gate_release','worker_exit','observer','timestamp',
-    'remote_no_completion','remote_malformed_completion','remote_reporting_failure'])
+    'remote_no_completion','remote_malformed_completion','remote_reporting_failure',
+    'remote_large_valid','remote_large_no_completion','remote_large_malformed_completion'])
 def test_authority_real_bound_body_retains_valid_receipt_across_late_failure(tmp_path,monkeypatch,fault):
     registry,binding,args,run,roots=fixture(tmp_path,b'x'*(CHUNK+17))
     parsed=binding.read(run_id='file2-component',intent_digest=args['expected_intent_digest'])
@@ -82,8 +84,17 @@ def test_authority_real_bound_body_retains_valid_receipt_across_late_failure(tmp
             'file_id':'e'*32}}
     if fault=='timestamp':reply['completion']['effect_receipt'].update(
         started_at='2026-10-25T00:00:00Z',finished_at='2026-10-25T00:00:00Z')
-    if fault=='remote_no_completion':reply['completion']=None
-    if fault=='remote_malformed_completion':reply['completion']={'pid':True}
+    large_wire=None
+    if fault.startswith('remote_large_'):
+        # Synthetic native event data within the unchanged worker/frame bound.
+        # It is untrusted diagnostic input, never a real Windows trace/proof.
+        trace=reply['completion']['physical_evidence']['mutation_trace']
+        trace.update(records=[{'api':'synthetic.event','detail':'x'*200}for _ in range(128)],
+            acknowledged_recorded_event_count=128)
+        large_wire=canonical_bytes(reply['completion'])
+        assert 16*1024<len(large_wire)<512*1024
+    if fault in('remote_no_completion','remote_large_no_completion'):reply['completion']=None
+    if fault in('remote_malformed_completion','remote_large_malformed_completion'):reply['completion']={'pid':True}
     if fault=='remote_reporting_failure':
         from phase_tool.mutation.ntfs import failure
         def unavailable(*_args,**_kwargs):raise PhaseError('synthetic.negative_render_failed')
@@ -101,8 +112,18 @@ def test_authority_real_bound_body_retains_valid_receipt_across_late_failure(tmp
             remote={'code':'ntfs.parent_execution_unresolved','message':'synthetic parent negative',
                 'details':{'parent_partial':reply,'worker_ready_wire':None,'worker_completion_wire':None,
                     'possible_dispatch':True,'retry_authorized':False}}
+            if large_wire is not None:
+                remote['details']['worker_completion_wire']={
+                    'sha256':digest_bytes(large_wire),'length':len(large_wire),
+                    'bytes_base64':base64.b64encode(large_wire).decode('ascii')}
+            # Exercise the actual channel error projection, including the
+            # large machine payload used by existing negative capture.
+            from phase_tool.mutation.ntfs.channel import _primary
+            raw_error=PhaseError('ntfs.channel_remote_failure',details={'remote_error':remote})
+            projected=_primary(raw_error)
+            assert projected['details']['remote_error']==remote
             raise NativeChannelError('ntfs.channel_exchange_unknown',possible_dispatch=True,
-                details={'primary':{'details':{'remote_error':remote}}})
+                details={'primary':projected}) from raw_error
         if fault=='gate_release':raise NativeChannelError('ntfs.channel_gate_finalization_unknown',possible_dispatch=True)
         return deepcopy(reply)
     channel=SimpleNamespace(channel_id=CHANNEL,possible_dispatch=True,execute_file2=execute,
@@ -137,14 +158,22 @@ def test_authority_real_bound_body_retains_valid_receipt_across_late_failure(tmp
         with pytest.raises(BrokerExecutionInterrupted)as caught:call()
         assert caught.value.possible_dispatch is True
         assert caught.value.effect_receipts==(() if fault in('timestamp','remote_no_completion',
-            'remote_malformed_completion') else(original_receipt,))
+            'remote_malformed_completion','remote_large_no_completion',
+            'remote_large_malformed_completion') else(original_receipt,))
         assert not role._parent_safety_established and not role._server_ingress_sealed
     assert record['calls']==1 and record['source']._fd is None
     assert role._response_bytes==record['captured']
-    if fault in('remote_no_completion','remote_malformed_completion'):
+    if fault in('remote_no_completion','remote_malformed_completion','remote_large_valid',
+            'remote_large_no_completion','remote_large_malformed_completion'):
         failure=parse_json_bytes(role._failure_bytes)
         assert failure['outcome']=='unresolved' and failure['retry_authorized']is False
         assert failure['parent_error']['details']['parent_partial']==reply
+        if large_wire is not None:
+            captured=failure['parent_error']['details']['worker_completion_wire']
+            assert captured['length']==len(large_wire)and captured['sha256']==digest_bytes(large_wire)
+            assert base64.b64decode(captured['bytes_base64'],validate=True)==large_wire
+            assert len(role._failure_bytes)>16*1024
+
     if fault=='remote_reporting_failure':assert role._failure_bytes is None
     assert list(roots['target'].iterdir())==[]
 

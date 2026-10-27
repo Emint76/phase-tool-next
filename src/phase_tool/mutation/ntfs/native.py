@@ -29,6 +29,17 @@ def _error_record(error: BaseException) -> dict:
             'code': getattr(error, 'code', None), 'details': getattr(error, 'details', {})}
 
 
+def _finalization_failure(code, primary, finalization):
+    # Lazy import keeps native <-> uncertainty initialization acyclic.
+    # Reuse the existing bounded serializer after the close attempt has ended.
+    from .uncertainty import _diagnostic
+    error = PhaseError(code,details={'primary_error':_diagnostic(primary),
+        'close_error':_diagnostic(finalization)})
+    error.primary_error = primary
+    error.finalization_error = finalization
+    return error
+
+
 def _leaf(value: str) -> str:
     _require(type(value) is str and '/' not in value, 'ntfs.invalid_leaf')
     return safe_relative_locator(value)
@@ -116,8 +127,7 @@ class NativeHandle:
             self.close()
         except BaseException as error:
             if value is not None:
-                raise PhaseError('ntfs.finalization_failed', details={
-                    'primary_error': _error_record(value), 'close_error': _error_record(error)}) from value
+                raise _finalization_failure('ntfs.finalization_failed',value,error) from value
             raise
 
 

@@ -30,10 +30,17 @@ _DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
 
 
 def _primary(error: BaseException) -> dict:
-    message = str(error)
-    return {'type': type(error).__name__, 'code': getattr(error, 'code', None),
-            'message': message[:4096], 'message_truncated': len(message) > 4096,
-            'details': error.details if isinstance(error, PhaseError) else {}}
+    try:
+        message = str(error)
+        # Checked remote_error is MACHINE evidence, bounded by the existing
+        # channel frame. Preserve it exactly; the 16KiB human fallback must
+        # never erase the parent failure consumed by the existing authority.
+        return {'type': type(error).__name__, 'code': getattr(error, 'code', None),
+                'message': message[:4096], 'message_truncated': len(message) > 4096,
+                'details': error.details if isinstance(error, PhaseError) else {}}
+    except BaseException:
+        from .uncertainty import _diagnostic
+        return dict(_diagnostic(error),message_truncated=False)
 
 
 class NativeChannelError(PhaseError):

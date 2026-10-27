@@ -16,9 +16,10 @@ from ...canonical import canonical_bytes, digest_bytes
 from ...errors import PhaseError
 from ...paths import safe_relative_locator
 from ..exclusive_create import _receipt, _unknown
-from .native import NativeIO, NativeIdentity, _error_record, _require
+from .native import NativeIO, NativeIdentity, _require
 from .mutating import NativeMutationIO
 from .root_lock import NativeRootMutex
+from .uncertainty import _diagnostic
 from .scoped import NativeRootGrant, NativeScopedTarget
 
 
@@ -81,7 +82,7 @@ class _MutationTrace:
         except BaseException as caught:
             self.capture_complete = False
             self.unprocessed_records += len(pending)-completed
-            self.capture_errors.append(_error_record(caught))
+            self.capture_errors.append(_diagnostic(caught))
             raise
 
     def snapshot(self) -> dict:
@@ -277,27 +278,36 @@ def _execute_bound_file_create(grant,effect,content,*,run_id,timestamp,_file2_so
                     trace.collect(io)
             lock.assert_held()
     except BaseException as caught:
-        primary = _error_record(caught)
+        # Keep the original error without invoking its diagnostic methods.
+        primary = caught
         status,after,after_native = 'indeterminate',_unknown(),None
-        error = {'code':caught.code if isinstance(caught,PhaseError) else 'ntfs.native_execution_failed',
-                 'message':str(caught)}
     finally:
         # A collision/native failure must still consume the healthy SAME data
         # stream so the sole sender can finish. This is data drain, not an effect
         # retry or a second RPC. A poisoned receiver never resynchronizes.
-        if file2 and not _file2_source.complete:
-            try:_file2_source.finish_remaining()
-            except BaseException as caught:finalization_errors.append(_error_record(caught))
+        if file2:
+            try:
+                if not _file2_source.complete:
+                    _file2_source.finish_remaining()
+            except BaseException as caught:
+                finalization_errors.append(caught)
         # Both are monotonic terminal operations, no native handle-close retry.
         # Preserve the original error if either diagnostic/seal step fails.
         try:
             trace.collect(io)
         except BaseException as caught:
-            finalization_errors.append(_error_record(caught))
+            finalization_errors.append(caught)
         try:
             io.seal_mutations()
         except BaseException as caught:
-            finalization_errors.append(_error_record(caught))
+            finalization_errors.append(caught)
+    # Every drain/trace/seal action has now been attempted. Rendering cannot
+    # prevent another essential finalizer or change the acknowledged byte count.
+    primary_info = None if primary is None else _diagnostic(primary)
+    if primary_info is not None:
+        error = {'code':primary_info['code'] if type(primary_info['code']) is str
+            else 'ntfs.native_execution_failed','message':primary_info['message']}
+    finalization_info = [_diagnostic(caught) for caught in finalization_errors]
     prior_effect={'status':status,'error':error,'acknowledged_bytes_written':written}
     closed = not io._handles and lock.state == 'closed' and io.mutation_state == 'sealed' and not finalization_errors
     if not closed:
@@ -307,13 +317,16 @@ def _execute_bound_file_create(grant,effect,content,*,run_id,timestamp,_file2_so
         'grant':grant.as_dict(),'locator':locator,'before':before_native,'after':after_native,
         'mutation_trace':trace.snapshot(),'mutex_events':lock.events,'mutex_state':lock.state,
         'mutation_session_state':io.mutation_state,'handle_finalization':'closed' if closed else 'unknown',
-        'remaining_handle_count':len(io._handles),'primary_error':primary,'finalization_errors':finalization_errors,
+        'remaining_handle_count':len(io._handles),'primary_error':primary_info,'finalization_errors':finalization_info,
         'worker_exit_established':False}
     if file2:
         evidence['stream_binding']=_file2_source.stream_facts()
         evidence['effect_before_finalization']=prior_effect
     if trace.create_event is None:
-        raise NativeFileCreateOutcomeUnavailable(evidence)
+        unavailable = NativeFileCreateOutcomeUnavailable(evidence)
+        unavailable.primary_error = primary
+        unavailable.finalization_errors = tuple(finalization_errors)
+        raise unavailable from primary
     refs = ['native.file.readback'] if status == 'applied_verified' else ['native.create.collision','native.target.after'] if status == 'failed_no_effect' else []
     receipt = _receipt(effect,run_id=run_id,timestamp=timestamp,status=status,attempted=True,
         before=before,after=after,bytes_written=written,verification_refs=refs,

@@ -27,8 +27,8 @@ from phase_tool.mutation.ntfs.channel import LinuxNativeChannel,NativeChannelErr
 root=Path(os.environ['PHASE_NATIVE_CHANNEL_SOURCE_ROOT']).resolve(strict=True)
 loaded={}
 for name,module,sha in (
- ('channel',channel_source,'45fbe87261f90f49fccaf2ffcb55428a04e278c49ca1b0998f59e18cf8a6445a'),
- ('native',native_source,'41654049dc10f1c2db0f74c847f0a36038b49295c4f02582b959b9c7a0dd0a22')):
+ ('channel',channel_source,'7a294a29fb5c586d193f3253c4ac0bb066f5b55b910978fdd04a76bf54c6acec'),
+ ('native',native_source,'75cdea36a30cac1623f95d50c6390ac7b8fdebbe3d95cc7e710f92a07d62954d')):
  p=Path(module.__file__).resolve(strict=True)
  if p!=root/'phase_tool/mutation/ntfs'/(name+'.py') or hashlib.sha256(p.read_bytes()).hexdigest()!=sha:
   raise RuntimeError('wrong child module origin or bytes')
@@ -44,6 +44,17 @@ try:
   try:c.__init__('ab'*16)
   except PhaseError as e:result['reinit_error']=e.code
   execute()
+ elif mode=='diagnostic':
+  class BrokenTextError(Exception):
+   def __str__(self):raise RuntimeError('synthetic formatter failure')
+  primary=BrokenTextError()
+  def fail_write(*_):raise primary
+  c._write=fail_write
+  try:execute()
+  except NativeChannelError as e:
+   result['raw_primary_is_cause']=e.__cause__ is primary
+   result['gate_released']=not c._gate.locked()
+   raise
  elif mode=='invalid_payload':
   c._exchange('observe_file','own-channel-test',None,{'protocol':'evil'})
  elif mode=='owner':
@@ -80,8 +91,8 @@ class NativeChannelTests(unittest.TestCase):
         self.source_root = Path(phase_tool.__file__).resolve(strict=True).parent.parent
         self.loaded = {name: {'path': str(self.source_root/'phase_tool/mutation/ntfs'/(name+'.py')), 'sha256': sha}
             for name, sha in (
-                ('channel', '45fbe87261f90f49fccaf2ffcb55428a04e278c49ca1b0998f59e18cf8a6445a'),
-                ('native', '41654049dc10f1c2db0f74c847f0a36038b49295c4f02582b959b9c7a0dd0a22'))}
+                ('channel', '7a294a29fb5c586d193f3253c4ac0bb066f5b55b910978fdd04a76bf54c6acec'),
+                ('native', '75cdea36a30cac1623f95d50c6390ac7b8fdebbe3d95cc7e710f92a07d62954d'))}
 
     def tearDown(self):
         errors = []
@@ -149,7 +160,7 @@ class NativeChannelTests(unittest.TestCase):
         self.assertIs(type(value['sequence']), int)
         return {key: value[key] for key in ('protocol', 'version', 'channel_id', 'sequence', 'kind', 'run_id', 'intent_digest')}
 
-    def response(self, child, common, *, value=None, error=None, edit=None, raw_override=None):
+    def response(self, child, common, *, value=None, error=None, edit=None, raw_override=None, maximum_frame=4096):
         response = common | {'ok': error is None, 'value': {} if value is None else value, 'error': error}
         if error is not None:
             response['value'] = None
@@ -157,7 +168,7 @@ class NativeChannelTests(unittest.TestCase):
             response.update(edit)
         raw = canonical_bytes(response) if raw_override is None else raw_override(response)
         frame = f'{len(raw):08x}\n'.encode('ascii')+raw+b'\n'
-        self.assertLessEqual(len(frame), 4096)
+        self.assertLessEqual(len(frame), maximum_frame)
         # Multiple actual sender writes; scheduling may coalesce receiver reads.
         for offset in range(0, len(frame), 7):
             chunk = frame[offset:offset+7]
@@ -166,11 +177,11 @@ class NativeChannelTests(unittest.TestCase):
                 self.assertGreater(written, 0)
                 chunk = chunk[written:]
 
-    def finish(self, child):
+    def finish(self, child, *, maximum_stderr=16384):
         stdout, stderr = child.communicate(timeout=5)
         self.assertEqual(child.returncode, 0, stderr.decode('utf-8', 'replace'))
         self.assertEqual(stdout, b'', 'unexpected extra command or automatic resend')
-        self.assertLessEqual(len(stderr), 16384)
+        self.assertLessEqual(len(stderr), maximum_stderr)
         result = json.loads(stderr)
         self.assertEqual(result['loaded_sources'], self.loaded)
         return result
@@ -213,6 +224,14 @@ class NativeChannelTests(unittest.TestCase):
         self.assertTrue(result['possible_dispatch'])
         self.assertEqual(result['error']['details']['primary']['code'], 'ntfs.channel_response_binding_mismatch')
 
+    def test_broken_diagnostic_preserves_dispatch_cause_and_releases_gate(self):
+        result=self.finish(self.start('diagnostic'))
+        self.assertEqual(result['error']['code'],'ntfs.channel_exchange_unknown')
+        self.assertTrue(result['possible_dispatch'])
+        self.assertTrue(result['raw_primary_is_cause'])
+        self.assertTrue(result['gate_released'])
+        self.assertEqual(result['error']['details']['primary']['type'],'unavailable')
+
     def test_structured_remote_primary_error_is_retained(self):
         child = self.start('remote')
         common = self.request(child, 'execute_file_create')
@@ -222,6 +241,17 @@ class NativeChannelTests(unittest.TestCase):
         result = self.finish(child)
         self.assertTrue(result['error']['possible_dispatch'])
         self.assertEqual(result['error']['details']['primary']['details']['remote_error'], error)
+
+    def test_large_checked_remote_machine_response_is_retained_without_human_truncation(self):
+        child=self.start('remote')
+        common=self.request(child,'execute_file_create')
+        remote={'code':'ntfs.parent_execution_unresolved','message':'synthetic parent negative',
+            'details':{'parent_partial':{'completion':None},'worker_completion_wire':{
+                'synthetic_capture':'x'*24000},'possible_dispatch':True,'retry_authorized':False}}
+        self.response(child,common,error=remote,maximum_frame=128*1024)
+        result=self.finish(child,maximum_stderr=128*1024)
+        self.assertTrue(result['error']['possible_dispatch'])
+        self.assertEqual(result['error']['details']['primary']['details']['remote_error'],remote)
 
     def test_duplicate_json_member_is_rejected(self):
         child = self.start('duplicate')

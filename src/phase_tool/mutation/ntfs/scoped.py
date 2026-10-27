@@ -13,8 +13,9 @@ import re
 
 from ...errors import PhaseError
 from ...paths import safe_relative_locator
-from .native import NativeHandle, NativeIdentity, NativeIO, _error_record, _leaf, _require
+from .native import NativeHandle, NativeIdentity, NativeIO, _finalization_failure, _leaf, _require
 from .mutating import NativeMutationIO
+from .uncertainty import _diagnostic
 
 
 @dataclass(frozen=True)
@@ -147,8 +148,8 @@ class NativeScopedTarget:
             try:
                 self.close()
             except BaseException as close_error:
-                raise PhaseError('ntfs.scope_initialization_finalization_failed',details={
-                    'primary_error':_error_record(primary),'close_error':_error_record(close_error)}) from primary
+                raise _finalization_failure('ntfs.scope_initialization_finalization_failed',
+                    primary,close_error) from primary
             raise
 
     def _volume(self) -> dict:
@@ -207,8 +208,8 @@ class NativeScopedTarget:
             try:
                 result.close()
             except BaseException as close_error:
-                raise PhaseError('ntfs.scope_open_finalization_failed',details={
-                    'primary_error':_error_record(primary),'close_error':_error_record(close_error)}) from primary
+                raise _finalization_failure('ntfs.scope_open_finalization_failed',
+                    primary,close_error) from primary
             raise
 
     def assert_file_name(self, handle: NativeHandle, expected: NativeIdentity) -> None:
@@ -230,10 +231,15 @@ class NativeScopedTarget:
             try:
                 handle.close()
             except BaseException as error:
-                errors.append(_error_record(error))
+                errors.append(error)
+        # Essential close attempts and terminal state precede all diagnostics.
+        # An unknown handle is retained and never retried by this scope.
         self._state = 'unknown' if errors else 'closed'
         if errors:
-            raise PhaseError('ntfs.scope_finalization_failed',details={'errors':errors,'finalization':'unknown'})
+            outcome = PhaseError('ntfs.scope_finalization_failed',details={
+                'errors':[_diagnostic(error) for error in errors],'finalization':'unknown'})
+            outcome.close_errors = tuple(errors)
+            raise outcome from errors[0]
         self._handles.clear()
         self._relations.clear()
         self.parent,self.parent_identity = None,None
@@ -247,6 +253,6 @@ class NativeScopedTarget:
             self.close()
         except BaseException as error:
             if value is not None:
-                raise PhaseError('ntfs.scope_finalization_failed',details={
-                    'primary_error':_error_record(value),'close_error':_error_record(error)}) from value
+                raise _finalization_failure('ntfs.scope_finalization_failed',
+                    value,error) from value
             raise

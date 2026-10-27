@@ -67,9 +67,9 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
             with self.subTest(action=action):
                 query=dict(query,action=action,intent_digest=digest)
                 with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
-                        patch.object(original_endpoint,'_native_registry_for_manifest',
+                        patch.object(installation,'_native_registry_for_manifest',
                             wraps=installation._native_registry_for_manifest) as selected,
-                        patch.object(original_endpoint,'_resolve_native_file_create_read_binding',
+                        patch.object(installation,'_resolve_native_file_create_read_binding',
                             side_effect=AssertionError('manifest reached')) as binding,
                         patch.object(evidence,'_confirm_native_original_absent',
                             side_effect=AssertionError('evidence read reached')) as absent):
@@ -81,7 +81,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
         launch,query=self.original_shell()
         query['registry']='synthetic-untrusted-selection'
         with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
-                patch.object(original_endpoint,'_native_registry_for_manifest',
+                patch.object(installation,'_native_registry_for_manifest',
                     side_effect=AssertionError('registry reached')) as selected):
             with self.assertRaisesRegex(PhaseError,'ntfs.original_query_binding_mismatch'):
                 original_endpoint.native_original_query(launch,query)
@@ -99,7 +99,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
                 intent_digest='sha256:'+'d'*64,installation_digest=launch._manifest_digest,
                 publication_request={'request_id':'synthetic-create','target_locator':'synthetic.txt','expected_digest':None})
             with (self.subTest(version=version),patch.object(_NativeAcceptedLaunch,'check_runtime'),
-                    patch.object(original_endpoint,'_resolve_native_file_create_read_binding',
+                    patch.object(installation,'_resolve_native_file_create_read_binding',
                         side_effect=AssertionError('reader binding reached')) as binding,
                     patch.object(original_endpoint,'_require_publication_original',
                         side_effect=AssertionError('literal helper reached')) as literal):
@@ -116,7 +116,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
             intent_digest='sha256:'+'d'*64,installation_digest=launch._manifest_digest,
             publication_request={'request_id':'synthetic-create','target_locator':'synthetic.txt','expected_digest':None})
         with (patch.object(_NativeAcceptedLaunch,'check_runtime'),
-                patch.object(original_endpoint,'_native_registry_for_manifest',
+                patch.object(installation,'_native_registry_for_manifest',
                     side_effect=AssertionError('registry reached')) as selected):
             with self.assertRaisesRegex(PhaseError,'ntfs.original_query_binding_mismatch'):
                 original_endpoint.native_original_query(launch,query)

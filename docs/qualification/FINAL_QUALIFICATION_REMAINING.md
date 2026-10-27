@@ -1,5 +1,80 @@
 # Remaining final qualification — execution addendum
 
+## Current functional milestone
+
+The first native file_create.v1 execute-to-receipt-to-independent-inspect
+remains NOT_VERIFIED. Source connectivity exists for both prepared file_create.v1
+and file_create.v2: fixed accepted startup, existing Core, the Windows worker,
+one native terminal proof and Core receipt, then a fresh read-only owner inspect.
+A positive Windows execution of that whole chain has not been accepted.
+
+The unchanged factory first requires a qualified code-selected native authority
+profile. The candidate snapshots contain no such production profile and therefore
+refuse with ntfs.native_profile_not_qualified before channel, intent or worker.
+A suitable stand alone cannot change that result. After the required guarantees
+are actually demonstrated for the exact file1 scope, a new immutable qualified
+generation must be built and selected by the fixed factory. Historical candidate
+descriptors/bindings are not edited or relabelled. First file1 does not wait for
+bundle implementation and does not qualify file2 or version contracts.
+
+### Concrete stand action required from the owner
+
+Provide an explicitly authorized disposable Windows AMD64 stand, separately
+provisioned by its owner, with an ordinary fixed local NTFS S: target and synthetic
+owned roots. Its non-elevated fixture actor must already be capable of the exact
+file/directory Windows SYMLINK creation and conversion operations needed by the
+A05 schedules (tag0xA000000C); Phase stays non-elevated. Static fixtures alone do
+not cover creation races. Keep this host's policies, privileges and ACLs unchanged.
+
+The current fixed bootstrap additionally requires CPython3.12.10, cold isolated
+startup with no site imports/bytecode, source-wheel zipimport, exact frozen
+dependencies/launchers/configuration and two private accepted Linux contours.
+The executable, dependency and configuration namespace must be enforced immutable
+for the lifetime of every possibly running worker, including MCP disconnect or
+server death. Supply an accepted sealed deployment with that lifetime property;
+single hashes, read-only container rootfs and Docker CLI exit are insufficient.
+Owned ext4 evidence/preparation and a separate all-RO verifier remain required,
+with existing CPU/RAM/process, storage and reserve boundaries.
+
+Once available, identify the stand and its accepted deployment/immutable-runtime
+configuration. Execute the outstanding original qualification cases there.
+A different Windows/Docker/transport stack requires its own exact environment
+manifest and affected qualification results; it cannot qualify this host by
+analogy. See [A05 stand requirements](A05_STAND_REQUIREMENTS.md).
+
+### Implementation work connected to the first execution
+
+A source review found unsafe diagnostic rendering in the shared file1/file2
+physical cleanup and channel errors, plus the file1 worker finalization path.
+The connected correction keeps raw errors, attempts every essential drain,
+trace and seal, and only then uses the existing bounded diagnostic serializer.
+NativeHandle and scope use the same transient finalization constructor.
+No new journal, queue, version store, transport or high-level tool is needed.
+
+These software corrections and their exact-HEAD regressions require execution;
+source review is not proof of a working native route. Bundle observation drafts
+are retained separately and do not delay or substitute for the first file1 run.
+Prepared phase_execute_prepared followed by a new accepted read-only phase_inspect
+already provides the required functional front door for file1 and file2.
+
+The first real run must correlate the same run/intent/plan/contract, actual worker
+exit and independent named NativeID/full bytes, canonical proof/receipt and fresh
+inspect's receipt digest and seven existing evidence fields. Unknown execute
+delivery permits independent inspect, never an automatic retry or a new key.
+Repeat the full chain for file2 only after file1, including its actual same-FD
+rewind/sole GO and checked replay. Its existing30s exchange budget and full2GiB
+range remain unverified on native transport; do not reset or enlarge the budget
+to manufacture acceptance.
+
+Historical C0000280 is not a new ordinary-create failure: the kernel-window V1
+oracle did not recognize the denial after parent reparse conversion and had a
+secondary worker-finalization failure. That V1 outcome remains NOT_VERIFIED.
+The separately retained V2 measured50 reached junction windows denied by the
+kernel and50 successful positive controls, with50 normal worker exits.
+Those L1 observations neither replace literal Windows SYMLINK A05 nor prove
+this candidate's complete Core lifecycle. Do not repeat unchanged completed L1
+runs or reinterpret old negative evidence as successful.
+
 This document separates **implementation readiness** from **supported-route
 acceptance**, following the human's continuation instruction. It does not edit
 or waive the original program, repetitions, guarantees or acceptance criteria.
@@ -17,9 +92,9 @@ implementation ready for these final tests, not a replacement acceptance rule.
 | Item | Current verdict | Cause and next action |
 |---|---|---|
 | A05 literal native Windows SYMLINK, tag `0xA000000C` | NOT_VERIFIED | Both creation APIs returned 1314. No owned safe fixture or separately authorized suitable stand is available. Current Windows policies/privileges must not change. Replay on the separately provisioned stand described below. |
-| Complete native MIX six-contract lifecycle | NOT_VERIFIED | Candidate source now includes fixed Core/Windows-worker/independent-inspect composition and a prepared MCP adapter; no admitted native end-to-end execution has been accepted. This source slice adds a single-contract version1 worker/transfer/proof/inspect graph, still unexecuted. Cross-contract create-to-version history binding, high-level wrappers, streaming file2/version2 and bundles remain unfinished. Continue independent software work and accessible functional tests; missing software is not a Windows-rights or ChatGPT limitation. |
+| Complete native MIX six-contract lifecycle | NOT_VERIFIED | Prepared file1/file2 and version1 source paths share the existing Core/worker/proof/receipt/inspect lifecycle and fixed cross-contract history bindings; native end-to-end execution remains unaccepted. First complete file1 execution is the priority, then file2 and version1. Version2 and bundle lifecycle software remain unfinished; isolated stream/observer drafts do not complete them. Missing software is not a Windows-rights or ChatGPT limitation. |
 | G01 accepted runtime, executable/dependency namespace and lifetime | NOT_VERIFIED | Fixed launcher consistency checks do not establish deployment immutability. Qualify the exact accepted isolated Windows runtime, wheel/dependencies, launcher/manifest and Linux contours for their whole active lifetime, including unknown workers after MCP disconnect/server exit; retained references or Docker CLI exit do not establish that lifetime. No current policy/ACL changes or acceptance flag. |
-| Shared evidence across contracts/manifests | NOT_VERIFIED; new source implementation initially UNEXECUTED | Closed accepted companion set for two exact V5 roles now has source implementation; changed-HEAD CI and actual admitted proof/history closure remain required. Preserve the complete common-lock scan and independent external namespace/config-set acceptance. No filtering, alias rebinding or separate evidence-root escape. |
+| Shared evidence across contracts/manifests | Native admission/history closure NOT_VERIFIED | V7/manifest1.4 has the closed three-role set for file1, version1 and file2. Its ordinary Linux regressions passed in CI141/146; they do not prove native admitted proof/history closure or G01 lifetime. The new pending cleanup corrections require their own exact-HEAD CI. Preserve the complete common-lock scan and independent external namespace/config-set acceptance. No filtering, alias rebinding or separate evidence-root escape. |
 | Complete final-build REF regression/program | NOT_VERIFIED | Linux CI and selected ext4 reference results exist; the entire original REF campaign has not been accepted for a final candidate. Run applicable unchanged reference and new implementation regressions against the exact accepted artifact. |
 | Two-container native coordinator/alias domain | NOT_VERIFIED | Windows mutex L1 passed; the two Linux coordinators, common qualified ext4 evidence/operational lock and native worker have not been integrated/tested together. This is not a completed C02. |
 | G06 lifecycle/failure propagation | NOT_VERIFIED | Native directory flush requests and bounded error probes exist, but final contract integration, exact pinned-parent call ordering and failure propagation are not accepted. |
@@ -123,6 +198,6 @@ features. Production Hermes/Phase/pcr-rnd remains unchanged. No supported-route
 claim, merge-as-accepted or support release is authorized by partial readiness.
 
 
-The current single-contract software slice and its explicit limitations are described in [native version1 lifecycle implementation](NATIVE_VERSION1_LIFECYCLE_IMPLEMENTATION.md). New tests are source-reviewed and UNEXECUTED until a separately accepted exact-HEAD CI; component models do not admit native authority.
+The historical single-contract source checkpoint is described in [native version1 lifecycle implementation](NATIVE_VERSION1_LIFECYCLE_IMPLEMENTATION.md). Current V7 three-role source has ordinary Linux regression evidence through CI146; the new pending cleanup changes and their regressions remain UNEXECUTED until their own exact-HEAD CI. All native Core end-to-end outcomes remain NOT_VERIFIED; component models do not admit native authority.
 
 Companion-binding source changes and explicit remaining trust/execution boundaries: [existing Core guard integration](NATIVE_CROSS_CONTRACT_BINDINGS.md). Native success and final-qualification readiness remain NOT_VERIFIED.

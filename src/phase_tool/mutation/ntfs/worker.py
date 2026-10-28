@@ -140,8 +140,60 @@ def validate_version1_worker_completion(raw: bytes, *, context: dict, grant_data
         expected_pid=expected_pid,_version1=True)
 
 
+def validate_version2_worker_ready(raw,*,context,grant_data,effect,content,expected_pid,timestamp):
+    """Two-root READY echo, never an actual process identity or authority."""
+    from .version2_effect import _effect_binding
+    binding=_version2_context(context)
+    _effect_binding(grant_data,effect,content)
+    _require(type(expected_pid) is int and expected_pid>0 and type(timestamp) is str
+        and 0<len(timestamp)<=128,'ntfs.worker_expected_binding_shape')
+    value=_frame(raw,{'worker_ready_version','context','pid','grants_digest',
+        'effect_digest','content_digest','content_length','timestamp'})
+    _require(type(value['pid']) is int and type(value['content_length']) is int and value=={
+        'worker_ready_version':'1.3','context':binding,'pid':expected_pid,
+        'grants_digest':digest_bytes(canonical_bytes(grant_data)),
+        'effect_digest':digest_bytes(canonical_bytes(effect)),
+        'content_digest':digest_bytes(content),'content_length':len(content),'timestamp':timestamp},
+        'ntfs.worker_ready_binding_mismatch')
+    return value
+
+
+def validate_version2_worker_completion(raw,*,context,grant_data,effect,expected_pid):
+    """Correlate V2 data only; parent separately owns exit and fresh readback."""
+    from .version2_observation import _version2_grants,_version2_targets
+    binding=_version2_context(context)
+    _version2_grants(grant_data)
+    targets={name:{'root_binding':root,'relative_locator':locator}
+        for name,(root,locator) in _version2_targets(effect).items()}
+    _require(type(expected_pid) is int and expected_pid>0,'ntfs.worker_pid_required')
+    value=_frame(raw,{'worker_completion_version','context','pid','effect_receipt',
+        'physical_evidence','error','worker_exit_established'})
+    _require(value['worker_completion_version']=='1.3' and value['context']==binding
+        and type(value['pid']) is int and value['pid']==expected_pid
+        and value['worker_exit_established'] is False,'ntfs.worker_completion_binding_mismatch')
+    receipt,physical,error=value['effect_receipt'],value['physical_evidence'],value['error']
+    if receipt is not None:
+        _require(type(receipt) is dict and receipt.get('run_id')==binding['run_id']
+            and receipt.get('effect_id')==effect['effect_id'] and receipt.get('kind')=='publish_new_version',
+            'ntfs.worker_receipt_binding_mismatch')
+    if physical is not None:
+        _require(type(physical) is dict and physical.get('native_version2_effect_version')=='1.0'
+            and physical.get('run_id')==binding['run_id'] and physical.get('effect_id')==effect['effect_id']
+            and canonical_bytes(physical.get('grants'))==canonical_bytes(grant_data)
+            and physical.get('targets')==targets
+            and physical.get('worker_exit_established') is False,'ntfs.worker_physical_binding_mismatch')
+    if error is None:
+        _require(receipt is not None and physical is not None,'ntfs.worker_completion_incomplete')
+    else:
+        _require(type(error) is dict and set(error)=={'type','code','message','details'}
+            and type(error['type']) is str and type(error['message']) is str
+            and (error['code'] is None or type(error['code']) is str)
+            and type(error['details']) is dict and receipt is None,'ntfs.worker_error_binding_mismatch')
+    return value
+
+
 def _worker_context(value: object, version: str) -> dict:
-    _require(version in ('1.0','1.1','1.2'),'ntfs.worker_protocol_unsupported')
+    _require(version in ('1.0','1.1','1.2','1.3'),'ntfs.worker_protocol_unsupported')
     _require(type(value) is dict and set(value) == _CONTEXT, 'ntfs.worker_context_shape')
     result = parse_json_bytes(canonical_bytes(value))
     _require(result['worker_protocol'] == 'phase.native.file-worker' and result['worker_version'] == version,
@@ -172,6 +224,11 @@ def _file2_context(value: object) -> dict:
     return _worker_context(value,'1.2')
 
 
+def _version2_context(value: object) -> dict:
+    """Exact Version2 context; only its fixed installation selects this role."""
+    return _worker_context(value,'1.3')
+
+
 def _grant(value: object) -> NativeRootGrant:
     _require(type(value) is dict and set(value) == {'root_binding', 'device', 'volume_guid',
         'volume_serial32', 'components', 'native_identity'}, 'ntfs.worker_grant_shape')
@@ -182,6 +239,7 @@ def _grant(value: object) -> NativeRootGrant:
 
 def _run_worker(pipe: object, context: dict, grant_data: dict,
                 effect: dict, content: bytes, timestamp: str, *, _version1: bool,
+                _version2: bool = False,
                 _handshake_deadline_ns: int | None = None) -> None:
     """Fixed target for an installation-owned Windows spawn; never self-activate.
 
@@ -192,12 +250,13 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
     pipe. No NativeIO, target handle, mutex or mutable API is opened before GO.
     No child, replacement worker or second GO is permitted by this function.
     """
-    _require(type(_version1) is bool,'ntfs.original_closed_role_required')
-    version = '1.1' if _version1 else '1.0'
+    _require(type(_version1) is bool and type(_version2) is bool and not (_version1 and _version2),
+        'ntfs.original_closed_role_required')
+    version = '1.3' if _version2 else '1.1' if _version1 else '1.0'
     _require(os.name == 'nt' and (type(pipe) is WindowsPipeFrames
         or type(pipe) is _connection.PipeConnection), 'ntfs.windows_worker_pipe_required')
     framed = type(pipe) is WindowsPipeFrames
-    _require(not _version1 or (framed and type(_handshake_deadline_ns) is int),
+    _require(not (_version1 or _version2) or (framed and type(_handshake_deadline_ns) is int),
         'ntfs.version1_owned_deadline_required')
     primary = transport_error = close_error = None
     from .uncertainty import _diagnostic
@@ -206,7 +265,7 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
     completion = None
     try:
         try:
-            if _version1:
+            if _version1 or _version2:
                 handshake_deadline = _handshake_deadline_ns
                 _require(type(handshake_deadline) is int
                     and 0 < handshake_deadline-time.perf_counter_ns() <= 30_000_000_000,
@@ -214,27 +273,31 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
             else:
                 # Preserve the original file1 READY/GO/completion clock order.
                 handshake_deadline = time.perf_counter_ns()+30_000_000_000
-            binding = _version1_context(context) if _version1 else _context(context)
-            grant = _grant(grant_data)
-            _require(type(content) is bytes and len(content) <= (16*1024**2 if _version1 else 1024**2), 'mechanism.content_too_large')
+            binding = _version2_context(context) if _version2 else _version1_context(context) if _version1 else _context(context)
+            grant = grant_data if _version2 else _grant(grant_data)
+            _require(type(content) is bytes and len(content) <= (512*1024 if _version2 else 16*1024**2 if _version1 else 1024**2), 'mechanism.content_too_large')
             _require(type(effect) is dict, 'ntfs.worker_effect_shape')
             effect = parse_json_bytes(canonical_bytes(effect))
-            _require(effect.get('kind') == ('publish_new_version' if _version1 else 'exclusive_create')
+            _require(effect.get('kind') == ('publish_new_version' if _version1 or _version2 else 'exclusive_create')
                 and effect.get('content_digest') == digest_bytes(content)
                 and type(effect.get('content_length')) is int and effect['content_length'] == len(content),
                 'mechanism.content_binding_mismatch')
-            if _version1:
+            if _version2:
+                from .version2_effect import _effect_binding
+                _effect_binding(grant_data,effect,content)  # Pure; no target I/O before GO.
+            elif _version1:
                 from .version1_effect import _version1_effect_binding
                 _version1_effect_binding(grant,effect,content)  # Pure, before any NativeIO/READY/GO.
             _require(type(timestamp) is str and bool(timestamp)
-                and (not _version1 or len(timestamp) <= 128), 'ntfs.invalid_effect_timestamp')
+                and (not (_version1 or _version2) or len(timestamp) <= 128), 'ntfs.invalid_effect_timestamp')
             # A readiness record is a context echo, not independent process identity.
             # Supervisor must compare PID/times using its own creation process handle.
             ready = {'worker_ready_version': version, 'context': binding, 'pid': os.getpid(),
-                'grant_digest': digest_bytes(canonical_bytes(grant.as_dict())),
+                ('grants_digest' if _version2 else 'grant_digest'):
+                    digest_bytes(canonical_bytes(grant if _version2 else grant.as_dict())),
                 'effect_digest': digest_bytes(canonical_bytes(effect)),
                 'content_digest': digest_bytes(content), 'content_length': len(content)}
-            if _version1:
+            if _version1 or _version2:
                 ready['timestamp'] = timestamp
             if framed:
                 pipe.send_frame(canonical_bytes(ready), handshake_deadline)
@@ -244,11 +307,15 @@ def _run_worker(pipe: object, context: dict, grant_data: dict,
                 _require(pipe.poll(30), 'ntfs.worker_go_deadline')
                 raw = pipe.recv_bytes(maxlength=4096)
             go = parse_json_bytes(raw, maximum_bytes=4096)
-            _require(canonical_bytes(go) == raw and go == {'command': 'execute_version1' if _version1 else 'execute_file_create', 'context': binding},
+            _require(canonical_bytes(go) == raw and go == {'command': 'execute_version2' if _version2 else 'execute_version1' if _version1 else 'execute_file_create', 'context': binding},
                      'ntfs.worker_go_binding_mismatch')
             if framed:
                 _require(time.perf_counter_ns() < handshake_deadline, 'ntfs.worker_go_deadline')
-            if _version1:
+            if _version2:
+                from .version2_effect import execute_version2
+                effect_receipt,evidence = execute_version2(grant_data,effect,content,
+                    run_id=binding['run_id'],timestamp=timestamp)
+            elif _version1:
                 from .version1_effect import execute_version1
                 effect_receipt,evidence = execute_version1(grant,effect,content,
                     run_id=binding['run_id'],timestamp=timestamp)
@@ -308,3 +375,9 @@ def run_version1_worker(pipe: object, context: dict, grant_data: dict,
     """Fixed version1 role; deadline comes from this worker's LOCAL transfer."""
     _run_worker(pipe,context,grant_data,effect,content,timestamp,
         _version1=True,_handshake_deadline_ns=_handshake_deadline_ns)
+
+
+def run_version2_worker(pipe,context,grant_data,effect,content,timestamp,*,_handshake_deadline_ns):
+    """Fixed two-root role sharing the existing one-GO worker lifecycle."""
+    _run_worker(pipe,context,grant_data,effect,content,timestamp,
+        _version1=False,_version2=True,_handshake_deadline_ns=_handshake_deadline_ns)

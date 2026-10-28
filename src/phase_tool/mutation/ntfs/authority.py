@@ -18,7 +18,7 @@ from ...paths import safe_relative_locator
 from ...planning import _build_static_plan_after_root_checks, _idempotency_from_root_records, _validate_logical_plan
 from ..guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from .channel_v2 import LinuxNativeChannelV2
-from .channel_v3 import LinuxNativeChannelV3
+from .channel_v3 import LinuxNativeChannelV3, LinuxNativeChannelV5
 from .channel_v4 import LinuxNativeChannelV4
 from .native import NativeIdentity, _require
 from .worker import _grant
@@ -45,16 +45,19 @@ class _NativeFileCreateAuthority:
         self._inspection_only = _inspection_only
         from ...installation import _NativeFileCreateReadBinding
         _require(type(read_binding) is _NativeFileCreateReadBinding
-            and type(profile) is GuaranteeProfileBinding and type(channel) in (LinuxNativeChannelV2,LinuxNativeChannelV3,LinuxNativeChannelV4),
+            and type(profile) is GuaranteeProfileBinding and type(channel) in (LinuxNativeChannelV2,LinuxNativeChannelV3,LinuxNativeChannelV4,LinuxNativeChannelV5),
             'ntfs.closed_native_installation_required')
         _require(channel._inspection_only is _inspection_only, 'ntfs.fixed_role_mismatch')
         self.read_binding, self.profile, self.channel = read_binding, profile, channel
         self._manifest = parse_json_bytes(read_binding.manifest_bytes)
         self._version1 = self._manifest['contract']['id'] == 'publish_new_version.v1'
+        self._version2 = self._manifest['contract']['id'] == 'publish_new_version.v2'
         self._file2 = self._manifest['contract']['id']=='file_create.v2'
         generation = self._manifest['native_read_installation_version']
-        _require(generation in {'1.1','1.2','1.3','1.4'}, 'ntfs.fixed_role_mismatch')
-        if generation == '1.4':
+        _require(generation in {'1.1','1.2','1.3','1.4','1.5'}, 'ntfs.fixed_role_mismatch')
+        if generation == '1.5':
+            _require(self._version2 and type(channel) is LinuxNativeChannelV5,'ntfs.fixed_role_mismatch')
+        elif generation == '1.4':
             # Composition generation does not create a worker/channel protocol.
             matching = (type(channel) is LinuxNativeChannelV4 if self._file2 else
                 type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1)
@@ -62,7 +65,7 @@ class _NativeFileCreateAuthority:
                 'file_create.v1','publish_new_version.v1','file_create.v2'} and matching,
                 'ntfs.fixed_role_mismatch')
         else:
-            _require((not self._version1 or generation == '1.2')
+            _require(not self._version2 and (not self._version1 or generation == '1.2')
                 and (type(channel) is LinuxNativeChannelV4 and self._file2
                     if generation == '1.3' else
                     not self._file2 and (type(channel) is LinuxNativeChannelV3 and channel._version1 is self._version1
@@ -87,12 +90,17 @@ class _NativeFileCreateAuthority:
         self._parent_safety_established = False
         self._observations = {}
         self._version1_post_attempted = False
+        self._version2_post_attempted = False
         projections = parse_json_bytes(root_projections)
         _require(type(root_projections) is bytes and canonical_bytes(projections) == root_projections
             and type(projections) is dict, 'ntfs.installed_root_projections_required')
         grants = [_grant(row) for row in self._manifest['root_grants']]
-        _require(len(grants) == 1 and set(projections) == {grants[0].binding},
+        _require(len(grants) == (2 if self._version2 else 1)
+            and set(projections) == {grant.binding for grant in grants},
             'ntfs.installed_root_projections_required')
+        if self._version2:
+            from .version2_observation import _version2_grants
+            _version2_grants(self._manifest['root_grants'])
         for value in projections.values():
             _require(type(value) is str and PurePosixPath(value).is_absolute()
                 and value != '/' and str(PurePosixPath(value)) == value
@@ -143,9 +151,9 @@ class _NativeFileCreateAuthority:
         operation = contract.document['operation']
         _require({'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
             'package_digest':contract.package_digest} == self._manifest['contract']
-            and operation['intent'] == ('publish_new_version' if self._version1 else 'create')
+            and operation['intent'] == ('publish_new_version' if self._version1 or self._version2 else 'create')
             and operation['maximum_effects'] == 1
-            and operation['allowed_effects'] == (['publish_new_version'] if self._version1 else ['exclusive_create'])
+            and operation['allowed_effects'] == (['publish_new_version'] if self._version1 or self._version2 else ['exclusive_create'])
             and operation['mechanism'] == self._manifest['mechanism'],
             'ntfs.original_single_effect_required')
         mechanisms = [contract.document['operation']['mechanism']]
@@ -190,13 +198,13 @@ class _NativeFileCreateAuthority:
             root_bindings=roots, run_id=run_id, generated_at=timestamp, request_digest=request_digest,
             _native_authority=self)
         _validate_logical_plan(plan, contract, self.registry)
-        _require(len(plan['effects']) == 1 and plan['effects'][0]['content_length'] <= (2*1024**3 if self._file2 else 16*1024**2 if self._version1 else 1024**2),
+        _require(len(plan['effects']) == 1 and plan['effects'][0]['content_length'] <= (2*1024**3 if self._file2 else 16*1024**2 if self._version1 else 512*1024 if self._version2 else 1024**2),
             'mechanism.content_too_large')
         return plan
 
     def observe(self, *, run_id, root_binding, locator, expected_identity=None):
         self._usable()
-        _require(not self._version1,'ntfs.original_closed_role_required')
+        _require(not self._version1 and not self._version2,'ntfs.original_closed_role_required')
         grant = parse_json_bytes(self._grant_bytes)
         _require(root_binding == grant['root_binding'], 'ntfs.effect_grant_mismatch')
         locator = safe_relative_locator(locator)
@@ -287,7 +295,12 @@ class _NativeFileCreateAuthority:
             and plan['effects'] == [effect] and parsed.timestamp == timestamp,
             'ntfs.original_current_invocation_mismatch')
         frozen = frozen_inputs.get(effect['input_binding'])
-        if self._file2:
+        if self._version2:
+            from .handoff import ParsedNativeVersion2
+            _require(type(parsed) is ParsedNativeVersion2 and not frozen_inputs
+                and parsed_intent['inputs']==[] and digest_bytes(parsed.content_bytes)==effect['content_digest']
+                and len(parsed.content_bytes)==effect['content_length'],'ntfs.original_content_binding_mismatch')
+        elif self._file2:
             from ...freeze import FrozenInput
             from .handoff import _OriginalControlProjection
             _require(type(parsed) is _OriginalControlProjection and type(frozen) is FrozenInput
@@ -301,7 +314,7 @@ class _NativeFileCreateAuthority:
         else:
             _require(frozen is not None and frozen.digest == digest_bytes(parsed.content_bytes)
                 and frozen.length == len(parsed.content_bytes), 'ntfs.original_content_binding_mismatch')
-        if self._version1:
+        if self._version1 or self._version2:
             from ...contracts import load_contract_hook
             hook = load_contract_hook(contract,_native_authority=self)
             hook.before_effect(parsed_intent['candidate']['storage']['value'],contract,effect,
@@ -310,6 +323,10 @@ class _NativeFileCreateAuthority:
         from .parent_result import validate_version1_parent_completion,validate_version1_parent_finalization
         completion_check = validate_version1_parent_completion if self._version1 else validate_parent_completion
         finalization_check = validate_version1_parent_finalization if self._version1 else validate_parent_finalization
+        if self._version2:
+            from .parent_result import validate_version2_parent_completion,validate_version2_parent_finalization
+            completion_check=validate_version2_parent_completion
+            finalization_check=validate_version2_parent_finalization
         if self._file2:
             from .file2_execution import validate_file2_parent_completion,validate_file2_parent_finalization
             completion_check=validate_file2_parent_completion
@@ -332,7 +349,8 @@ class _NativeFileCreateAuthority:
                     reply=self.channel.execute_file2(run_id=plan['run_id'],intent_digest=intent_digest,
                         projection=parsed,source=source)
                 else:
-                    execute=self.channel.execute_version1 if self._version1 else self.channel.execute_file_create
+                    execute=(self.channel.execute_version2 if self._version2 else
+                        self.channel.execute_version1 if self._version1 else self.channel.execute_file_create)
                     reply=execute(run_id=plan['run_id'],intent_digest=intent_digest)
                 # Retain exact response BEFORE any validation that could fail. The
                 # Core wrapper, not this role, owns the single proof attachment.
@@ -414,12 +432,24 @@ class _NativeFileCreateAuthority:
         completion = parse_json_bytes(self._response_bytes)['completion']
         physical = completion['physical_evidence']
         _require(physical['effect_id'] == effect['effect_id']
-            and physical['locator'] == effect['target']['relative_locator'],
+            and (self._version2 or physical['locator'] == effect['target']['relative_locator']),
             'ntfs.worker_observer_mismatch')
+        if self._version2:
+            from .version2_observation import _version2_targets
+            targets={name:{'root_binding':binding,'relative_locator':locator}
+                for name,(binding,locator) in _version2_targets(effect).items()}
+            _require(physical['targets']==targets
+                and canonical_bytes(physical['grants'])==canonical_bytes(self._manifest['root_grants']),
+                'ntfs.worker_observer_mismatch')
+            result={}
+            for name in targets:
+                sample=physical['after'][name]
+                _require(type(sample) is dict and sample.get('exists') is True,'ntfs.worker_observer_mismatch')
+                result[name]=NativeIdentity.parse(sample['native_identity']).as_dict()
+            return result
         if self._version1:
             _require(physical['archive_locator'] == effect['archive_target']['relative_locator'],
                 'ntfs.worker_observer_mismatch')
-            from .native import NativeIdentity
             current,archive = physical['after'],physical['archive_after']
             _require(type(current) is dict and type(archive) is dict,
                 'ntfs.worker_observer_mismatch')

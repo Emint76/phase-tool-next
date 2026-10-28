@@ -226,6 +226,105 @@ def validate_version1_parent_finalization(reply, checked, *, grant_data, effect)
     return observed
 
 
+def validate_version2_parent_completion(reply,*,context,grant_data,effect):
+    from .worker import validate_version2_worker_completion
+    _require(type(reply) is dict and set(reply)=={'parent_execution_version','context',
+        'completion','process_witness','owner_finalization','post_observation','ingress_state'}
+        and reply['parent_execution_version']=='1.3' and reply['context']==context
+        and reply['ingress_state']=='consumed','ntfs.parent_execution_binding_mismatch')
+    completion=reply['completion']
+    _require(type(completion) is dict and type(completion.get('pid')) is int,
+        'ntfs.worker_completion_binding_mismatch')
+    checked=validate_version2_worker_completion(canonical_bytes(completion),context=context,
+        grant_data=grant_data,effect=effect,expected_pid=completion['pid'])
+    if checked['error'] is not None:
+        raise PhaseError('ntfs.effect_outcome_unavailable',details={'worker_error':checked['error']})
+    receipt=checked['effect_receipt']
+    _require(receipt.get('attempted') is True and receipt.get('archive_target')==effect['archive_target']
+        and receipt.get('content_object_target')==effect['content_object_target']
+        and receipt.get('started_at')==receipt.get('finished_at'),'ntfs.worker_receipt_binding_mismatch')
+    return checked
+
+
+def validate_version2_parent_finalization(reply,checked,*,grant_data,effect):
+    """Three original samples and fresh parent reads; no current-path history read."""
+    from .version2_observation import _version2_grants,_version2_targets,validate_version2_triple
+    from .root_lock import root_mutex_name
+    witness=reply['process_witness']
+    _require(type(witness) is dict and witness.get('process_witness_version')=='1.0'
+        and type(witness.get('pid')) is int and witness['pid']==checked['pid']
+        and type(witness.get('wait_result')) is int and witness['wait_result']==0
+        and witness.get('worker_exit_established') is True
+        and type(witness.get('exit_code')) is int and witness['exit_code']==0,
+        'ntfs.worker_exit_not_established')
+    _require(reply['owner_finalization']=={'worker_stdin':'closed','worker_stdout':'closed',
+        'worker_stderr':'closed','creation_handle':'closed','errors':[]},'ntfs.worker_finalization_unknown')
+    grants=_version2_grants(grant_data);targets=_version2_targets(effect)
+    observed=validate_version2_triple(reply['post_observation'],grant_data,effect)
+    physical,receipt=checked['physical_evidence'],checked['effect_receipt']
+    mutexes=physical.get('mutexes')
+    _require(type(mutexes) is list and len(mutexes)==2 and all(type(row) is dict for row in mutexes)
+        and [row.get('name') for row in mutexes]==sorted(root_mutex_name(g) for g in grants.values())
+        and all(row.get('state')=='closed' for row in mutexes)
+        and physical.get('handle_finalization')=='closed'
+        and type(physical.get('remaining_handle_count')) is int and physical['remaining_handle_count']==0
+        and physical.get('mutation_session_state')=='sealed'
+        and physical.get('finalization_errors')==[],'ntfs.worker_finalization_unknown')
+    fields={'current':('before','after'),'old_object':('archive_before','archive_after'),
+        'new_object':('content_object_before','content_object_after')}
+    samples={}
+    for stage,index in [('before',0),('after',1)]:
+        native=physical.get(stage)
+        _require(type(native) is dict and set(native)==set(targets),'ntfs.worker_physical_binding_mismatch')
+        samples[stage]={name:_version1_physical_sample(native[name],grants[root].as_dict(),locator)
+            for name,(root,locator) in targets.items()}
+        samples[stage]=validate_version2_triple(samples[stage],grant_data,effect)
+        for name,row in samples[stage].items():
+            _require(receipt[fields[name][index]]==row['state'],'ntfs.worker_receipt_binding_mismatch')
+    _require(all(samples['after'][name]['native']==observed[name]['native']
+        and samples['after'][name]['state']==observed[name]['state'] for name in targets),
+        'ntfs.worker_observer_mismatch')
+    if receipt['status']=='applied_verified':
+        expected={name:{'known':True,'exists':True,'digest':effect['archive_digest'] if name=='old_object' else effect['content_digest'],
+            'length':effect['archive_length'] if name=='old_object' else effect['content_length'],'head_token':None}
+            for name in targets}
+        _require(all(observed[name]['state']==expected[name] for name in targets)
+            and physical['primary_error'] is None and receipt['error'] is None
+            and receipt['verification_refs']==['native.current.after','native.old_object.after','native.new_object.after'],
+            'ntfs.worker_physical_binding_mismatch')
+        trace=physical['mutation_trace']
+        _require(type(trace) is dict and type(trace.get('acknowledged_recorded_event_count')) is int
+            and trace['acknowledged_recorded_event_count']>=0 and trace.get('capture_complete') is True
+            and type(trace.get('unacknowledged_records_upper_bound')) is int
+            and trace['unacknowledged_records_upper_bound']==0 and trace.get('capture_errors')==[],
+            'ntfs.worker_physical_binding_mismatch')
+        before=samples['before'];after=samples['after']
+        complete=all(before[name]['state']==expected[name] for name in targets)
+        if complete:
+            _require(physical['replace_completed'] is False and physical['namespace_flushed']==[]
+                and physical['temporary_locators']=={} and trace['acknowledged_recorded_event_count']==0
+                and before==after and type(receipt['bytes_written']) is int and receipt['bytes_written']==0,
+                'ntfs.worker_physical_binding_mismatch')
+        else:
+            _require(before['current']['state']==expected['old_object']
+                and physical['replace_completed'] is True
+                and before['current']['native']['native_identity']!=after['current']['native']['native_identity']
+                and 'current' in physical['namespace_flushed'] and trace['acknowledged_recorded_event_count']>0,
+                'ntfs.worker_physical_binding_mismatch')
+            written=effect['content_length'];seen=set()
+            for name in ('old_object','new_object'):
+                if targets[name] in seen:continue
+                seen.add(targets[name])
+                if before[name]['state']['exists']:
+                    _require(before[name]==after[name],'ntfs.worker_observer_mismatch')
+                else:
+                    written+=expected[name]['length']
+                    _require(name in physical['namespace_flushed'],'ntfs.worker_physical_binding_mismatch')
+            _require(type(receipt['bytes_written']) is int and receipt['bytes_written']==written,
+                'ntfs.worker_receipt_binding_mismatch')
+    return observed
+
+
 def _require_command_run_binding(result: dict, run_id: str) -> None:
     """Correlate fixed-delivery data; this does not authenticate its producer.
 

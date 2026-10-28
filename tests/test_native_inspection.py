@@ -145,7 +145,7 @@ class NativeInspectionSelectionTests(unittest.TestCase):
 class NativeInspectionBranchTests(unittest.TestCase):
     def shell(self):
         # Never a constructed/admitted installation. Pure branch fixture only.
-        value = object.__new__(_NativeFileCreateAuthority); value._inspection_only = True; value._version1=False; value._file2=False
+        value = object.__new__(_NativeFileCreateAuthority); value._inspection_only = True; value._version1=False; value._version2=False; value._file2=False
         return value
 
     def test_all_mutating_authority_entries_refuse_before_read_or_dispatch(self):
@@ -252,7 +252,7 @@ class NativeInspectionParentTests(unittest.TestCase):
         p._owner = os.getpid(), threading.get_ident(); p._inspection_only = True
         p._consumed = True; p._finished = False; p._failed = False; p._spawn_attempted = False
         p._go_attempted = False; p._worker = None; p._worker_count = 0
-        p._no_dispatch_finished = False; p._version1=False; p._file2=False; p._channel_version='1.1'
+        p._no_dispatch_finished = False; p._version1=False; p._version2=False; p._file2=False; p._channel_version='1.1'
         p._launch = SimpleNamespace(channel_id='a'*32, run_id='synthetic-read', check_runtime=Mock(),
             _manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1])
         frame = {'protocol': 'phase.native.command', 'version': '1.0', 'channel_id': 'a'*32,

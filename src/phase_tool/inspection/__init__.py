@@ -629,12 +629,15 @@ def inspect_run(
             if _native_authority is not None:
                 if appended is not None or native_proof is None:
                     raise PhaseError('inspection.native_binding_mismatch')
-                if contract.document['identity']['id'] == 'publish_new_version.v1':
+                if contract.document['identity']['id'] in {'publish_new_version.v1','publish_new_version.v2'}:
+                    version2=contract.document['identity']['id']=='publish_new_version.v2'
                     targets = native_proof['target_identity']
                     if receipt['execution_disposition'] != 'reused_existing' and (
-                            type(targets) is not dict or set(targets) != {'current','archive'}):
+                            type(targets) is not dict or set(targets) !=
+                            ({'current','old_object','new_object'} if version2 else {'current','archive'})):
                         raise PhaseError('inspection.native_identity_mismatch')
-                    observation = _native_authority.observe_advisory(root_binding=root_id,
+                    observe=(_native_authority.observe_version2_advisory if version2 else _native_authority.observe_advisory)
+                    observation = observe(root_binding=root_id,
                         locator=canonical_result['locator'],expected_identity=None if targets is None else targets['current'])
                 else:
                     observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
@@ -727,7 +730,8 @@ def inspect_run(
             contract_result = prior.get("contract_result")
         else:
             native_context = {} if _native_authority is None else {'_native_authority':_native_authority}
-            if (_native_authority is not None and contract.document['identity']['id'] == 'publish_new_version.v1'):
+            if (_native_authority is not None and contract.document['identity']['id'] in
+                    {'publish_new_version.v1','publish_new_version.v2'}):
                 if native_proof is None or native_proof['target_identity'] is None:
                     raise PhaseError('inspection.native_identity_mismatch')
                 native_context['_native_expected_targets'] = canonical_bytes(native_proof['target_identity'])

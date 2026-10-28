@@ -6,6 +6,7 @@ is exercised. Real exit/flush/namespace/lifetime guarantees remain NOT_VERIFIED.
 """
 from copy import deepcopy
 import os
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -15,7 +16,6 @@ from phase_tool.contracts.publish_new_version_v1 import archive_locator
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.archive_then_publish import _receipt
 from phase_tool.mutation.ntfs import parent_result,worker,version1_effect
-from phase_tool.mutation.ntfs.authority import _NativeFileCreateAuthority
 from .test_native_worker import context as file_context,grant
 
 
@@ -168,7 +168,12 @@ class Version1ParentConsistencyTests(unittest.TestCase):
         with self.assertRaises(PhaseError):check(ctx,effect,reply)
 
 
+@unittest.skipUnless(sys.platform.startswith('linux'),'Connected authority is a Linux role')
 class Version1CausalAttemptTests(unittest.TestCase):
+    def setUp(self):
+        from phase_tool.mutation.ntfs.authority import _NativeFileCreateAuthority
+        self.Authority=_NativeFileCreateAuthority
+
     def test_failed_expected_binding_or_either_read_consumes_one_causal_attempt(self):
         # Allocated, UNADMITTED shell exercises one method only. Its local
         # usability/execution prerequisites are explicitly stubbed below; no
@@ -176,8 +181,8 @@ class Version1CausalAttemptTests(unittest.TestCase):
         for fail_at in ('expected','first','second'):
             with self.subTest(fail_at=fail_at):
                 ctx,effect,_,reply=fixture()
-                owner=object.__new__(_NativeFileCreateAuthority)
-                owner._version1=True;owner._run_id=ctx['run_id'];owner._dispatch_attempted=True
+                owner=object.__new__(self.Authority)
+                owner._version1=True;owner._version2=False;owner._run_id=ctx['run_id'];owner._dispatch_attempted=True
                 owner._parent_safety_established=True;owner._version1_post_attempted=False;owner._observations={}
                 owner._grant_bytes=canonical_bytes(grant())
                 pair=reply['post_observation']
@@ -197,8 +202,8 @@ class Version1CausalAttemptTests(unittest.TestCase):
 
     def test_successful_pair_is_canonical_run_bound_and_cannot_be_read_twice(self):
         ctx,effect,_,reply=fixture()
-        owner=object.__new__(_NativeFileCreateAuthority)
-        owner._version1=True;owner._run_id=ctx['run_id'];owner._dispatch_attempted=True
+        owner=object.__new__(self.Authority)
+        owner._version1=True;owner._version2=False;owner._run_id=ctx['run_id'];owner._dispatch_attempted=True
         owner._parent_safety_established=True;owner._version1_post_attempted=False;owner._observations={}
         owner._grant_bytes=canonical_bytes(grant());pair=reply['post_observation']
         identities={key:pair[key]['native']['native_identity'] for key in ('current','archive')}

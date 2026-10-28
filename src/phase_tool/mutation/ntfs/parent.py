@@ -50,11 +50,12 @@ class _NativeWindowsParent:
         self._sequence=0
         self._failed=False
         self._version1=launch._version1
+        self._version2=launch._version2
         self._file2=launch._file2
         self._file2_exchange_deadline=None
         generation=launch.manifest['native_read_installation_version']
         self._channel_version=(('1.3' if self._file2 else '1.2') if generation=='1.4' else
-            {'1.1':'1.1','1.2':'1.2','1.3':'1.3'}[generation])
+            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4'}[generation])
         self._inspection_only=launch._inspection_only
         _require(type(self._inspection_only) is bool,'ntfs.fixed_role_required')
         self._consumed=self._inspection_only  # Read role has no unused GO slot.
@@ -83,7 +84,7 @@ class _NativeWindowsParent:
         kind=value.get('kind')
         # Irreversibly consume before parsing/binding/spawn/read failure. A
         # buffered/repeated GO or finish cannot restore an unused worker slot.
-        if kind in {'execute_file_create','execute_version1','execute_file2','finish_without_execution'}:
+        if kind in {'execute_file_create','execute_version1','execute_version2','execute_file2','finish_without_execution'}:
             _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
             _require(not self._consumed,'ntfs.parent_execution_consumed')
             self._consumed=True
@@ -96,12 +97,20 @@ class _NativeWindowsParent:
         if kind=='observe_file':
             _require(set(value)==_COMMON|{'root_binding','locator','expected_identity'}
                 and value['intent_digest'] is None,'ntfs.parent_request_shape')
-            grant=self._launch.root_grant
+            if self._version2:
+                from .version2_observation import _version2_grants
+                installed=_version2_grants(self._launch.root_grants)
+                _require(value['root_binding'] in installed,'ntfs.effect_grant_mismatch')
+                grant=installed[value['root_binding']].as_dict()
+            else:grant=self._launch.root_grant
             _require(value['root_binding']==grant['root_binding'],'ntfs.effect_grant_mismatch')
             locator=safe_relative_locator(value['locator'])
             expected=(None if value['expected_identity'] is None
                 else NativeIdentity.parse(value['expected_identity']))
-            if self._file2:
+            if self._version2:
+                from .version2_observation import observe_version2_file,validate_version2_observation
+                answer=validate_version2_observation(observe_version2_file(_grant(grant),locator,expected=expected),grant,locator)
+            elif self._file2:
                 from .file2_execution import observe_file2_file,validate_file2_observation
                 answer=validate_file2_observation(observe_file2_file(_grant(grant),locator,expected=expected),grant,locator)
             elif self._version1:
@@ -109,8 +118,8 @@ class _NativeWindowsParent:
                 answer=validate_version1_observation(observe_version1_file(_grant(grant),locator,expected=expected),grant,locator)
             else:
                 answer=_observation(observe_file(_grant(grant),locator,expected=expected),grant,locator)
-        elif kind in {'execute_file_create','execute_version1','execute_file2'}:
-            _require(kind==('execute_file2' if self._file2 else 'execute_version1' if self._version1 else 'execute_file_create'),
+        elif kind in {'execute_file_create','execute_version1','execute_version2','execute_file2'}:
+            _require(kind==('execute_version2' if self._version2 else 'execute_file2' if self._file2 else 'execute_version1' if self._version1 else 'execute_file_create'),
                 'ntfs.original_closed_role_required')
             _require(set(value)==_COMMON and value['run_id']==self._launch.run_id
                 and type(value['intent_digest']) is str
@@ -156,10 +165,11 @@ class _NativeWindowsParent:
             and context['intent_digest']==intent_digest
             and context['operation_nonce']==self._launch.operation_nonce
             and context['installation_digest']==self._launch.installation_digest
-            and grant==self._launch.root_grant,'ntfs.parent_original_binding_mismatch')
+            and grant==(self._launch.root_grants if self._version2 else self._launch.root_grant),
+            'ntfs.parent_original_binding_mismatch')
         # Consume before Popen, READY parsing or any possible GO. Failed spawn
         # is terminal too; no second worker, fallback or replacement process.
-        handshake_deadline=self._file2_exchange_deadline if self._file2 else _deadline() if self._version1 else None
+        handshake_deadline=self._file2_exchange_deadline if self._file2 else _deadline() if self._version1 or self._version2 else None
         self._spawn_attempted=True
         self._worker=self._launch.spawn_worker()
         self._worker_count=1
@@ -170,7 +180,7 @@ class _NativeWindowsParent:
         try:
             witness=WindowsProcessWitness(self._worker)
             pipe=self._launch.worker_pipe(self._worker)
-            if self._version1 or self._file2:
+            if self._version1 or self._version2 or self._file2:
                 self._launch.send_worker_original(pipe,parsed,_handshake_deadline_ns=handshake_deadline)
             else:
                 self._launch.send_worker_original(pipe,parsed)
@@ -180,17 +190,21 @@ class _NativeWindowsParent:
                 completion_check=validate_file2_worker_completion
                 raw,_=pipe.receive_frame(handshake_deadline,maximum_bytes=512*1024)
             else:
-                raw,_=pipe.receive_frame(handshake_deadline if self._version1 else _deadline(),maximum_bytes=512*1024)
+                raw,_=pipe.receive_frame(handshake_deadline if self._version1 or self._version2 else _deadline(),maximum_bytes=512*1024)
                 self._ready_wire=raw
                 from .worker import validate_version1_worker_ready,validate_version1_worker_completion
                 ready_check=validate_version1_worker_ready if self._version1 else validate_worker_ready
                 completion_check=validate_version1_worker_completion if self._version1 else validate_worker_completion
+                if self._version2:
+                    from .worker import validate_version2_worker_ready,validate_version2_worker_completion
+                    ready_check=validate_version2_worker_ready
+                    completion_check=validate_version2_worker_completion
                 ready_check(raw,context=context,grant_data=grant,effect=effect,
                     content=parsed.content_bytes,expected_pid=self._worker.pid,
-                    **({'timestamp':parsed.timestamp} if self._version1 else {}))
+                    **({'timestamp':parsed.timestamp} if self._version1 or self._version2 else {}))
                 self._go_attempted=True
-                pipe.send_frame(canonical_bytes({'command':'execute_version1' if self._version1 else 'execute_file_create',
-                    'context':context}),handshake_deadline if self._version1 else _deadline())
+                pipe.send_frame(canonical_bytes({'command':'execute_version2' if self._version2 else 'execute_version1' if self._version1 else 'execute_file_create',
+                    'context':context}),handshake_deadline if self._version1 or self._version2 else _deadline())
                 raw,_=pipe.receive_frame(_deadline(),maximum_bytes=512*1024)
             self._completion_wire=raw
             completion=completion_check(raw,context=context,grant_data=grant,effect=effect,
@@ -219,7 +233,7 @@ class _NativeWindowsParent:
                     else:secondary.append(error)
         # Retain structured partial facts BEFORE late RO/runtime/reporting failure.
         # This is transient diagnosis, never a second receipt or success proof.
-        partial={'parent_execution_version':'1.2' if self._file2 else '1.1' if self._version1 else '1.0','context':context,'completion':completion,
+        partial={'parent_execution_version':'1.3' if self._version2 else '1.2' if self._file2 else '1.1' if self._version1 else '1.0','context':context,'completion':completion,
             'process_witness':process_fact,'owner_finalization':{
                 'worker_stdin':'closed' if self._worker_finalized else 'unknown',
                 'worker_stdout':'closed' if self._worker_finalized else 'unknown',
@@ -231,7 +245,10 @@ class _NativeWindowsParent:
             try:
                 _require(completion is not None and self._worker_finalized,
                     'ntfs.worker_finalization_unknown')
-                if self._file2:
+                if self._version2:
+                    from .version2_observation import observe_version2_triple
+                    after=observe_version2_triple(grant,effect)
+                elif self._file2:
                     from .file2_execution import observe_file2_file,validate_file2_observation
                     after=observe_file2_file(_grant(grant),effect['target']['relative_locator'])
                     validate_file2_observation(after,grant,effect['target']['relative_locator'])

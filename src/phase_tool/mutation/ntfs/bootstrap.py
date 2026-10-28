@@ -26,7 +26,7 @@ import zipimport
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
 from .native import _require
-from .handoff import ParsedNativeFileCreate,ParsedNativeVersion1
+from .handoff import ParsedNativeFileCreate,ParsedNativeVersion1,ParsedNativeVersion2
 
 
 def _normalized_linux_contour(value,keys):
@@ -189,7 +189,7 @@ def _original_query_request(launch,action,digest):
         query['native_original_query_version']='1.2'
         query['version1_publication_request']={key:request[key] for key in (
             'request_id','target_locator','expected_current_digest','expected_digest')}
-    elif action=='read_executing' and not launch._version1 and not launch._file2 and type(request) is dict and (
+    elif action=='read_executing' and not launch._version1 and not launch._file2 and not launch._version2 and type(request) is dict and (
             'native_file_publication_request_version' in request):
         _require(set(request)=={'operation','native_file_publication_request_version','source_locator',
             'target_locator','request_id','expected_digest'}
@@ -247,9 +247,16 @@ class _NativeAcceptedLaunch:
             and invocation['run_id'] not in {'.','..'}
             and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
                 for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4'}
-            and type(manifest.get('root_grants')) is list and len(manifest['root_grants'])==1,
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4','1.5'}
+            and type(manifest.get('root_grants')) is list
+            and len(manifest['root_grants'])==(2 if manifest['native_read_installation_version']=='1.5' else 1),
             'ntfs.accepted_launch_binding_required')
+        if manifest['native_read_installation_version']=='1.5':
+            from .experimental_version2 import _ExperimentalVersion2Admission,_VERSION2_CONTRACT
+            from .version2_observation import _version2_grants
+            _require(type(_experimental_admission_context) is _ExperimentalVersion2Admission
+                and manifest.get('contract')==_VERSION2_CONTRACT,'ntfs.experimental_admission_required')
+            _version2_grants(manifest['root_grants'])
         _require(manifest['native_read_installation_version']!='1.4'
             or (self._history_manifest_set[0] is not None
                 and type(manifest.get('contract')) is dict
@@ -293,7 +300,19 @@ class _NativeAcceptedLaunch:
     @property
     def installation_digest(self):return self._manifest_digest
     @property
-    def root_grant(self):return self.manifest['root_grants'][0]
+    def root_grant(self):
+        grants=self.root_grants
+        _require(len(grants)==1,'ntfs.original_single_root_required')
+        return grants[0]
+
+    @property
+    def root_grants(self):return self.manifest['root_grants']
+
+    @property
+    def _version2(self):
+        manifest=self.manifest
+        return (manifest['native_read_installation_version']=='1.5'
+            and manifest['contract']['id']=='publish_new_version.v2')
 
     @property
     def _version1(self):
@@ -490,11 +509,13 @@ class _NativeAcceptedLaunch:
             pipe.send_frame(canonical_bytes({'native_worker_original_version':'2.0',
                 'channel_id':self.channel_id,'projection':_file2_projection_value(parsed)}),_handshake_deadline_ns)
             return
-        if self._version1:
-            from .original_transfer import original_version1_frames
-            _require(type(parsed) is ParsedNativeVersion1 and type(_handshake_deadline_ns) is int,
+        if self._version1 or self._version2:
+            from .original_transfer import original_version1_frames,original_version2_frames
+            _require(type(parsed) is (ParsedNativeVersion2 if self._version2 else ParsedNativeVersion1)
+                and type(_handshake_deadline_ns) is int,
                 'ntfs.version1_owned_deadline_required')
-            for raw in original_version1_frames(parsed,channel_id=self.channel_id,leg='worker',query_digest=None):
+            frames=original_version2_frames if self._version2 else original_version1_frames
+            for raw in frames(parsed,channel_id=self.channel_id,leg='worker',query_digest=None):
                 pipe.send_frame(raw,_handshake_deadline_ns)
             return
         _require(type(parsed) is ParsedNativeFileCreate,'ntfs.original_parsed_data_required')
@@ -556,12 +577,12 @@ class _NativeAcceptedLaunch:
             pipe=self._pipe(process)
             deadline = time.perf_counter_ns()+30_000_000_000
             pipe.send_frame(canonical_bytes(request),deadline)
-            if self._version1 and action == 'read_executing':
-                answer = _receive_version1_original(self,pipe,request,deadline)
+            if (self._version1 or self._version2) and action == 'read_executing':
+                answer = _receive_version1_original(self,pipe,request,deadline,_version2=self._version2)
             else:
                 raw,_=pipe.receive_frame(time.perf_counter_ns()+30_000_000_000)
                 answer=parse_json_bytes(raw,maximum_bytes=2*1024**2)
-            if type(answer) is not ParsedNativeVersion1:
+            if type(answer) not in (ParsedNativeVersion1,ParsedNativeVersion2):
                 _require(type(answer) is dict and set(answer)=={'query','value','required_evidence_reads_finalized'}
                     and answer['query']==request and answer['required_evidence_reads_finalized'] is True
                     and canonical_bytes(answer)==raw,'ntfs.original_query_binding_mismatch')
@@ -581,15 +602,16 @@ class _NativeAcceptedLaunch:
                     except BaseException:pass
         if primary is not None:raise primary
         self.check_runtime()
-        return answer if type(answer) is ParsedNativeVersion1 else answer['value']
+        return answer if type(answer) in (ParsedNativeVersion1,ParsedNativeVersion2) else answer['value']
 
     def read_original(self,intent_digest):
         value=self._query_original('read_executing',intent_digest)
         if self._file2:
             from .file2_execution import _file2_projection_from_value
             return _file2_projection_from_value(value)
-        if self._version1:
-            _require(type(value) is ParsedNativeVersion1,'ntfs.original_version1_tuple_required')
+        if self._version1 or self._version2:
+            _require(type(value) is (ParsedNativeVersion2 if self._version2 else ParsedNativeVersion1),
+                'ntfs.original_version_tuple_required')
             return value
         _require(type(value) is dict and set(value)=={'context','grant','effect','content_base64','timestamp'},
             'ntfs.original_query_shape')
@@ -642,13 +664,16 @@ class _NativeAcceptedLaunch:
             _require(canonical_bytes(_normalized_linux_contour(actual,keys))==canonical_bytes(declared),'ntfs.accepted_linux_contour_mismatch')
         self._linux_contours_checked=True
 
-def _receive_version1_original(launch,pipe,request,deadline):
-    from .original_transfer import _Version1OriginalDecoder
-    decoder = _Version1OriginalDecoder(channel_id=launch.channel_id,leg='reader',
+def _receive_version1_original(launch,pipe,request,deadline,*,_version2=False):
+    from .original_transfer import _Version1OriginalDecoder,_Version2OriginalDecoder
+    _require(type(_version2) is bool,'ntfs.original_closed_role_required')
+    decoder_type=_Version2OriginalDecoder if _version2 else _Version1OriginalDecoder
+    decoder = decoder_type(channel_id=launch.channel_id,leg='reader',
         query_digest=digest_bytes(canonical_bytes(request)),
         expected_context={name:request[name] for name in
             ('run_id','intent_digest','operation_nonce','installation_digest')},
-        expected_grant=canonical_bytes(launch.root_grant))
+        **({'expected_grants':canonical_bytes(launch.root_grants)} if _version2 else
+            {'expected_grant':canonical_bytes(launch.root_grant)}))
     while not decoder.ended:
         raw,_ = pipe.receive_frame(deadline)
         decoder.feed(raw)

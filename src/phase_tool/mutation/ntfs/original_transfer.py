@@ -14,9 +14,9 @@ import re
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...evidence import validate_run_id
 from ...paths import safe_relative_locator
-from .handoff import ParsedNativeVersion1
+from .handoff import ParsedNativeVersion1, ParsedNativeVersion2
 from .native import _require
-from .worker import _grant, _version1_context
+from .worker import _grant, _version1_context, _version2_context
 
 
 _CHUNK = 256*1024
@@ -53,16 +53,31 @@ def _metadata(parsed: ParsedNativeVersion1) -> dict:
     return {'context':context,'grant':grant.as_dict(),'effect':effect,'timestamp':parsed.timestamp}
 
 
-def _header(parsed: ParsedNativeVersion1, *, channel_id: str, leg: str,
-            query_digest: str | None) -> dict:
+def _metadata_version2(parsed):
+    from .version2_effect import _effect_binding
+    _require(type(parsed) is ParsedNativeVersion2,'ntfs.original_version2_tuple_required')
+    context=_version2_context(parse_json_bytes(parsed.context_bytes))
+    grants=parse_json_bytes(parsed.grant_bytes)
+    effect=parse_json_bytes(parsed.effect_bytes)
+    _effect_binding(grants,effect,parsed.content_bytes)
+    _require(type(parsed.timestamp) is str and 0<len(parsed.timestamp)<=128
+        and canonical_bytes(context)==parsed.context_bytes
+        and canonical_bytes(grants)==parsed.grant_bytes
+        and canonical_bytes(effect)==parsed.effect_bytes,'ntfs.original_transfer_metadata_binding')
+    return {'context':context,'grants':grants,'effect':effect,'timestamp':parsed.timestamp}
+
+
+def _header(parsed, *, channel_id: str, leg: str,
+            query_digest: str | None, _version2: bool = False) -> dict:
+    _require(type(_version2) is bool,'ntfs.original_closed_role_required')
     _require(type(channel_id) is str and re.fullmatch('[0-9a-f]{32}',channel_id) is not None
         and leg in ('reader','worker'),'ntfs.original_transfer_context')
     _require((leg == 'worker' and query_digest is None) or (leg == 'reader'
         and type(query_digest) is str and re.fullmatch('sha256:[0-9a-f]{64}',query_digest) is not None),
         'ntfs.original_transfer_query_binding')
-    metadata = _metadata(parsed)
+    metadata = _metadata_version2(parsed) if _version2 else _metadata(parsed)
     length = len(parsed.content_bytes)
-    return {'native_original_transfer_version':'1.1','kind':'header','leg':leg,
+    return {'native_original_transfer_version':'1.2' if _version2 else '1.1','kind':'header','leg':leg,
         'channel_id':channel_id,'query_digest':query_digest,'metadata':metadata,
         'content_digest':metadata['effect']['content_digest'],'content_length':length,
         'chunk_count':(length+_CHUNK-1)//_CHUNK}
@@ -70,17 +85,26 @@ def _header(parsed: ParsedNativeVersion1, *, channel_id: str, leg: str,
 
 def original_version1_frames(parsed: ParsedNativeVersion1, *, channel_id: str,
                               leg: str, query_digest: str | None):
+    yield from _original_frames(parsed,channel_id=channel_id,leg=leg,query_digest=query_digest,_version2=False)
+
+
+def original_version2_frames(parsed: ParsedNativeVersion2, *, channel_id: str,
+                              leg: str, query_digest: str | None):
+    yield from _original_frames(parsed,channel_id=channel_id,leg=leg,query_digest=query_digest,_version2=True)
+
+
+def _original_frames(parsed, *, channel_id, leg, query_digest, _version2):
     """Stream bounded canonical frames; never accumulate an outgoing queue."""
-    header = _header(parsed,channel_id=channel_id,leg=leg,query_digest=query_digest)
+    header = _header(parsed,channel_id=channel_id,leg=leg,query_digest=query_digest,_version2=_version2)
     raw = canonical_bytes(header)
     _require(0 < len(raw) <= 2*1024**2,'ntfs.original_transfer_frame_limit')
     digest = digest_bytes(raw)
     yield raw
     for index,offset in enumerate(range(0,len(parsed.content_bytes),_CHUNK)):
-        yield canonical_bytes({'native_original_transfer_version':'1.1','kind':'chunk',
+        yield canonical_bytes({'native_original_transfer_version':header['native_original_transfer_version'],'kind':'chunk',
             'header_digest':digest,'index':index,'offset':offset,
             'content_base64':base64.b64encode(parsed.content_bytes[offset:offset+_CHUNK]).decode('ascii')})
-    yield canonical_bytes({'native_original_transfer_version':'1.1','kind':'end',
+    yield canonical_bytes({'native_original_transfer_version':header['native_original_transfer_version'],'kind':'end',
         'header_digest':digest,'content_digest':header['content_digest'],
         'content_length':header['content_length'],'chunk_count':header['chunk_count']})
 
@@ -92,6 +116,27 @@ class _Version1OriginalDecoder:
     It does not receive, retry, dispatch, read files or manufacture a receipt.
     Its consumer owns process/pipe provenance, one local deadline and exit.
     """
+    _TRANSFER_VERSION = '1.1'
+    _CONTENT_LIMIT = _LIMIT
+    _GRANT_KEY = 'grant'
+
+    @staticmethod
+    def _checked_context(value):
+        return _version1_context(value)
+
+    @staticmethod
+    def _checked_grant_bytes(value):
+        return canonical_bytes(_grant(value).as_dict())
+
+    @staticmethod
+    def _tuple(metadata, content):
+        return ParsedNativeVersion1(canonical_bytes(metadata['context']),canonical_bytes(metadata['grant']),
+            canonical_bytes(metadata['effect']),content,metadata['timestamp'])
+
+    @staticmethod
+    def _check_tuple(parsed):
+        return _metadata(parsed)
+
     def __init__(self, *, channel_id: str, leg: str, query_digest: str | None,
                  expected_context: dict, expected_grant: bytes):
         expected_keys = (_EXPECTED_CONTEXT if leg == 'reader' else _EXPECTED_CONTEXT-{'intent_digest'})
@@ -112,8 +157,8 @@ class _Version1OriginalDecoder:
             and re.fullmatch('sha256:[0-9a-f]{64}',query_digest) is not None)
             or (leg == 'worker' and query_digest is None),'ntfs.original_transfer_expected_role')
         _require(type(expected_grant) is bytes,'ntfs.original_transfer_expected_grant')
-        grant = _grant(parse_json_bytes(expected_grant))
-        _require(canonical_bytes(grant.as_dict()) == expected_grant,'ntfs.original_transfer_expected_grant')
+        _require(self._checked_grant_bytes(parse_json_bytes(expected_grant)) == expected_grant,
+            'ntfs.original_transfer_expected_grant')
         self._grant_bytes = expected_grant
         self._channel_id,self._leg,self._query_digest = channel_id,leg,query_digest
         # The worker has not read the Linux original and cannot pretend to know
@@ -131,7 +176,7 @@ class _Version1OriginalDecoder:
                 'ntfs.original_transfer_frame_limit')
             frame = parse_json_bytes(raw,maximum_bytes=2*1024**2)
             _require(type(frame) is dict and canonical_bytes(frame) == raw
-                and frame.get('native_original_transfer_version') == '1.1',
+                and frame.get('native_original_transfer_version') == self._TRANSFER_VERSION,
                 'ntfs.original_transfer_frame_shape')
             if self._state == 'header':
                 self._start(frame,raw)
@@ -149,18 +194,17 @@ class _Version1OriginalDecoder:
             and frame['kind'] == 'header' and frame['leg'] == self._leg
             and frame['channel_id'] == self._channel_id and frame['query_digest'] == self._query_digest,
             'ntfs.original_transfer_header_binding')
-        _require(type(frame['content_length']) is int and 0 <= frame['content_length'] <= _LIMIT
+        _require(type(frame['content_length']) is int and 0 <= frame['content_length'] <= self._CONTENT_LIMIT
             and type(frame['chunk_count']) is int
             and frame['chunk_count'] == (frame['content_length']+_CHUNK-1)//_CHUNK
             and type(frame['content_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',frame['content_digest']) is not None,
             'ntfs.original_transfer_header_bound')
         metadata = frame['metadata']
-        _require(type(metadata) is dict and set(metadata) == {'context','grant','effect','timestamp'},
+        _require(type(metadata) is dict and set(metadata) == {'context',self._GRANT_KEY,'effect','timestamp'},
             'ntfs.original_transfer_metadata_binding')
-        context = _version1_context(metadata['context'])
-        grant = _grant(metadata['grant'])
-        _require(canonical_bytes(grant.as_dict()) == self._grant_bytes,
+        context = self._checked_context(metadata['context'])
+        _require(self._checked_grant_bytes(metadata[self._GRANT_KEY]) == self._grant_bytes,
             'ntfs.original_transfer_expected_grant')
         expected = parse_json_bytes(self._expected_context)
         _require(all(context[key] == value for key,value in expected.items())
@@ -199,22 +243,50 @@ class _Version1OriginalDecoder:
             and frame['content_digest'] == header['content_digest'] == 'sha256:'+self._hash.hexdigest(),
             'ntfs.original_transfer_end_binding')
         metadata = header['metadata']
-        parsed = ParsedNativeVersion1(canonical_bytes(metadata['context']),canonical_bytes(metadata['grant']),
-            canonical_bytes(metadata['effect']),bytes(self._data),metadata['timestamp'])
-        _metadata(parsed)  # Complete shape/content before returning a tuple or any READY/GO.
+        parsed = self._tuple(metadata,bytes(self._data))
+        self._check_tuple(parsed)  # Complete shape/content before returning a tuple or any READY/GO.
         self._state = 'ended'
 
     @property
     def ended(self) -> bool:
         return self._state == 'ended'
 
-    def finish(self) -> ParsedNativeVersion1:
+    def finish(self) -> ParsedNativeVersion1 | ParsedNativeVersion2:
         try:
             _require(self._state == 'ended','ntfs.original_transfer_incomplete')
             self._state = 'consumed'
             metadata = self._header['metadata']
-            return ParsedNativeVersion1(canonical_bytes(metadata['context']),canonical_bytes(metadata['grant']),
-                canonical_bytes(metadata['effect']),bytes(self._data),metadata['timestamp'])
+            return self._tuple(metadata,bytes(self._data))
         except BaseException:
             self._state = 'failed'
             raise
+
+
+class _Version2OriginalDecoder(_Version1OriginalDecoder):
+    """Same finite state machine; literal Version2 data roles and bounds only."""
+    _TRANSFER_VERSION = '1.2'
+    _CONTENT_LIMIT = 512*1024
+    _GRANT_KEY = 'grants'
+
+    @staticmethod
+    def _checked_context(value):
+        return _version2_context(value)
+
+    @staticmethod
+    def _checked_grant_bytes(value):
+        from .version2_observation import _version2_grants
+        _version2_grants(value)
+        return canonical_bytes(value)
+
+    @staticmethod
+    def _tuple(metadata, content):
+        return ParsedNativeVersion2(canonical_bytes(metadata['context']),canonical_bytes(metadata['grants']),
+            canonical_bytes(metadata['effect']),content,metadata['timestamp'])
+
+    @staticmethod
+    def _check_tuple(parsed):
+        return _metadata_version2(parsed)
+
+    def __init__(self, *, channel_id, leg, query_digest, expected_context, expected_grants):
+        super().__init__(channel_id=channel_id,leg=leg,query_digest=query_digest,
+            expected_context=expected_context,expected_grant=expected_grants)

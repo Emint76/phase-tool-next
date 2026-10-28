@@ -129,7 +129,7 @@ def test_authority_real_bound_body_retains_valid_receipt_across_late_failure(tmp
     channel=SimpleNamespace(channel_id=CHANNEL,possible_dispatch=True,execute_file2=execute,
         captured_file2_completion=lambda:record['captured'])
     role=object.__new__(_NativeFileCreateAuthority)
-    role._inspection_only=False;role._file2=True;role._version1=False;role._dispatch_attempted=False
+    role._inspection_only=False;role._file2=True;role._version1=False;role._version2=False;role._dispatch_attempted=False
     role.read_binding=binding;role.channel=channel;role._manifest=parse_json_bytes(binding.manifest_bytes)
     context=parse_json_bytes(parsed.context_bytes);role._run_id=context['run_id'];role._operation_nonce=context['operation_nonce']
     role._response_bytes=role._failure_bytes=None;role._parent_safety_established=role._server_ingress_sealed=False
@@ -215,7 +215,7 @@ def test_parent_real_orchestration_body_uses_one_model_owner_and_sole_go(tmp_pat
         finalize_worker=finalize,check_runtime=lambda:None)
     owner._launch=launch;owner._pipe=SimpleNamespace(receive_frame=receive_core,
         send_frame=lambda raw,*_:core_sent.append(parse_json_bytes(raw)))
-    owner._file2=True;owner._version1=False;owner._inspection_only=False;owner._consumed=True
+    owner._file2=True;owner._version1=False;owner._version2=False;owner._inspection_only=False;owner._consumed=True
     owner._spawn_attempted=owner._go_attempted=False;owner._worker=None;owner._worker_count=0
     owner._worker_finalized=False;owner._partial_bytes=owner._ready_wire=owner._completion_wire=None
     owner._file2_exchange_deadline=time.perf_counter_ns()+30_000_000_000

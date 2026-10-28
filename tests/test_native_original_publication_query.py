@@ -53,7 +53,7 @@ class NativeOriginalPublicationQueryTests(unittest.TestCase):
     def launch(self,request=None,version1=False):
         return SimpleNamespace(run_id=self.intent['run_id'],operation_nonce=self.intent['native_binding']['operation_nonce'],
             installation_digest=self.intent['native_binding']['installation']['descriptor_digest'],channel_id='b'*32,
-            _version1=version1,_file2=False,invocation={'request':deepcopy(self.request if request is None else request)})
+            _version1=version1,_file2=False,_version2=False,invocation={'request':deepcopy(self.request if request is None else request)})
 
     def query(self,digest):
         # Independently specified wire oracle; do not derive from tested builder.

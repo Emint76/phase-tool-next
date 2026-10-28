@@ -61,7 +61,7 @@ class NativeVersion1InspectionTests(unittest.TestCase):
         value._launch._manifest_bytes=owner._startup['manifest_bytes']
         value._launch.installation_digest=owner._startup['expected_manifest_digest']
         value._launch.invocation={'request':self.request()if request is None else request}
-        value._version1=True;value._channel_version='1.2'
+        value._version1=True;value._version2=False;value._channel_version='1.2'
         return value
 
     def test_separate_closed_grammar_and_exact_capture_use_prepublication_digest(self):

@@ -44,7 +44,7 @@ class NativeVersion1PublicationQueryTests(unittest.TestCase):
     def launch(self,intent,request,version1=True):
         return SimpleNamespace(run_id=intent['run_id'],operation_nonce=intent['native_binding']['operation_nonce'],
             channel_id='b'*32,installation_digest=intent['native_binding']['installation']['descriptor_digest'],
-            _version1=version1,invocation={'request':deepcopy(request)})
+            _version1=version1,_file2=False,_version2=False,invocation={'request':deepcopy(request)})
 
     def query(self,intent,request,digest):
         return {'native_original_query_version':'1.2','action':'read_executing','run_id':intent['run_id'],

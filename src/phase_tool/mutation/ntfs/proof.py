@@ -54,8 +54,9 @@ def _facts(binding, manifest, receipt, proof):
     _require(type(ran) is bool and type(no_dispatch) is bool and ran != no_dispatch,
         'ntfs.native_terminal_unresolved')
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
+    version2 = manifest['contract']['id'] == 'publish_new_version.v2'
     file2=manifest['contract']['id']=='file_create.v2'
-    grant = manifest['root_grants'][0]
+    grant = manifest['root_grants'] if version2 else manifest['root_grants'][0]
     _require(set(physical['observations']) <= {'pre_operation','post_operation'},
         'ntfs.native_proof_shape')
     for wrapped in physical['observations'].values():
@@ -65,10 +66,10 @@ def _facts(binding, manifest, receipt, proof):
         if file2:
             from .file2_execution import validate_file2_observation
             validate_file2_observation(item,grant,item['locator'])
-        elif not version1:
+        elif not version1 and not version2:
             _observation(item, grant, item['locator'])
     if no_dispatch:
-        _require(not version1 or not physical['observations'],'ntfs.native_proof_shape')
+        _require(not (version1 or version2) or not physical['observations'],'ntfs.native_proof_shape')
         _require(physical['possible_dispatch'] is False and physical['parent_response'] is None,
             'ntfs.native_terminal_unresolved')
         ack = physical['no_dispatch_finalization']
@@ -93,6 +94,10 @@ def _facts(binding, manifest, receipt, proof):
     from .parent_result import validate_version1_parent_completion,validate_version1_parent_finalization,validate_version1_pair
     completion_check = validate_version1_parent_completion if version1 else validate_parent_completion
     finalization_check = validate_version1_parent_finalization if version1 else validate_parent_finalization
+    if version2:
+        from .parent_result import validate_version2_parent_completion,validate_version2_parent_finalization
+        completion_check=validate_version2_parent_completion
+        finalization_check=validate_version2_parent_finalization
     if file2:
         from .file2_execution import validate_file2_parent_completion,validate_file2_parent_finalization
         completion_check=validate_file2_parent_completion
@@ -103,22 +108,26 @@ def _facts(binding, manifest, receipt, proof):
         and checked['effect_receipt']['started_at'] == checked['effect_receipt']['finished_at'] == parsed.timestamp,
         'ntfs.native_effect_receipt_mismatch')
     observed = finalization_check(raw, checked, grant_data=grant, effect=effect)
-    if version1:
+    if version1 or version2:
         _require(set(physical['observations']) <= {'post_operation'},'ntfs.native_proof_shape')
         for wrapped in physical['observations'].values():
-            pair = validate_version1_pair(wrapped['observation'],grant,effect)
+            if version2:
+                from .version2_observation import validate_version2_triple
+                pair=validate_version2_triple(wrapped['observation'],grant,effect)
+            else:pair = validate_version1_pair(wrapped['observation'],grant,effect)
             # The causal Core post sample must refer to the SAME two objects
             # independently pinned by the parent's post-worker observation.
             # Byte states may change and truthfully fail postvalidation; equal
             # bytes on substituted objects cannot discharge this proof.
             _require(all(observed[name]['native']['native_identity'] is None or
                 pair[name]['native']['native_identity'] == observed[name]['native']['native_identity']
-                for name in ('current','archive')),
+                for name in (('current','old_object','new_object') if version2 else ('current','archive'))),
                 'ntfs.native_identity_mismatch')
     _require(receipt['execution_disposition'] == 'executed' and receipt['mutation_attempted'] is True,
         'ntfs.native_terminal_unresolved')
-    identity = ({name:observed[name]['native']['native_identity'] for name in ('current','archive')}
-        if version1 else observed['native']['native_identity'])
+    identity = ({name:observed[name]['native']['native_identity'] for name in
+        (('current','old_object','new_object') if version2 else ('current','archive'))}
+        if version1 or version2 else observed['native']['native_identity'])
     return context['operation_nonce'], identity
 
 
@@ -152,17 +161,19 @@ def _verify_original_semantics(binding, manifest, receipt, proof):
     _require(len(effects) == len(plan['effects']) == 1
         and effects[0]['attempted'] is True, 'ntfs.native_receipt_semantic_mismatch')
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
+    version2 = manifest['contract']['id'] == 'publish_new_version.v2'
+    versioned = version1 or version2
     effect,actual_effect = plan['effects'][0],effects[0]
     _require(actual_effect['effect_id'] == effect['effect_id']
-        and actual_effect['kind'] == effect['kind'] == ('publish_new_version' if version1 else 'exclusive_create'),
+        and actual_effect['kind'] == effect['kind'] == ('publish_new_version' if versioned else 'exclusive_create'),
         'ntfs.native_receipt_semantic_mismatch')
-    if not version1 and actual_effect['status'] == 'applied_verified':
+    if not versioned and actual_effect['status'] == 'applied_verified':
         _require(type(actual_effect['bytes_written']) is int
             and actual_effect['bytes_written'] == effect['content_length']
             and actual_effect['after']['digest'] == effect['content_digest']
             and actual_effect['after']['length'] == effect['content_length'],
             'ntfs.native_receipt_semantic_mismatch')
-    elif not version1 and actual_effect['status'] == 'failed_no_effect':
+    elif not versioned and actual_effect['status'] == 'failed_no_effect':
         _require(type(actual_effect['bytes_written']) is int and actual_effect['bytes_written'] == 0
             and actual_effect['error']['code'] == 'target.destination_exists'
             and actual_effect['after']['known'] is True and actual_effect['after']['exists'] is True,
@@ -177,6 +188,19 @@ def _verify_original_semantics(binding, manifest, receipt, proof):
         if declaration['phase'] != 'post_operation':
             _require(canonical_bytes(record) == canonical_bytes(previous),
                 'ntfs.native_validator_semantic_mismatch')
+            continue
+        if version2:
+            _require(declaration['binding']['id']=='publish_new_version.result_v2'
+                and observation is not None,'ntfs.native_validator_semantic_mismatch')
+            from .version2_observation import validate_version2_triple
+            from ...contracts.publish_new_version_v2 import _postcondition_result
+            triple=validate_version2_triple(observation['observation'],manifest['root_grants'],effect)
+            states={name:{key:row['state'][key] for key in ('exists','digest','length')}
+                for name,row in triple.items()}
+            status,code,expected,actual,blockers=_postcondition_result(effect,states)
+            projected=runner._result(declaration,run_id=receipt['run_id'],timestamp=intent['created_at'],
+                status=status,code=code,expected=expected,actual=actual,blockers=blockers)
+            _require(canonical_bytes(projected)==canonical_bytes(record),'ntfs.native_validator_semantic_mismatch')
             continue
         if version1:
             _require(declaration['binding']['id'] == 'publish_new_version.result_v1'

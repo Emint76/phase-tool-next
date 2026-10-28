@@ -18,10 +18,12 @@ from .scoped import NativeRootGrant, NativeScopedTarget
 _VERSION1_LIMIT = 16*1024**2
 
 
-def observe_version1_file(grant: NativeRootGrant, locator: str,
-                          *, expected: NativeIdentity | None = None) -> dict:
+def _observe_native_bounded_file(grant: NativeRootGrant, locator: str,
+                          *, expected: NativeIdentity | None, _maximum_bytes: int) -> dict:
     """Use real pinned prefix/leaf reads; never treat an access error as absent."""
     _require(type(grant) is NativeRootGrant,'ntfs.invalid_root_grant')
+    _require(type(_maximum_bytes) is int and _maximum_bytes in (_VERSION1_LIMIT,512*1024),
+        'ntfs.invalid_observation_bound')
     locator = safe_relative_locator(locator)
     if expected is not None:
         _require(type(expected) is NativeIdentity,'ntfs.invalid_identity')
@@ -30,7 +32,7 @@ def observe_version1_file(grant: NativeRootGrant, locator: str,
     with NativeScopedTarget(io,grant,locator,_allow_missing_ancestors=True) as scope:
         absence = scope.ancestor_absence()
         if absence is None:
-            state,proof = _observe(scope,expected=expected,_maximum_bytes=_VERSION1_LIMIT)
+            state,proof = _observe(scope,expected=expected,_maximum_bytes=_maximum_bytes)
             _require(expected is None or state['exists'],'ntfs.expected_file_absent')
         else:
             # An expected object cannot match an absent ancestor. Missing is
@@ -43,6 +45,12 @@ def observe_version1_file(grant: NativeRootGrant, locator: str,
         'grant':grant.as_dict(),'locator':locator,'handles_finalized':True,'ancestor_absence':absence}
     # The same strict data rules apply before sending and after receiving.
     return validate_version1_observation(response,grant.as_dict(),locator)
+
+
+def observe_version1_file(grant: NativeRootGrant, locator: str,
+                          *, expected: NativeIdentity | None = None) -> dict:
+    """Historical Version1 bound and observation format stay unchanged."""
+    return _observe_native_bounded_file(grant,locator,expected=expected,_maximum_bytes=_VERSION1_LIMIT)
 
 
 def validate_version1_observation(raw: object, grant: dict, locator: str) -> dict:

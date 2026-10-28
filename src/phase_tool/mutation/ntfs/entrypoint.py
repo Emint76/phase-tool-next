@@ -53,6 +53,8 @@ def run_native_worker(launch,original,initial_pipe,*,_transfer_deadline_ns=None)
     launch.check_runtime()
     if launch._file2:
         return _run_file2_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
+    if launch._version2:
+        return _run_version1_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns,_version2=True)
     if launch._version1:
         return _run_version1_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
     _require(type(original) is dict and set(original)=={'native_worker_original_version','context',
@@ -398,11 +400,12 @@ def run_native_original(launch):
     # Existing reader/parser return only after their evidence FDs are closed.
     # Delivery stdio is not evidence ownership and cannot authorize mutation.
     response=native_original_query(launch,launch.invocation['request'])
-    if launch._version1 and launch.invocation['request']['action'] == 'read_executing':
-        from .original_transfer import original_version1_frames
+    if (launch._version1 or launch._version2) and launch.invocation['request']['action'] == 'read_executing':
+        from .original_transfer import original_version1_frames,original_version2_frames
         from ...canonical import digest_bytes
         deadline=time.monotonic()+30
-        for raw in original_version1_frames(response,channel_id=launch.channel_id,leg='reader',
+        frames=original_version2_frames if launch._version2 else original_version1_frames
+        for raw in frames(response,channel_id=launch.channel_id,leg='reader',
                 query_digest=digest_bytes(canonical_bytes(launch.invocation['request']))):
             _deliver_linux_frame(parse_json_bytes(raw),identities,_deadline=deadline)
     else:
@@ -442,18 +445,21 @@ def run_native_parent(launch):
     # or original closure proof is derived from it; server ingress is consumed.
     return response
 
-def _run_version1_worker_transfer(launch,original,pipe,deadline):
+def _run_version1_worker_transfer(launch,original,pipe,deadline,*,_version2=False):
     from .windows_pipe import WindowsPipeFrames
-    from .original_transfer import _Version1OriginalDecoder
-    from .worker import run_version1_worker
+    from .original_transfer import _Version1OriginalDecoder,_Version2OriginalDecoder
+    from .worker import run_version1_worker,run_version2_worker
+    _require(type(_version2) is bool and _version2==launch._version2,'ntfs.original_closed_role_required')
     _require(type(pipe) is WindowsPipeFrames and type(deadline) is int,
         'ntfs.version1_owned_deadline_required')
     primary=None
     try:
-        decoder=_Version1OriginalDecoder(channel_id=launch.channel_id,leg='worker',query_digest=None,
+        decoder_type=_Version2OriginalDecoder if _version2 else _Version1OriginalDecoder
+        decoder=decoder_type(channel_id=launch.channel_id,leg='worker',query_digest=None,
             expected_context={'run_id':launch.run_id,'operation_nonce':launch.operation_nonce,
                 'installation_digest':launch.installation_digest},
-            expected_grant=canonical_bytes(launch.root_grant))
+            **({'expected_grants':canonical_bytes(launch.root_grants)} if _version2 else
+                {'expected_grant':canonical_bytes(launch.root_grant)}))
         decoder.feed(canonical_bytes(original))
         while not decoder.ended:
             raw,_=pipe.receive_frame(deadline)
@@ -461,7 +467,8 @@ def _run_version1_worker_transfer(launch,original,pipe,deadline):
         parsed=decoder.finish()
         launch.check_runtime()
         # Worker pipe remains open for READY/GO; no reader EOF is invented.
-        run_version1_worker(pipe,parse_json_bytes(parsed.context_bytes),parse_json_bytes(parsed.grant_bytes),
+        run_worker=run_version2_worker if _version2 else run_version1_worker
+        run_worker(pipe,parse_json_bytes(parsed.context_bytes),parse_json_bytes(parsed.grant_bytes),
             parse_json_bytes(parsed.effect_bytes),parsed.content_bytes,parsed.timestamp,
             _handshake_deadline_ns=deadline)
         launch.check_runtime()

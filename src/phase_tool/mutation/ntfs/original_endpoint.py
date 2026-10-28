@@ -152,7 +152,7 @@ def native_original_query(launch,query):
         and (query['intent_digest'] is None or (type(query['intent_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
-    _require(publication is None or (not launch._version1 and not launch._file2),'ntfs.original_query_binding_mismatch')
+    _require(publication is None or (not launch._version1 and not launch._file2 and not launch._version2),'ntfs.original_query_binding_mismatch')
     _require(version1_publication is None or launch._version1,'ntfs.original_query_binding_mismatch')
     from ...installation import _native_read_binding_for_launch
     binding=_native_read_binding_for_launch(launch)
@@ -171,7 +171,7 @@ def native_original_query(launch,query):
         original,plan_raw,_=_read_original_control_buffers(
             evidence_root=Path(launch.manifest['evidence_root']),
             installed_evidence_identity=canonical_bytes(launch.manifest['evidence_identity']),
-            registry=registry,run_id=query['run_id'],expected_intent_digest=digest)
+            registry=registry,run_id=query['run_id'],expected_intent_digest=digest,_version2=launch._version2)
         intent=parse_json_bytes(original,maximum_bytes=2*1024**2)
         _require(intent['native_binding']['operation_nonce']==query['operation_nonce'],
             'ntfs.original_current_invocation_mismatch')
@@ -187,7 +187,7 @@ def native_original_query(launch,query):
             if launch._file2:
                 from .file2_execution import _file2_projection_value
                 value=_file2_projection_value(parsed)
-            elif launch._version1:
+            elif launch._version1 or launch._version2:
                 value=parsed
             else:
                 value={'context':parse_json_bytes(parsed.context_bytes),'grant':parse_json_bytes(parsed.grant_bytes),
@@ -199,7 +199,7 @@ def native_original_query(launch,query):
             value={'original_absent':False,'verified_intent_digest':digest}
     binding.check_evidence_root()
     launch.check_runtime()
-    from .handoff import ParsedNativeVersion1
-    if type(value) is ParsedNativeVersion1:
+    from .handoff import ParsedNativeVersion1,ParsedNativeVersion2
+    if type(value) in (ParsedNativeVersion1,ParsedNativeVersion2):
         return value
     return {'query':query,'value':value,'required_evidence_reads_finalized':True}

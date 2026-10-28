@@ -68,6 +68,9 @@ def load_contract_hook(contract: Any, *, _native_authority: object | None = None
     if _native_authority is not None and implementation_id == "builtin.publish_new_version_v1":
         from .native_publish_new_version_v1 import _NativeVersion1Hook
         return _NativeVersion1Hook(_native_authority,contract,expected_targets=_native_expected_targets)
+    if _native_authority is not None and implementation_id == "builtin.publish_new_version_v2":
+        from .native_publish_new_version_v2 import _NativeVersion2Hook
+        return _NativeVersion2Hook(_native_authority,contract,expected_targets=_native_expected_targets)
     if _native_expected_targets is not None:
         raise PhaseError("ntfs.native_hook_contract_mismatch")
     return factory()

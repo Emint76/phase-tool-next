@@ -46,7 +46,7 @@ def _check_original_root_identity(root: Path, expected: dict) -> None:
 
 def _read_original_control_buffers(*, evidence_root: Path,
     installed_evidence_identity: bytes, registry: RegistrySnapshot,
-    run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes]:
+    run_id: str, expected_intent_digest: str, _version2: bool = False) -> tuple[bytes,bytes,bytes]:
     """Read three existing raw controls; never a parsed handoff or GO token.
 
     The full reader/parser still owns content and semantic verification.
@@ -54,6 +54,7 @@ def _read_original_control_buffers(*, evidence_root: Path,
     Callers keep the SAME expected intent digest and installed binding.
     """
     _require(sys.platform.startswith('linux'),'ntfs.original_linux_reader_required')
+    _require(type(_version2) is bool,'ntfs.original_closed_role_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
     _require(type(run_id) is str,'evidence.invalid_run_id')
     validate_run_id(run_id)
@@ -76,11 +77,13 @@ def _read_original_control_buffers(*, evidence_root: Path,
         and intent['registry_snapshot_digest']==registry.digest,'ntfs.original_intent_mismatch')
     _require(canonical_bytes(intent['native_binding']['evidence_identity'])==installed_evidence_identity,
         'ntfs.original_evidence_identity_mismatch')
-    _require(len(intent['inputs'])==1 and intent['inputs'][0]['freeze_strategy']=='copy_and_hash',
-        'ntfs.original_frozen_input_required')
-    blob_digest=intent['inputs'][0]['blob_digest']
-    _require(type(blob_digest) is str and _DIGEST.fullmatch(blob_digest) is not None,
-        'ntfs.original_frozen_input_required')
+    if _version2:
+        _require(intent['contract']['id']=='publish_new_version.v2' and intent['inputs']==[],
+            'ntfs.original_version2_content_binding')
+    else:
+        # Preserve the fixed frozen roles' early error ordering, before plan
+        # or validator reads. This is a content role, never storage admission.
+        _frozen_original_digest(intent)
     plan=read_bounded_file(run/'attachments'/'effect-plan.json',_CONTROL_LIMIT)
     # Core already stores planned results under validator-results.json. Do not
     # manufacture an executing pre-validator attachment for a planned original.
@@ -91,6 +94,16 @@ def _read_original_control_buffers(*, evidence_root: Path,
         and digest_bytes(pre)==intent['evidence']['pre_validator_results_digest'],'ntfs.original_evidence_bytes_mismatch')
     _check_original_root_identity(root,expected)
     return intent_raw,plan,pre
+
+
+def _frozen_original_digest(intent):
+    """The existing fixed frozen-input roles retain their full requirement."""
+    _require(len(intent['inputs'])==1 and intent['inputs'][0]['freeze_strategy']=='copy_and_hash',
+        'ntfs.original_frozen_input_required')
+    digest=intent['inputs'][0]['blob_digest']
+    _require(type(digest) is str and _DIGEST.fullmatch(digest) is not None,
+        'ntfs.original_frozen_input_required')
+    return digest
 
 
 
@@ -106,7 +119,7 @@ def _read_original_buffers(*, evidence_root: Path,
     intent=parse_json_bytes(intent_raw,maximum_bytes=_CONTROL_LIMIT)
     root=Path(evidence_root)
     expected=_evidence_identity(installed_evidence_identity)
-    blob_digest=intent['inputs'][0]['blob_digest']
+    blob_digest=_frozen_original_digest(intent)
     blob_path=root/'.phase'/'runs'/run_id/'blobs'/blob_digest.removeprefix('sha256:')
     _check_original_root_identity(root,expected)
     blob=read_bounded_file(blob_path,_maximum_bytes)
@@ -134,6 +147,30 @@ def read_original_version1_buffers(*, evidence_root: Path,
         run_id=run_id,expected_intent_digest=expected_intent_digest,_maximum_bytes=16*1024**2)
 
 
+def read_original_version2_buffers(*, evidence_root: Path,
+    installed_evidence_identity: bytes, registry: RegistrySnapshot,
+    run_id: str, expected_intent_digest: str) -> tuple[bytes,bytes,bytes,bytes]:
+    """Read the existing captured content blob, not a fabricated frozen input.
+
+    This is still only a bounded reader. The fixed read binding MUST invoke
+    parse_original_version2 with its installed expectations before handoff.
+    """
+    intent_raw,plan_raw,pre=_read_original_control_buffers(evidence_root=evidence_root,
+        installed_evidence_identity=installed_evidence_identity,registry=registry,
+        run_id=run_id,expected_intent_digest=expected_intent_digest,_version2=True)
+    from .intent import _canonical, _version2_content_binding
+    intent,plan=_canonical(intent_raw),_canonical(plan_raw)
+    _require(intent['contract']['id']=='publish_new_version.v2','ntfs.original_version2_effect_required')
+    content=_version2_content_binding(intent,plan)
+    root=Path(evidence_root);expected=_evidence_identity(installed_evidence_identity)
+    digest=digest_bytes(content)
+    _check_original_root_identity(root,expected)
+    blob=read_bounded_file(root/'.phase'/'runs'/run_id/'blobs'/digest[7:],512*1024)
+    _require(blob==content,'ntfs.original_evidence_bytes_mismatch')
+    _check_original_root_identity(root,expected)
+    return intent_raw,plan_raw,pre,blob
+
+
 def _verify_file2_original_blob(*, evidence_root: Path,
     installed_evidence_identity: bytes, intent: dict, projection) -> None:
     """Actual complete RO file2 hash, bounded memory, no snapshot/temp/target I/O.
@@ -147,6 +184,7 @@ def _verify_file2_original_blob(*, evidence_root: Path,
         'ntfs.original_file2_projection_required')
     _require(intent['contract']['id']=='file_create.v2' and len(intent['inputs'])==1,
         'ntfs.original_file2_effect_required')
+    _frozen_original_digest(intent)
     frozen=intent['inputs'][0]
     _require(frozen['binding_id']==projection.input_binding=='payload'
         and frozen['freeze_strategy']=='copy_and_hash'

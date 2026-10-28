@@ -46,7 +46,7 @@ class _MutationTrace:
     execution log authority, or a replacement for independent qualification.
     """
     def __init__(self, *, _maximum_creates: int = 1):
-        _require(type(_maximum_creates) is int and _maximum_creates in (1,4),
+        _require(type(_maximum_creates) is int and _maximum_creates in (1,4,6),
                  'ntfs.invalid_trace_role')
         self._maximum_creates = _maximum_creates
         self._create_events: list[dict] = []
@@ -99,9 +99,9 @@ class _MutationTrace:
 
 def _observe(scope: NativeScopedTarget, *, expected: NativeIdentity | None = None,
              _maximum_bytes: int = _CONTENT_LIMIT) -> tuple[dict[str, Any], dict[str, Any]]:
-    # Three code-owned contract bounds; the default file-create role retains
+    # Four code-owned contract bounds; the default file-create role retains
     # its original 1 MiB behavior. No request supplies a size selector.
-    _require(type(_maximum_bytes) is int and _maximum_bytes in (_CONTENT_LIMIT,16*1024**2,2*1024**3),
+    _require(type(_maximum_bytes) is int and _maximum_bytes in (_CONTENT_LIMIT,16*1024**2,2*1024**3,512*1024),
              'ntfs.invalid_observation_bound')
     _require(not scope._missing_ancestors,'ntfs.partial_scope_has_no_leaf_parent')
     io = scope.io
@@ -120,15 +120,17 @@ def _observe(scope: NativeScopedTarget, *, expected: NativeIdentity | None = Non
         identity = io.identity(handle)
         length = facts['length']
         digest = None
-        if _maximum_bytes == 16*1024**2:
-            _require(length <= _maximum_bytes,'ntfs.version1_file_too_large')
+        if _maximum_bytes in (16*1024**2,512*1024):
+            _require(length <= _maximum_bytes,
+                'ntfs.version2_file_too_large' if _maximum_bytes==512*1024 else 'ntfs.version1_file_too_large')
         if length <= _maximum_bytes:
             digest,observed = io.hash_file(handle,length)
             _require(observed == length,'ntfs.observation_length_mismatch')
         if _maximum_bytes != _CONTENT_LIMIT:
             final = io.assert_object(handle,directory=False,expected=identity)
             _require(final['length'] == length and final['links'] == facts['links'] == 1,
-                     'ntfs.version1_observation_changed' if _maximum_bytes==16*1024**2 else 'ntfs.file2_observation_changed')
+                     'ntfs.version1_observation_changed' if _maximum_bytes==16*1024**2 else
+                     'ntfs.version2_observation_changed' if _maximum_bytes==512*1024 else 'ntfs.file2_observation_changed')
         scope.assert_file_name(handle,identity)
         state = {'known':True,'exists':True,'digest':digest,'length':length,'head_token':None}
         proof = {'exists':True,'native_identity':identity.as_dict(),'length':length,

@@ -1,3 +1,10 @@
+Later checkpoint: the [first shared native history](FIRST_NATIVE_SHARED_HISTORY_RESULT.md)
+completed File1 D0 -> Version1-A D1 -> Version1-B D2 on source0393fda2,
+with current D2, full D0/D1 archives and three receipts/fresh RO inspectors.
+This is one closed functional experiment; broader qualification and remaining
+Version2/bundle routes are still pending. Earlier checkpoint statements below
+remain historical and do not describe this subsequent result.
+
 # First native Version1 result: closed functional experiment
 
 One real publish_new_version.v1@1.0.0 operation completed through the existing

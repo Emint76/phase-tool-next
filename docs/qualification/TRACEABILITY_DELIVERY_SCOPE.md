@@ -17,7 +17,7 @@ as discrepancies; their cause and author must not be invented.
 | Requirement | Delivery obligation | Current result |
 |---|---|---|
 | A05 target/reparse correctness | Remains required for claimed path correctness. Literal Windows SYMLINK evidence is still absent; junction/LX tests do not replace it. | NOT_VERIFIED |
-| G01 worker lifetime and completion | Actual process ownership, termination, sticky unknown outcomes and truthful receipt remain required. | Full native route NOT_VERIFIED |
+| G01 worker lifetime and completion | Actual process ownership, termination, sticky unknown outcomes and truthful receipt remain required. | Concrete HANDLE completion demonstrated in three closed successful cases; complete failure-window coverage NOT_VERIFIED |
 | G01 globally immutable environment against privileged replacement | Outside this delivery scope by explicit user instruction; retain historical result. | NOT_VERIFIED, excluded claim; never PASS |
 | Global exclusive Phase write access | Outside this delivery scope; no OS policy/privilege changes authorized. | No such claim |
 | Remaining original functional/history/error requirements | Keep applicable checks and negative evidence; changes require a stated relationship to this scope. | See remaining-work ledger |
@@ -55,3 +55,12 @@ sources. This is an open normative clarification, not an engineering stop.
 ALCOA+/GAMP guidance in GOAL.md is not certification. Caller identity and system
 timestamps are recorded for what they are; they are not verified authorship,
 electronic signatures or approvals.
+
+## Subsequent closed functional cases - 28 October
+
+Separately reviewed File2 and standalone Version1 admissions now each have an
+actual Core/Windows-worker/receipt/fresh-RO-inspect result. Their distinct builds
+and exact limitations are in FIRST_NATIVE_FILE2_RESULT.md and
+FIRST_NATIVE_VERSION1_RESULT.md. This does not admit ordinary production routing,
+shared multi-operation history or the remaining contracts; the original six-route
+and final acceptance obligations continue.

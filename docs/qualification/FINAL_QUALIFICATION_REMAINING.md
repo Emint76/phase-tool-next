@@ -14,7 +14,7 @@ worker completion and honest errors remain obligations for claimed support.
 |---|---|---|
 | file_create.v1 | One real closed experimental Core → Windows worker → NTFS file → receipt → fresh RO inspect completed at source0c749; concrete worker wait/exit0. This is not whole-contract qualification. | Complete repeat, conflict, interruption, lost-response and final deployment checks. See [first native result](FIRST_NATIVE_FILE1_RESULT.md). |
 | file_create.v2 | One real closed prepared Core -> Windows worker -> NTFS file -> receipt -> fresh RO inspect completed at source03f685; 1 MiB + 37 bytes and concrete worker wait/exit0. | Complete boundaries, replay/error/deadline/conflict coverage; this single case is not qualification. See [File2 native result](FIRST_NATIVE_FILE2_RESULT.md). |
-| publish_new_version.v1 | Connected history/worker/inspect source and Linux/component checks; native lifecycle NOT_VERIFIED. | Actual current/archive/new bytes and lineage, natural frozen_at repeat behavior, interruption and documented manual handling. |
+| publish_new_version.v1 | One real standalone closed Core -> Windows worker -> NTFS archive/current -> receipt -> fresh RO inspect completed at source15f2ed5. Exact 39-byte prior archive and 38-byte current verified; worker HANDLE wait/exit0. | Shared File1->Version1->Version1 lineage, replay/natural frozen_at, interruption and existing manual-handling semantics. See [Version1 native result](FIRST_NATIVE_VERSION1_RESULT.md). |
 | publish_new_version.v2 | Native integration unfinished; existing Host contract remains functional. | Existing contract recovery and preserved version objects through a real native route. |
 | bundle_create.v1/v2 | Native integration unfinished; observer/stream drafts are prototypes and unselected. | Whole route, manifest and every object, atomic publication, conflicts and contract-permitted recovery. |
 | Shared infrastructure | Existing Core owns intent/idempotency/receipt/recovery; no second journal or queue. | Explicit admission attachment must survive early rejection/reuse and independent verification. |
@@ -31,8 +31,10 @@ Windows worker → receipt → fresh RO inspect operation. See the exact
 [first native result](FIRST_NATIVE_FILE1_RESULT.md), retaining the failed first
 attempt and immutable metadata correction. Whole-family qualification and fault
 coverage remain NOT_VERIFIED. A separate File2 Core-to-fresh-inspect case now also
-completed; see [File2 native result](FIRST_NATIVE_FILE2_RESULT.md). Version1,
-version2 and bundles follow;
+completed; see [File2 native result](FIRST_NATIVE_FILE2_RESULT.md). A standalone
+Version1 case now also completed at source15f2ed5, with exact old archive/new
+current and separate inspect: [Version1 result](FIRST_NATIVE_VERSION1_RESULT.md).
+Shared history, Version2 and bundles follow;
 completed L1 workloads are not repeated as substitutes.
 
 The unselected historical base authority retains a five-versus-three mechanism
@@ -140,7 +142,7 @@ implementation ready for these final tests, not a replacement acceptance rule.
 | Item | Current verdict | Cause and next action |
 |---|---|---|
 | A05 literal native Windows SYMLINK, tag `0xA000000C` | NOT_VERIFIED | Both creation APIs returned 1314. No owned safe fixture or separately authorized suitable stand is available. Current Windows policies/privileges must not change. Replay on the separately provisioned stand described below. |
-| Complete native MIX six-contract lifecycle | NOT_VERIFIED | One closed File1 case at source0c749 and one prepared File2 case at source03f685 completed with receipts and fresh independent inspect. Version1 native lifecycle and native shared history remain unverified; Version2/bundle software remains unfinished. Missing software is not a Windows-rights or ChatGPT limitation. |
+| Complete native MIX six-contract lifecycle | NOT_VERIFIED | One closed File1 case at source0c749 and one prepared File2 case at source03f685 completed with receipts and fresh independent inspect. One standalone Version1 case at source15f2ed5 also passed; native shared history remains unverified and Version2/bundle software remains unfinished. Missing software is not a Windows-rights or ChatGPT limitation. |
 | G01 accepted runtime, executable/dependency namespace and lifetime | NOT_VERIFIED | Fixed launcher consistency checks do not establish deployment immutability. Qualify the exact accepted isolated Windows runtime, wheel/dependencies, launcher/manifest and Linux contours for their whole active lifetime, including unknown workers after MCP disconnect/server exit; retained references or Docker CLI exit do not establish that lifetime. No current policy/ACL changes or acceptance flag. |
 | Shared evidence across contracts/manifests | Native admission/history closure NOT_VERIFIED | V7/manifest1.4 has the closed three-role set for file1, version1 and file2. Its ordinary Linux regressions passed in CI141/146; they do not prove native admitted proof/history closure or G01 lifetime. Cleanup software corrections have ordinary CI evidence, including CI152 and CI40582198493; final-build CI and native-history acceptance remain required. Preserve the complete common-lock scan and independent external namespace/config-set acceptance. No filtering, alias rebinding or separate evidence-root escape. |
 | Complete final-build REF regression/program | NOT_VERIFIED | Linux CI and selected ext4 reference results exist; the entire original REF campaign has not been accepted for a final candidate. Run applicable unchanged reference and new implementation regressions against the exact accepted artifact. |
@@ -248,4 +250,4 @@ claim, merge-as-accepted or support release is authorized by partial readiness.
 
 Historical pre-c1 status: the single-contract source checkpoint is described in [native version1 lifecycle implementation](NATIVE_VERSION1_LIFECYCLE_IMPLEMENTATION.md). At that checkpoint V7 three-role source had ordinary Linux regression evidence through CI146; later cleanup changes and native execution had not yet been accepted. This historical status does not describe the current c1 outcome.
 
-Companion-binding source changes and explicit remaining trust/execution boundaries: [existing Core guard integration](NATIVE_CROSS_CONTRACT_BINDINGS.md). File1 source0c749/CI40533885108 and File2 source03f685/CI40582198493 each have one independently verified closed Core-to-NTFS-to-fresh-inspect case. The other four native routes, shared-history closure, family qualification, failure coverage and final-qualification readiness remain NOT_VERIFIED. These different exact build identities must not be merged into a single final-build acceptance.
+Companion-binding source changes and explicit remaining trust/execution boundaries: [existing Core guard integration](NATIVE_CROSS_CONTRACT_BINDINGS.md). File1 source0c749/CI40533885108 and File2 source03f685/CI40582198493 each have one independently verified closed Core-to-NTFS-to-fresh-inspect case. The standalone Version1 source15f2ed5 case now also has an independent functional PASS. Version2/both bundles, shared-history closure, family qualification, failure coverage and final-qualification readiness remain NOT_VERIFIED. These different exact build identities must not be merged into a single final-build acceptance.

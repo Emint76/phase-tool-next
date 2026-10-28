@@ -3,8 +3,15 @@
 Current delivery scope: [traceability addendum](TRACEABILITY_DELIVERY_SCOPE.md).
 The [remaining-work ledger](FINAL_QUALIFICATION_REMAINING.md) distinguishes
 actual Windows effects, component-only paths, unfinished routes and prototypes.
-The bounded first file1 admission is under source review; no full native Core
-result or supported release is claimed. The older checkpoint follows unchanged.
+Three closed native functional routes have actual Core/Windows-worker/receipt/
+fresh-inspect evidence: [File1](FIRST_NATIVE_FILE1_RESULT.md),
+[File2](FIRST_NATIVE_FILE2_RESULT.md) and
+[Version1](FIRST_NATIVE_VERSION1_RESULT.md). Each uses its separately identified
+build and owned synthetic domain; these are not final-build family qualification.
+Version1 retained the previous archive and verified the new current bytes.
+Shared File1->Version1 history, Version2 and both bundles remain unfinished.
+A05/full G01 and supported release remain NOT_VERIFIED. The older checkpoint
+follows unchanged.
 
 # Native component checkpoint: experimental candidate, no admitted route
 

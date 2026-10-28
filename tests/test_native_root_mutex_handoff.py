@@ -31,6 +31,42 @@ class Scope:
 
 
 class HandoffTests(unittest.TestCase):
+    def test_unprintable_release_failure_does_not_interrupt_close_scope_or_retire(self):
+        events=[]
+        class Broken(Exception):
+            def __str__(self):raise RuntimeError('synthetic diagnostic failure')
+        class TrackedScope(Scope):
+            def close(self):events.append('scope')
+        def release(*_):
+            events.append('release');raise Broken()
+        def close(*_):events.append('close');return 1
+        kernel=type('Kernel',(),{})()
+        for name,callback in [('CreateMutexExW',lambda *_:1),('WaitForSingleObject',lambda *_:0),
+                              ('ReleaseMutex',release),('CloseHandle',close)]:
+            setattr(kernel,name,Function(callback))
+        grant=NativeRootGrant('phase_result_root',r'\Device\HarddiskVolume6',
+            '\\\\?\\volume{00000000-0000-0000-0000-000000000001}\\',42,
+            ('synthetic-broken-error',),NativeIdentity(42,'ce'*16))
+        io=object.__new__(NativeIO);io.kernel=kernel
+        lock=locks.NativeRootMutex(io,grant)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(locks,'NativeScopedTarget',TrackedScope))
+            stack.enter_context(patch.object(locks.C,'set_last_error',lambda _:None,create=True))
+            stack.enter_context(patch.object(locks.C,'get_last_error',lambda:5,create=True))
+            try:
+                with self.assertRaisesRegex(PhaseError,'ntfs.root_lock_finalization_failed') as raised:
+                    with lock:raise PhaseError('synthetic.body_failure')
+                self.assertEqual(events,['release','close','scope'])
+                self.assertEqual(lock.state,'unknown')
+                self.assertEqual(raised.exception.details['primary_error']['code'],'synthetic.body_failure')
+                with locks._REGISTRY_GUARD:
+                    self.assertNotIn(lock._key,locks._ACTIVE)
+                    self.assertIn((locks.os.getpid(),lock.name),locks._QUARANTINED)
+                self.assertIsInstance(lock.events[-2]['call_error'],dict)
+            finally:
+                with locks._REGISTRY_GUARD:
+                    locks._QUARANTINED.discard((locks.os.getpid(),lock.name))
+
     def test_already_waiting_owner_cannot_escape_unknown_release_quarantine(self):
         holder_ready, waiting, released, returned = (threading.Event() for _ in range(4))
         result, events, serial = {}, [], [0]

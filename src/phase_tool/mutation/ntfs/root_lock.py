@@ -16,7 +16,7 @@ import threading
 import time
 
 from ...errors import PhaseError
-from .native import NativeIO, _error_record, _require
+from .native import NativeIO, _require
 from .mutating import NativeMutationIO
 from .scoped import NativeRootGrant, NativeScopedTarget
 
@@ -115,7 +115,8 @@ class NativeRootMutex:
             return result, error, event
         except BaseException as error:
             self._uncertain = True
-            event['call_error'] = _error_record(error)
+            # Render only after all finalization attempts have finished.
+            event['call_error'] = error
             raise
         finally:
             self._in_call = False
@@ -161,9 +162,10 @@ class NativeRootMutex:
             try:
                 self.close()
             except BaseException as finalization:
+                from .uncertainty import _diagnostic
                 raise PhaseError('ntfs.root_lock_acquisition_finalization_failed', details={
-                    'primary_error': _error_record(primary),
-                    'finalization_error': _error_record(finalization)}) from primary
+                    'primary_error': _diagnostic(primary),
+                    'finalization_error': _diagnostic(finalization)}) from primary
             raise
 
     def assert_held(self) -> None:
@@ -195,7 +197,7 @@ class NativeRootMutex:
                     raise PhaseError('ntfs.root_lock_release_failed', details={'winerror': error})
             except BaseException as error:
                 self._uncertain = True
-                errors.append({'stage': 'release', 'error': _error_record(error)})
+                errors.append(('release', error))
         if self._handle is not None:
             handle, self._handle = self._handle, None
             try:
@@ -204,20 +206,26 @@ class NativeRootMutex:
                     raise PhaseError('ntfs.root_lock_close_failed', details={'winerror': error})
             except BaseException as error:
                 self._uncertain = True
-                errors.append({'stage': 'close', 'error': _error_record(error)})
+                errors.append(('close', error))
         if self._scope is not None:
             scope, self._scope = self._scope, None
             try:
                 scope.close()
             except BaseException as error:
                 self._uncertain = True
-                errors.append({'stage': 'scope', 'error': _error_record(error)})
+                errors.append(('scope', error))
         try:
             self._retire()
         except BaseException as error:
             self._uncertain = True
-            errors.append({'stage': 'registry', 'error': _error_record(error)})
+            errors.append(('registry', error))
         self._state = 'unknown' if self._uncertain or errors else 'closed'
+        # Release, native close, scope close and retirement were all attempted.
+        from .uncertainty import _diagnostic
+        for event in self.events:
+            if isinstance(event.get('call_error'), BaseException):
+                event['call_error'] = _diagnostic(event['call_error'])
+        errors = [{'stage': stage, 'error': _diagnostic(error)} for stage, error in errors]
         if self._state == 'unknown':
             raise PhaseError('ntfs.root_lock_finalization_unknown', details={
                 'errors': errors, 'finalization': 'unknown', 'worker_must_exit': True})
@@ -230,7 +238,8 @@ class NativeRootMutex:
             self.close()
         except BaseException as error:
             if value is not None:
+                from .uncertainty import _diagnostic
                 raise PhaseError('ntfs.root_lock_finalization_failed', details={
-                    'primary_error': _error_record(value),
-                    'finalization_error': _error_record(error)}) from value
+                    'primary_error': _diagnostic(value),
+                    'finalization_error': _diagnostic(error)}) from value
             raise

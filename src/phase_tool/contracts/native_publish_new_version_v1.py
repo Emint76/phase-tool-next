@@ -17,8 +17,8 @@ def _state(observation):
 
 class _NativeVersion1Hook(PublishNewVersionHook):
     def __init__(self, authority, contract, *, expected_targets: bytes | None = None):
-        from ..mutation.ntfs.authority import _NativeFileCreateAuthority
-        _require(type(authority) is _NativeFileCreateAuthority,'ntfs.closed_native_installation_required')
+        from ..mutation.ntfs.experimental_file1 import _is_native_authority
+        _require(_is_native_authority(authority),'ntfs.closed_native_installation_required')
         authority.require_contract(contract)
         _require(contract.document['identity']['id'] == 'publish_new_version.v1',
             'ntfs.native_hook_contract_mismatch')

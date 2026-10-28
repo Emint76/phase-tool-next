@@ -36,6 +36,7 @@ class _ExperimentalFile1Admission:
     _authority_artifact: ClassVar[str] = 'phase_tool/mutation/ntfs/experimental_authority.py'
     _minimum_payload_length: ClassVar[int] = 1
     _maximum_payload_length: ClassVar[int] = 1024**2
+    _required: ClassVar[frozenset[str]] = frozenset(_REQUIRED)
 
     def document(self):
         _require(type(self.raw) is bytes and len(self.raw) <= 32768,
@@ -124,7 +125,7 @@ class _ExperimentalFile1Admission:
         # requirement mappings carry the same three-field exact binding.
         exact = [{k: m[k] for k in ('id', 'version', 'package_digest')} for m in mechanisms]
         _require(len(rows) == len(mechanisms) == 1
-            and set(rows[0]['all_of']) == _REQUIRED
+            and set(rows[0]['all_of']) == self._required
             and rows[0]['mechanism'] == exact[0]
             == parse_json_bytes(binding.manifest_bytes)['mechanism'],
             'ntfs.experimental_requirements_mismatch')
@@ -136,7 +137,7 @@ class _ExperimentalFile1Admission:
         else:
             raise PhaseError('ntfs.experimental_requirements_mismatch')
         return {'vocabulary': dict(requirements['vocabulary']), 'mechanisms': [
-            {'mechanism': dict(exact[0]), 'all_of': sorted(_REQUIRED)}]}
+            {'mechanism': dict(exact[0]), 'all_of': sorted(self._required)}]}
 
     def verify_attachment(self, binding, run_id, receipt=None):
         doc = self.check_binding(binding)
@@ -188,7 +189,9 @@ def _experimental_admission(binding):
     if context is None:
         return None
     from .experimental_file2 import _ExperimentalFile2Admission
-    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalFile2Admission),
+    from .experimental_version1 import _ExperimentalVersion1Admission
+    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalFile2Admission,
+            _ExperimentalVersion1Admission),
         'ntfs.experimental_admission_required')
     context.check_binding(binding)
     return context
@@ -203,8 +206,14 @@ def _is_native_authority(value):
     from .authority import _NativeFileCreateAuthority
     from .experimental_authority import _ExperimentalFile1Authority
     from .experimental_file2_authority import _ExperimentalFile2Authority
+    from .experimental_version1_authority import _ExperimentalVersion1Authority
     if type(value) is _NativeFileCreateAuthority:
         return getattr(getattr(value, 'read_binding', None), 'experimental_admission', None) is None
-    if type(value) in (_ExperimentalFile1Authority, _ExperimentalFile2Authority):
-        return _experimental_admission(value.read_binding) is not None
+    from .experimental_file2 import _ExperimentalFile2Admission
+    from .experimental_version1 import _ExperimentalVersion1Admission
+    paired = {_ExperimentalFile1Authority: _ExperimentalFile1Admission,
+        _ExperimentalFile2Authority: _ExperimentalFile2Admission,
+        _ExperimentalVersion1Authority: _ExperimentalVersion1Admission}
+    if type(value) in paired:
+        return type(_experimental_admission(value.read_binding)) is paired[type(value)]
     return False

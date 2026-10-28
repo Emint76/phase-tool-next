@@ -770,12 +770,13 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
             "ntfs.experimental_admission_scope")
         from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
         from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
-        _require(type(_experimental_admission_context) in
-            (_ExperimentalFile1Admission, _ExperimentalFile2Admission),
+        from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
+        factories = {_ExperimentalFile1Admission: _native_experimental_file1_installation,
+            _ExperimentalFile2Admission: _native_experimental_file2_installation,
+            _ExperimentalVersion1Admission: _native_experimental_version1_installation}
+        _require(type(_experimental_admission_context) in factories,
             'ntfs.experimental_admission_required')
-        factory = (_native_experimental_file2_installation
-            if type(_experimental_admission_context) is _ExperimentalFile2Admission
-            else _native_experimental_file1_installation)
+        factory = factories[type(_experimental_admission_context)]
         return factory(manifest_bytes=manifest_bytes,
             expected_manifest_digest=expected_manifest_digest, run_id=run_id,
             operation_nonce=operation_nonce, channel_id=channel_id,
@@ -903,10 +904,12 @@ def _native_read_binding_for_launch(launch):
             'phase.native.ntfs.authority.v1@1.0.0'))
     else:
         from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
-        _require(type(admission) in (_ExperimentalFile1Admission, _ExperimentalFile2Admission),
-            'ntfs.experimental_admission_required')
-        registry = (_native_experimental_file2_registry()
-            if type(admission) is _ExperimentalFile2Admission else _native_experimental_file1_registry())
+        from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
+        registries = {_ExperimentalFile1Admission: _native_experimental_file1_registry,
+            _ExperimentalFile2Admission: _native_experimental_file2_registry,
+            _ExperimentalVersion1Admission: _native_experimental_version1_registry}
+        _require(type(admission) in registries, 'ntfs.experimental_admission_required')
+        registry = registries[type(admission)]()
     binding = _resolve_native_file_create_read_binding(manifest_bytes=launch._manifest_bytes,
         expected_manifest_digest=launch.installation_digest, registry=registry)
     if admission is not None:
@@ -979,6 +982,42 @@ def _native_experimental_file2_installation(*, manifest_bytes, expected_manifest
     configured = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
     channel = LinuxNativeChannelV4(channel_id=channel_id, _inspection_only=_inspection_only)
     authority = _ExperimentalFile2Authority(binding, profile,
+        canonical_bytes(configured['root_projections']), channel,
+        run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
+    return registry, _NativeFileCreateInstallation(binding, authority)
+
+
+def _native_experimental_version1_registry():
+    """Literal new Version1 candidate; normal qualification remains unchanged."""
+    registry = _load_native_file_create_registry('registries/native-version1-experiment-v1.json',
+        'sha256:1d35a00474da3b6b32987af3700c3e940fd11219c27d51ff82df5cf220f6e832',
+        'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
+    from .mutation.ntfs.experimental_version1 import _VERSION1_CONTRACT
+    from .mutation.ntfs.native import _require
+    _require(registry.contract_bindings().get('publish_new_version.v1@1.0.0') == _VERSION1_CONTRACT,
+        'ntfs.native_registry_selection_mismatch')
+    return registry
+
+
+def _native_experimental_version1_installation(*, manifest_bytes, expected_manifest_digest,
+    run_id, operation_nonce, channel_id, _inspection_only=False, admission):
+    from dataclasses import replace
+    from .canonical import canonical_bytes, parse_json_bytes
+    from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
+    from .mutation.ntfs.experimental_version1_authority import _ExperimentalVersion1Authority
+    from .mutation.ntfs.channel_v3 import LinuxNativeChannelV3
+    from .mutation.ntfs.native import _require
+    _require(type(admission) is _ExperimentalVersion1Admission and type(_inspection_only) is bool,
+        'ntfs.experimental_admission_required')
+    registry = _native_experimental_version1_registry()
+    binding = replace(_resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest, registry=registry), experimental_admission=admission)
+    _require(admission.check_binding(binding)['run_id'] == run_id, 'ntfs.experimental_run_mismatch')
+    profile = admission.profile(binding)
+    configured = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    channel = LinuxNativeChannelV3(channel_id=channel_id, _inspection_only=_inspection_only,
+        _version1=True)
+    authority = _ExperimentalVersion1Authority(binding, profile,
         canonical_bytes(configured['root_projections']), channel,
         run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
     return registry, _NativeFileCreateInstallation(binding, authority)

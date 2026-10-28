@@ -212,6 +212,7 @@ def _is_native_authority(value):
     from .experimental_file2_authority import _ExperimentalFile2Authority
     from .experimental_version1_authority import _ExperimentalVersion1Authority
     from .experimental_version2_authority import _ExperimentalVersion2Authority
+    from .experimental_version2_authority_v2 import _ExperimentalVersion2AuthorityV2
     from .experimental_history_authority import _ExperimentalHistoryAuthority
     if type(value) is _NativeFileCreateAuthority:
         return getattr(getattr(value, 'read_binding', None), 'experimental_admission', None) is None
@@ -226,7 +227,8 @@ def _is_native_authority(value):
     paired = {_ExperimentalFile1Authority: _ExperimentalFile1Admission,
         _ExperimentalFile2Authority: _ExperimentalFile2Admission,
         _ExperimentalVersion1Authority: _ExperimentalVersion1Admission,
-        _ExperimentalVersion2Authority: _ExperimentalVersion2Admission}
+        _ExperimentalVersion2Authority: _ExperimentalVersion2Admission,
+        _ExperimentalVersion2AuthorityV2: _ExperimentalVersion2Admission}
     if type(value) in paired:
         return type(_experimental_admission(value.read_binding)) is paired[type(value)]
     return False

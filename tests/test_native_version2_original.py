@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from importlib.resources import files
 from tempfile import TemporaryDirectory
 import sys
 import unittest
@@ -60,6 +61,31 @@ def original_fixture(content='new synthetic UTF-8'):
 
 
 class Version2AdmissionBoundaryTests(unittest.TestCase):
+    def test_historical_authority_artifact_is_the_exact_original_file(self):
+        from phase_tool.installation import _native_shared_history_registry
+        registry=_native_shared_history_registry()
+        bindings=registry.guarantee_profile_bindings()
+        keys=[key for key in bindings if key.startswith('phase.native.ntfs.candidate.authority.v5@')]
+        self.assertEqual(len(keys),1)
+        descriptor=registry.resolve_guarantee_profile(bindings[keys[0]])
+        raw=files('phase_tool').joinpath('mutation','ntfs','authority.py').read_bytes()
+        self.assertEqual(len(raw),30346)
+        self.assertEqual(digest_bytes(raw),'sha256:a568ea8fe3a05369e044725f6f12f8b803b076206ddeb9d8d777944f0bffde13')
+        self.assertEqual(descriptor['implementation']['artifact_digest'],digest_bytes(raw))
+
+    def test_new_provider_generation_matches_artifact_and_preserves_v1(self):
+        registry=_native_experimental_version2_registry();bindings=registry.guarantee_profile_bindings()
+        old=registry.resolve_guarantee_profile(bindings['phase.native.ntfs.experiment.version2.authority.v1@1.0.0'])
+        new=registry.resolve_guarantee_profile(bindings['phase.native.ntfs.experiment.version2.authority.v2@1.0.0'])
+        old_raw=files('phase_tool').joinpath('mutation','ntfs','experimental_version2_authority.py').read_bytes()
+        new_raw=files('phase_tool').joinpath('mutation','ntfs','experimental_version2_authority_v2.py').read_bytes()
+        self.assertEqual(digest_bytes(old_raw),'sha256:e7c91eb99777202de8f4e8fc8e684695da1b1e6aafe0616e0fe1180421ae4464')
+        self.assertEqual(old['implementation']['artifact_digest'],digest_bytes(old_raw))
+        self.assertEqual(new['implementation']['artifact_digest'],digest_bytes(new_raw))
+        self.assertEqual(new['implementation']['version'],'2.0.0')
+        self.assertEqual(new['provided_guarantees'],[])
+        self.assertEqual(new['conformance'],[])
+
     def test_normal_startup_still_refuses_new_experimental_generation(self):
         registry=_native_experimental_version2_registry()
         raw=canonical_bytes({'native_read_installation_version':'1.5','registry_snapshot_digest':registry.digest})
@@ -74,6 +100,41 @@ class Version2AdmissionBoundaryTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform.startswith('linux'),'Actual Host/Core fixture requires Linux')
 class Version2OriginalTests(unittest.TestCase):
+    def test_rehashed_saved_states_and_post_status_cannot_manufacture_pass(self):
+        with original_fixture() as values:
+            registry,intent,plan,pre,content=values
+            self.assertIs(type(parse_original_version2(**arguments(*values))),ParsedNativeVersion2)
+            index=next(i for i,row in enumerate(pre) if row['validator']['id']=='publish_new_version.preconditions_v2')
+            changes=[('current','exists',False),('current','digest','sha256:'+'f'*64),
+                ('current','length',True),('old_object','length',0),('new_object','exists',True)]
+            for name,field,bad in changes:
+                with self.subTest(name=name,field=field):
+                    changed=deepcopy(pre);changed[index]['actual'][name][field]=bad
+                    with self.assertRaises((PhaseError,ValidationError,ValueError)):
+                        parse_original_version2(**arguments(registry,intent,plan,changed,content))
+            changed=deepcopy(pre);post=next(row for row in changed if row['phase']=='post_operation')
+            post.update(status='pass',code='validation.pass',actual='prior_phases_pass')
+            with self.assertRaises((PhaseError,ValidationError,ValueError)):
+                parse_original_version2(**arguments(registry,intent,plan,changed,content))
+            changed=deepcopy(plan);changed['effects'][0]['archive_length']+=1
+            with self.assertRaises((PhaseError,ValidationError,ValueError)):
+                parse_original_version2(**arguments(registry,intent,changed,pre,content))
+
+    def test_rehashed_inline_lineage_requires_captured_content_without_frozen_input(self):
+        with original_fixture() as values:
+            registry,intent,plan,pre,content=values
+            self.assertIs(type(parse_original_version2(**arguments(*values))),ParsedNativeVersion2)
+            for field,bad in [('input_binding','payload'),
+                ('content_source',{'kind':'frozen_input','binding_id':'payload','source_digest':digest_bytes(content)}),
+                ('content_blob_digest','sha256:'+'f'*64),('content_length',True)]:
+                with self.subTest(field=field):
+                    changed=deepcopy(plan);changed['effects'][0][field]=bad
+                    with self.assertRaises((PhaseError,ValidationError,ValueError)):
+                        parse_original_version2(**arguments(registry,intent,changed,pre,content))
+            changed=deepcopy(intent);changed['evidence']['content_blob_digests']=['sha256:'+'f'*64]
+            with self.assertRaises((PhaseError,ValidationError,ValueError)):
+                parse_original_version2(**arguments(registry,changed,plan,pre,content))
+
     def test_actual_core_blob_and_full_parser_zero_unicode_and_contract_bound(self):
         for content in ('','synthetic \u03b1\n','x'*(512*1024)):
             with self.subTest(length=len(content)),original_fixture(content) as values:

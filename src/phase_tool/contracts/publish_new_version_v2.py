@@ -143,6 +143,20 @@ def validate_candidate(
     return "pass", "validation.pass", "publish_v2_candidate_valid", "publish_v2_candidate_valid", []
 
 
+def _precondition_result(old_digest, new_digest, new_length, current, old_object, new_object):
+    """One pure predicate for live observations and saved pre-validator claims."""
+    current_old = current.get("digest") == old_digest
+    if current_old and (not isinstance(current.get("length"), int) or current["length"] > _MAX_CONTENT_BYTES):
+        return "fail", "publish.archive_too_large", _MAX_CONTENT_BYTES, current.get("length"), ["publish.archive_too_large"]
+    old_allowed = _absent(old_object) or (old_object.get("digest") == old_digest and old_object.get("length") == current.get("length"))
+    new_allowed = _absent(new_object) or _exact(new_object, new_digest, new_length)
+    completed = _exact(current, new_digest, new_length) and old_object.get("digest") == old_digest and new_allowed
+    if (current_old and old_allowed and new_allowed) or completed:
+        return "pass", "validation.pass", "current_and_objects_safe", {"current": current, "old_object": old_object, "new_object": new_object}, []
+    code = "publish.object_conflict" if not old_allowed or not new_allowed else "publish.state_conflict"
+    return "fail", code, "current_old_or_completed", {"current": current, "old_object": old_object, "new_object": new_object}, [code]
+
+
 def validate_preconditions(value: Mapping[str, Any], current_root: Path, objects_root: Path, *, _observe=None) -> tuple[str, str, Any, Any, list[str]]:
     observe = _state if _observe is None else _observe
     content = inline_content(value)
@@ -151,16 +165,66 @@ def validate_preconditions(value: Mapping[str, Any], current_root: Path, objects
     current = observe(current_root, safe_relative_locator(str(value["target_locator"])))
     old_object = observe(objects_root, object_locator(old_digest))
     new_object = observe(objects_root, object_locator(new_digest))
-    current_old = current.get("digest") == old_digest
-    if current_old and (not isinstance(current.get("length"), int) or current["length"] > _MAX_CONTENT_BYTES):
-        return "fail", "publish.archive_too_large", _MAX_CONTENT_BYTES, current.get("length"), ["publish.archive_too_large"]
-    old_allowed = _absent(old_object) or (old_object.get("digest") == old_digest and old_object.get("length") == current.get("length"))
-    new_allowed = _absent(new_object) or _exact(new_object, new_digest, len(content))
-    completed = _exact(current, new_digest, len(content)) and old_object.get("digest") == old_digest and new_allowed
-    if (current_old and old_allowed and new_allowed) or completed:
-        return "pass", "validation.pass", "current_and_objects_safe", {"current": current, "old_object": old_object, "new_object": new_object}, []
-    code = "publish.object_conflict" if not old_allowed or not new_allowed else "publish.state_conflict"
-    return "fail", code, "current_old_or_completed", {"current": current, "old_object": old_object, "new_object": new_object}, [code]
+    return _precondition_result(old_digest,new_digest,len(content),current,old_object,new_object)
+
+
+def _saved_content_binding(intent,plan):
+    """Pure captured-candidate/effect lineage; actual blob reads belong to callers."""
+    if len(plan['effects'])!=1 or intent['inputs']!=[]:
+        raise ValueError('version2 inline input binding')
+    effect=plan['effects'][0];value=intent['candidate']['storage']['value']
+    content=inline_content(value);digest=digest_bytes(content)
+    locator=safe_relative_locator(value['target_locator'])
+    expected={
+        'kind':'publish_new_version','target':{'root_binding':'current_root','relative_locator':locator},
+        'input_binding':None,'content_source':{'kind':'captured_candidate','binding_id':None,'source_digest':digest},
+        'content_digest':digest,'content_blob_digest':digest,'content_length':len(content),
+        'content_bytes_b64':base64.b64encode(content).decode('ascii'),
+        'archive_digest':value['expected_current_digest'],
+        'archive_target':{'root_binding':'objects_root','relative_locator':object_locator(value['expected_current_digest'])},
+        'content_object_target':{'root_binding':'objects_root','relative_locator':object_locator(digest)},
+        'operation_identity':value['operation_id'],'media_type':value['media_type'],
+        'preconditions':{'existence':'present','expected_digest':value['expected_current_digest'],
+            'expected_head':None,'concurrency_token':value['expected_current_digest']},
+        'lock_scope':'publish.'+digest_bytes(locator.encode('utf-8')).removeprefix('sha256:'),
+        'durability_policy_id':'file_and_directory_synced','on_failure':'stop_and_classify'}
+    # Canonical equality prevents bool/int aliasing in lengths or nested fields.
+    from ..canonical import canonical_bytes
+    if (canonical_bytes({key:effect[key] for key in expected})!=canonical_bytes(expected)
+        or type(effect['archive_length']) is not int or not 0<=effect['archive_length']<=_MAX_CONTENT_BYTES
+        or intent['evidence']['content_blob_digests']!=[digest]):
+        raise ValueError('version2 captured content binding')
+    return content
+
+
+def _saved_precondition_expectation(identifier,item,plan):
+    """Saved claims only: no filesystem read, native context or recovery grant."""
+    if identifier=='publish_new_version.candidate_v2':
+        return 'publish_v2_candidate_valid','publish_v2_candidate_valid'
+    if identifier=='publish_new_version.result_v2':return 'prior_phases_pass',None
+    if identifier!='publish_new_version.preconditions_v2':raise ValueError('unsupported version2 saved validator')
+    effect=plan['effects'][0];actual=item['actual']
+    if type(actual) is not dict or set(actual)!={'current','old_object','new_object'}:
+        raise ValueError('version2 saved states shape')
+    for state in actual.values():
+        if type(state) is not dict or set(state)!={'exists','digest','length'} or type(state['exists']) is not bool:
+            raise ValueError('version2 saved state shape')
+        if state['exists']:
+            digest=state['digest']
+            if (type(state['length']) is not int or not 0<=state['length']<=_MAX_CONTENT_BYTES
+                or type(digest) is not str or len(digest)!=71 or not digest.startswith('sha256:')
+                or any(c not in '0123456789abcdef' for c in digest[7:])):
+                raise ValueError('version2 saved present state')
+        elif state['digest'] is not None or state['length'] is not None:
+            raise ValueError('version2 saved absent state')
+    for name in ('current','old_object'):
+        state=actual[name]
+        if state['exists'] and state['digest']==effect['archive_digest'] and state['length']!=effect['archive_length']:
+            raise ValueError('version2 saved archive length')
+    status,code,expected,observed,blockers=_precondition_result(effect['archive_digest'],effect['content_digest'],
+        effect['content_length'],actual['current'],actual['old_object'],actual['new_object'])
+    if status!='pass' or code!='validation.pass' or blockers:raise ValueError('version2 saved state conflict')
+    return expected,observed
 
 
 class PublishNewVersionV2Hook:

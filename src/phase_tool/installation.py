@@ -1158,8 +1158,8 @@ def _native_experimental_version1_installation(*, manifest_bytes, expected_manif
 
 def _native_experimental_version2_registry():
     """Closed unpublished Version2 candidate; ordinary startup remains refused."""
-    registry = _load_native_file_create_registry('registries/native-version2-experiment-v1.json',
-        'sha256:3976e22707d8bf987f91de037686a268c10a6241b279aac1154c122e886d631c',
+    registry = _load_native_file_create_registry('registries/native-version2-experiment-v2.json',
+        'sha256:6f742b400a6bd9be7932dc5a673a41b421c357d475355adac9e9be925a155b1f',
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
     from .mutation.ntfs.experimental_version2 import _VERSION2_CONTRACT
     from .mutation.ntfs.native import _require
@@ -1172,7 +1172,7 @@ def _native_experimental_version2_installation(*,manifest_bytes,expected_manifes
     run_id,operation_nonce,channel_id,_inspection_only=False,admission):
     from .canonical import canonical_bytes,parse_json_bytes
     from .mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
-    from .mutation.ntfs.experimental_version2_authority import _ExperimentalVersion2Authority
+    from .mutation.ntfs.experimental_version2_authority_v2 import _ExperimentalVersion2AuthorityV2
     from .mutation.ntfs.channel_v3 import LinuxNativeChannelV5
     from .mutation.ntfs.native import _require
     _require(type(admission) is _ExperimentalVersion2Admission and type(_inspection_only) is bool,
@@ -1182,7 +1182,7 @@ def _native_experimental_version2_installation(*,manifest_bytes,expected_manifes
     _require(admission.check_binding(binding)['run_id']==run_id,'ntfs.experimental_run_mismatch')
     manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
     channel=LinuxNativeChannelV5(channel_id=channel_id,_inspection_only=_inspection_only)
-    authority=_ExperimentalVersion2Authority(binding,admission.profile(binding),
+    authority=_ExperimentalVersion2AuthorityV2(binding,admission.profile(binding),
         canonical_bytes(manifest['root_projections']),channel,run_id=run_id,
         operation_nonce=operation_nonce,_inspection_only=_inspection_only)
     return binding.registry,_NativeFileCreateInstallation(binding,authority)

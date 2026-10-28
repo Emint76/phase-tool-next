@@ -57,7 +57,11 @@ def verify_saved_precondition_results(registry, contract, intent: dict, plan: di
     if plan['run_id'] != intent['run_id'] or plan['contract'] != binding:
         raise ValueError('plan binding')
     content_digest = plan['effects'][0]['content_digest']
-    if not any(item['digest'] == content_digest for item in intent['inputs']):
+    version2 = contract.document['identity']['id'] == 'publish_new_version.v2'
+    if version2:
+        from .contracts.publish_new_version_v2 import _saved_content_binding
+        _saved_content_binding(intent,plan)
+    elif not any(item['digest'] == content_digest for item in intent['inputs']):
         raise ValueError('input binding')
     for item, declaration in zip(pre, declarations, strict=True):
         validator.validate(item)
@@ -76,6 +80,10 @@ def verify_saved_precondition_results(registry, contract, intent: dict, plan: di
             # The existing contract owns its saved-state semantics. This pure
             # delegation supplies no native context, target access or recovery.
             from .contracts.publish_new_version_v1 import _saved_precondition_expectation
+            expected,actual = _saved_precondition_expectation(identifier,item,plan)
+        elif version2 and identifier in {'publish_new_version.candidate_v2',
+            'publish_new_version.preconditions_v2','publish_new_version.result_v2'}:
+            from .contracts.publish_new_version_v2 import _saved_precondition_expectation
             expected,actual = _saved_precondition_expectation(identifier,item,plan)
         else:
             expected = {'validator.exact_binding_v1': 'exact_registry_binding',

@@ -151,28 +151,14 @@ def _original_content_binding(intent: dict, plan: dict, digest: str, length: int
 
 
 def _version2_content_binding(intent: dict, plan: dict) -> bytes:
-    """Existing inline semantics, never a synthetic FrozenInput or data owner."""
-    from ...contracts.publish_new_version_v2 import inline_content, object_locator
+    """Same contract-owned inline lineage; never invent a FrozenInput."""
+    from ...contracts.publish_new_version_v2 import _saved_content_binding
     from .version2_observation import _version2_targets
-    _require(len(plan['effects'])==1 and intent['inputs']==[], 'ntfs.original_version2_content_binding')
-    effect=plan['effects'][0];value=intent['candidate']['storage']['value']
-    content=inline_content(value);digest=digest_bytes(content)
-    _version2_targets(effect)
-    _require(effect['input_binding'] is None
-        and effect['content_source']=={'kind':'captured_candidate','binding_id':None,'source_digest':digest}
-        and effect['content_digest']==effect['content_blob_digest']==digest
-        and type(effect['content_length']) is int and effect['content_length']==len(content)
-        and effect['content_bytes_b64']==base64.b64encode(content).decode('ascii')
-        and intent['evidence']['content_blob_digests']==[digest]
-        and effect['archive_digest']==value['expected_current_digest']
-        and effect['archive_target']=={'root_binding':'objects_root','relative_locator':object_locator(value['expected_current_digest'])}
-        and type(effect['archive_length']) is int and 0<=effect['archive_length']<=512*1024
-        and effect['operation_identity']==value['operation_id'] and effect['media_type']==value['media_type']
-        and effect['preconditions']=={'existence':'present','expected_digest':effect['archive_digest'],
-            'expected_head':None,'concurrency_token':effect['archive_digest']}
-        and effect['lock_scope']=='publish.'+digest_bytes(value['target_locator'].encode('utf-8')).removeprefix('sha256:')
-        and effect['durability_policy_id']=='file_and_directory_synced'
-        and effect['on_failure']=='stop_and_classify','ntfs.original_version2_content_binding')
+    try:
+        content=_saved_content_binding(intent,plan)
+    except (ValueError,KeyError,TypeError):
+        _require(False,'ntfs.original_version2_content_binding')
+    _version2_targets(plan["effects"][0])
     return content
 
 

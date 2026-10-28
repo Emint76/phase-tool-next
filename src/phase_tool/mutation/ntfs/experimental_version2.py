@@ -18,10 +18,10 @@ _VERSION2_CONTRACT={'id':'publish_new_version.v2','version':'1.0.0',
 @dataclass(frozen=True)
 class _ExperimentalVersion2Admission(_ExperimentalFile1Admission):
     _contract: ClassVar[dict]=_VERSION2_CONTRACT
-    _profile: ClassVar[str]='phase.native.ntfs.experiment.version2.authority.v1@1.0.0'
+    _profile: ClassVar[str]='phase.native.ntfs.experiment.version2.authority.v2@1.0.0'
     _manifest_version: ClassVar[str]='1.5'
     _installation_prefix: ClassVar[str]='phase.experiment.version2.'
-    _authority_artifact: ClassVar[str]='phase_tool/mutation/ntfs/experimental_version2_authority.py'
+    _authority_artifact: ClassVar[str]='phase_tool/mutation/ntfs/experimental_version2_authority_v2.py'
     _required: ClassVar[frozenset[str]]=frozenset({'exclusive_create','readback_verification',
         'cross_process_serialization','namespace_bound_mutation','atomic_replace','namespace_metadata_flush_attempted'})
 

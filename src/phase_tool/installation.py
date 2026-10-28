@@ -428,6 +428,13 @@ def _load_native_file_create_registry(resource, expected_digest, contract_digest
     return registry
 
 
+def _requires_native_experimental_history(binding):
+    from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    return type(binding.experimental_admission) in (
+        _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
+
+
 def _validate_native_history_bindings(active, bindings):
     """Recheck one exact immutable generation before the existing Core lock.
 
@@ -440,6 +447,8 @@ def _validate_native_history_bindings(active, bindings):
     _require(type(active) is _NativeFileCreateReadBinding and type(bindings) is tuple
         and all(type(row) is _NativeFileCreateReadBinding for row in bindings),
         'ntfs.original_history_binding_mismatch')
+    if active.experimental_admission is not None:
+        return _validate_native_experimental_history_bindings(active,bindings)
     active_manifest = parse_json_bytes(active.manifest_bytes,maximum_bytes=2*1024**2)
     generation = active_manifest['native_read_installation_version']
     _require(generation in {'1.2','1.4'},'ntfs.original_history_binding_mismatch')
@@ -476,17 +485,87 @@ def _validate_native_history_bindings(active, bindings):
 def _resolve_native_history_bindings(active, raw, expected_digest):
     from .mutation.ntfs.bootstrap import _native_history_manifest_buffers
     from .mutation.ntfs.native import _require
+    _require(type(active) is _NativeFileCreateReadBinding,'ntfs.original_read_binding_required')
     if raw is None and expected_digest is None:
         from .canonical import parse_json_bytes
-        _require(parse_json_bytes(active.manifest_bytes,maximum_bytes=2*1024**2)[
-            'native_read_installation_version']!='1.4','ntfs.accepted_history_binding_mismatch')
+        _require(not _requires_native_experimental_history(active)
+            and parse_json_bytes(active.manifest_bytes,maximum_bytes=2*1024**2)[
+                'native_read_installation_version']!='1.4','ntfs.accepted_history_binding_mismatch')
         return None
     _require(raw is not None and expected_digest is not None,'ntfs.accepted_history_binding_mismatch')
+    if active.experimental_admission is not None:
+        from .mutation.ntfs.bootstrap import _native_experimental_history_buffers
+        from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+            _ExperimentalHistoryVersion1Admission)
+        contexts=(_ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission,
+            _ExperimentalHistoryVersion1Admission)
+        buffers=_native_experimental_history_buffers(raw,expected_digest,
+            active_bytes=active.manifest_bytes,active_digest=active.manifest_digest)
+        bindings=tuple(_native_experimental_read_binding(manifest_bytes=leaf,
+            expected_manifest_digest=sha,admission=kind(cap))
+            for (leaf,sha,cap,_),kind in zip(buffers,contexts,strict=True))
+        return _validate_native_history_bindings(active,bindings)
     buffers=_native_history_manifest_buffers(raw,expected_digest,
         active_bytes=active.manifest_bytes,active_digest=active.manifest_digest)
     bindings=tuple(_resolve_native_file_create_read_binding(manifest_bytes=leaf,
         expected_manifest_digest=sha,registry=active.registry) for leaf,sha in buffers)
     return _validate_native_history_bindings(active,bindings)
+
+
+def _validate_native_experimental_history_bindings(active,bindings):
+    """Exact new three-run composition; old standalone admissions stay closed."""
+    from .canonical import canonical_bytes,parse_json_bytes
+    from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    from .mutation.ntfs.native import _require
+    contexts=(_ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    _require(len(bindings)==3 and type(active.experimental_admission) in contexts,
+        'ntfs.original_history_binding_mismatch')
+    manifests=[];admissions=[]
+    for row,kind in zip(bindings,contexts,strict=True):
+        _require(type(row.experimental_admission) is kind,'ntfs.original_history_binding_mismatch')
+        checked=_native_experimental_read_binding(manifest_bytes=row.manifest_bytes,
+            expected_manifest_digest=row.manifest_digest,admission=row.experimental_admission)
+        _require(type(row.registry) is type(checked.registry)
+            and row.registry.digest==checked.registry.digest
+            and canonical_bytes(row.registry.to_document())==canonical_bytes(checked.registry.to_document()),
+            'ntfs.original_history_binding_mismatch')
+        admissions.append(row.experimental_admission.check_binding(row))
+        row.experimental_admission.profile(row)
+        manifests.append(parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2))
+    _require(sum(row.manifest_bytes==active.manifest_bytes
+        and row.manifest_digest==active.manifest_digest
+        and row.experimental_admission.raw==active.experimental_admission.raw for row in bindings)==1
+        and len({doc['run_id'] for doc in admissions})==3
+        and len({leaf['installation_id'] for leaf in manifests})==3,
+        'ntfs.original_history_binding_mismatch')
+    common=('core','composition','evidence_root','evidence_identity',
+        'preparation_root','preparation_identity')
+    cap_common=('authorization_digest','windows_root','wheel_digest','target_locator')
+    for leaf,cap in zip(manifests[1:],admissions[1:],strict=True):
+        _require(all(canonical_bytes(leaf[key])==canonical_bytes(manifests[0][key]) for key in common)
+            and all(cap[key]==admissions[0][key] for key in cap_common)
+            and canonical_bytes([{k:v for k,v in row.items() if k!='root_binding'}
+                for row in leaf['root_grants']])==canonical_bytes([
+                {k:v for k,v in row.items() if k!='root_binding'} for row in manifests[0]['root_grants']])
+            and tuple(leaf['root_projections'].values())==tuple(manifests[0]['root_projections'].values()),
+            'ntfs.original_history_domain_mismatch')
+    return bindings
+
+
+def _native_experimental_history_binding_for_run(bindings,run_id):
+    """Trusted immutable configuration lookup, never a registry from evidence."""
+    from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    from .mutation.ntfs.native import _require
+    _require(type(bindings) is tuple and len(bindings)==3
+        and all(type(row) is _NativeFileCreateReadBinding and type(row.experimental_admission)
+            in (_ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
+            for row in bindings),'ntfs.original_history_binding_mismatch')
+    rows=[row for row in bindings if row.experimental_admission.document()['run_id']==run_id]
+    _require(len(rows)==1,'ntfs.original_history_binding_mismatch')
+    return rows[0]
 
 
 class _NativeFileCreateInstallation:
@@ -505,8 +584,11 @@ class _NativeFileCreateInstallation:
         _require(not getattr(self, '_initialization_attempted', False),
             'ntfs.native_installation_initialization_consumed')
         self._initialization_attempted = True
-        _require(type(read_binding) is _NativeFileCreateReadBinding
-            and _is_native_authority(authority)
+        _require(type(read_binding) is _NativeFileCreateReadBinding,
+            'ntfs.closed_native_installation_required')
+        _require(not _requires_native_experimental_history(read_binding)
+            or history_bindings is not None,'ntfs.original_history_binding_mismatch')
+        _require(_is_native_authority(authority)
             and authority.read_binding is read_binding, 'ntfs.closed_native_installation_required')
         manifest = parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
         _require(manifest['native_read_installation_version'] in {'1.1','1.2','1.3','1.4'},
@@ -766,11 +848,21 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
     _experimental_admission_context=None):
     if _experimental_admission_context is not None:
         from .mutation.ntfs.native import _require
-        _require(history_manifest_set_bytes is None and history_manifest_set_digest is None,
-            "ntfs.experimental_admission_scope")
         from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
         from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
         from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
+        from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+            _ExperimentalHistoryVersion1Admission)
+        if type(_experimental_admission_context) in (
+                _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission):
+            return _native_experimental_history_installation(manifest_bytes=manifest_bytes,
+                expected_manifest_digest=expected_manifest_digest,run_id=run_id,
+                operation_nonce=operation_nonce,channel_id=channel_id,
+                _inspection_only=_inspection_only,admission=_experimental_admission_context,
+                history_manifest_set_bytes=history_manifest_set_bytes,
+                history_manifest_set_digest=history_manifest_set_digest)
+        _require(history_manifest_set_bytes is None and history_manifest_set_digest is None,
+            "ntfs.experimental_admission_scope")
         factories = {_ExperimentalFile1Admission: _native_experimental_file1_installation,
             _ExperimentalFile2Admission: _native_experimental_file2_installation,
             _ExperimentalVersion1Admission: _native_experimental_version1_installation}
@@ -894,8 +986,6 @@ def _native_experimental_file1_registry():
 
 
 def _native_read_binding_for_launch(launch):
-    from dataclasses import replace
-    from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
     from .mutation.ntfs.native import _require
     admission = getattr(launch, '_experimental_admission_context', None)
     if admission is None:
@@ -903,22 +993,50 @@ def _native_read_binding_for_launch(launch):
         _native_qualified_profile(registry, registry.guarantee_profile_bindings().get(
             'phase.native.ntfs.authority.v1@1.0.0'))
     else:
+        # Preserve refusal of unselected subclasses BEFORE reading any launch
+        # fields. Argument evaluation must not outrun the exact-type gate.
+        from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
         from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
         from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
-        registries = {_ExperimentalFile1Admission: _native_experimental_file1_registry,
-            _ExperimentalFile2Admission: _native_experimental_file2_registry,
-            _ExperimentalVersion1Admission: _native_experimental_version1_registry}
-        _require(type(admission) in registries, 'ntfs.experimental_admission_required')
-        registry = registries[type(admission)]()
-    binding = _resolve_native_file_create_read_binding(manifest_bytes=launch._manifest_bytes,
-        expected_manifest_digest=launch.installation_digest, registry=registry)
+        from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+            _ExperimentalHistoryVersion1Admission)
+        _require(type(admission) in (_ExperimentalFile1Admission,_ExperimentalFile2Admission,
+            _ExperimentalVersion1Admission,_ExperimentalHistoryFile1Admission,
+            _ExperimentalHistoryVersion1Admission),'ntfs.experimental_admission_required')
+        binding=_native_experimental_read_binding(manifest_bytes=launch._manifest_bytes,
+            expected_manifest_digest=launch.installation_digest,admission=admission)
+        registry=binding.registry
     if admission is not None:
-        binding = replace(binding, experimental_admission=admission)
         doc = admission.check_binding(binding)
         _require(doc['run_id'] == launch.run_id
             and doc['wheel_digest'] == launch._config['phase_wheel_digest'],
             'ntfs.experimental_admission_binding_mismatch')
         admission.profile(binding)
+    else:
+        binding=_resolve_native_file_create_read_binding(manifest_bytes=launch._manifest_bytes,
+            expected_manifest_digest=launch.installation_digest,registry=registry)
+    return binding
+
+
+def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,admission):
+    """Data-only historical resolver; no launch, channel or current-wheel check."""
+    from dataclasses import replace
+    from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
+    from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
+    from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
+    from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    from .mutation.ntfs.native import _require
+    registries={_ExperimentalFile1Admission:_native_experimental_file1_registry,
+        _ExperimentalFile2Admission:_native_experimental_file2_registry,
+        _ExperimentalVersion1Admission:_native_experimental_version1_registry,
+        _ExperimentalHistoryFile1Admission:_native_experimental_history_registry,
+        _ExperimentalHistoryVersion1Admission:_native_experimental_history_registry}
+    _require(type(admission) in registries,'ntfs.experimental_admission_required')
+    binding=replace(_resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest,registry=registries[type(admission)]()),
+        experimental_admission=admission)
+    admission.check_binding(binding);admission.profile(binding)
     return binding
 
 
@@ -1021,3 +1139,43 @@ def _native_experimental_version1_installation(*, manifest_bytes, expected_manif
         canonical_bytes(configured['root_projections']), channel,
         run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
     return registry, _NativeFileCreateInstallation(binding, authority)
+
+
+def _native_experimental_history_registry():
+    """New immutable composition; standalone descriptors are not broadened."""
+    registry=_load_native_file_create_registry('registries/native-history-experiment-v1.json',
+        'sha256:037609822d0afe0021e0d6174852882a502a091c7dc80155d1eac0580d293f3a',
+        'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
+    from .mutation.ntfs.experimental_version1 import _VERSION1_CONTRACT
+    from .mutation.ntfs.native import _require
+    _require(registry.contract_bindings().get('publish_new_version.v1@1.0.0')==_VERSION1_CONTRACT,
+        'ntfs.native_registry_selection_mismatch')
+    return registry
+
+
+def _native_experimental_history_installation(*,manifest_bytes,expected_manifest_digest,
+        run_id,operation_nonce,channel_id,_inspection_only,admission,
+        history_manifest_set_bytes,history_manifest_set_digest):
+    from .canonical import canonical_bytes,parse_json_bytes
+    from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    from .mutation.ntfs.experimental_history_authority import _ExperimentalHistoryAuthority
+    from .mutation.ntfs.channel_v2 import LinuxNativeChannelV2
+    from .mutation.ntfs.channel_v3 import LinuxNativeChannelV3
+    from .mutation.ntfs.native import _require
+    _require(type(admission) in (_ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
+        and type(_inspection_only) is bool and history_manifest_set_bytes is not None
+        and history_manifest_set_digest is not None,'ntfs.experimental_admission_scope')
+    binding=_native_experimental_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest,admission=admission)
+    _require(admission.check_binding(binding)['run_id']==run_id,'ntfs.experimental_run_mismatch')
+    history=_resolve_native_history_bindings(binding,history_manifest_set_bytes,history_manifest_set_digest)
+    manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
+    if type(admission) is _ExperimentalHistoryVersion1Admission:
+        channel=LinuxNativeChannelV3(channel_id=channel_id,_inspection_only=_inspection_only,_version1=True)
+    else:
+        channel=LinuxNativeChannelV2(channel_id=channel_id,_inspection_only=_inspection_only)
+    authority=_ExperimentalHistoryAuthority(binding,admission.profile(binding),
+        canonical_bytes(manifest['root_projections']),channel,run_id=run_id,
+        operation_nonce=operation_nonce,_inspection_only=_inspection_only)
+    return binding.registry,_NativeFileCreateInstallation(binding,authority,history_bindings=history)

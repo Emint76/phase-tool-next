@@ -14,7 +14,7 @@ from jsonschema.exceptions import ValidationError
 
 from . import __version__
 from .candidate import CapturedCandidate, capture_structured, normalize_captured_structured
-from .canonical import digest_bytes, parse_json_bytes, profile_digest
+from .canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from .contracts import load_contract_hook
 from .errors import PhaseError
 from .evidence import EvidenceStore, evidence_file_exists, iter_run_artifacts, operational_lock_path, read_evidence_bytes, validate_intent, validate_receipt
@@ -383,16 +383,39 @@ class PhaseCore:
         *,
         execute: bool,
         _native_authority: object | None = None,
+        _native_history_bindings: tuple | None = None,
     ) -> tuple[dict[str, Any], str] | None:
         if key is None:
             return None
         runs_root = store.evidence_root / ".phase" / "runs"
+        if _native_history_bindings is not None:
+            from .installation import (_validate_native_history_bindings,
+                _native_experimental_history_binding_for_run)
+            if _native_authority is None:
+                raise PhaseError('ntfs.original_history_binding_mismatch')
+            _validate_native_history_bindings(_native_authority.read_binding,_native_history_bindings)
         for path in iter_run_artifacts(runs_root, "intent.json"):
             if path.parent == store.run_root:
                 continue
             try:
                 intent = parse_json_bytes(read_evidence_bytes(path))
-                validate_intent(intent, registry)
+                selected_registry=registry
+                if _native_history_bindings is not None:
+                    selected=_native_experimental_history_binding_for_run(
+                        _native_history_bindings,path.parent.name)
+                    selected_registry=selected.registry
+                    validate_intent(intent,selected_registry)
+                    expected=selected._parser_bindings(intent)
+                    if (intent['run_id']!=path.parent.name
+                            or intent['registry_snapshot_digest']!=selected_registry.digest
+                            or any(expected[key]!=canonical_bytes(value) for key,value in (
+                                ('installed_core_binding',intent['core']),
+                                ('installed_native_binding',intent['native_binding']),
+                                ('installed_root_grants',intent['idempotency']['root_identities']),
+                                ('installed_implementation_binding',intent['implementation_binding'])))):
+                        raise PhaseError('ntfs.original_installation_binding_mismatch')
+                else:
+                    validate_intent(intent, registry)
             except (PhaseError, ValidationError, OSError) as exc:
                 raise PhaseError("idempotency.prior_inspection_required", path.parent.name) from exc
             prior = intent.get("idempotency", {})
@@ -401,6 +424,11 @@ class PhaseCore:
             if prior.get("key") == key and prior.get("scope_digest") == scope_digest and prior.get("request_digest") == request_digest:
                 if not execute:
                     continue
+                if (_native_history_bindings is not None
+                        and selected.manifest_digest!=_native_authority.read_binding.manifest_digest):
+                    # Immutable closure is not a fresh observation of a prior
+                    # current file. No active-cap substitution for historical RO.
+                    raise PhaseError('idempotency.prior_inspection_required',path.parent.name)
                 receipt_path = path.parent / "receipt.json"
                 if not evidence_file_exists(receipt_path):
                     if intent.get("execution_requested") is False:
@@ -1099,7 +1127,14 @@ class PhaseCore:
         if native_ctx is not None:
             native_ctx.inner_entered = True
         try:
-            reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute, _native_authority=native_authority)
+            native_history={}
+            if native_authority is not None:
+                from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
+                    _ExperimentalHistoryVersion1Admission)
+                if type(native_authority.read_binding.experimental_admission) in (
+                        _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission):
+                    native_history['_native_history_bindings']=self.installation.history_bindings
+            reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute, _native_authority=native_authority,**native_history)
             if execute and reused is not None:
                 receipt = self._reused_receipt(request, [], timestamp, reused[0], reused[1], attachment_digests=attachment_digests)
                 validate_receipt(receipt, self.registry)
@@ -1416,7 +1451,9 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
 
     A future trusted native entrypoint must acquire this BEFORE EvidenceStore
     reservation and hold it through dispatch, retained-worker quiescence and
-    final evidence. Every overlapping root must share this physical evidence
+    checked guard exit. Proof/receipt publication follows outside this lock;
+    another invocation in that window must refuse the unclosed original.
+    Every overlapping root must share this physical evidence
     root and lock. Normal Core.run/Host routes do not select this helper.
     Executed originals require the exact native terminal attachment and full
     current immutable dependency durability confirmation under this SAME lock.
@@ -1428,13 +1465,16 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
     from .canonical import canonical_bytes
     from .evidence import validate_run_id
     from .installation import (_NativeFileCreateReadBinding,
-        _resolve_native_file_create_read_binding, _validate_native_history_bindings, _linux_filesystem_type,
+        _resolve_native_file_create_read_binding, _validate_native_history_bindings,
+        _requires_native_experimental_history, _linux_filesystem_type,
         qualify_host_authority_roots)
     from .mutation.ntfs.native import _require
     from .streaming import read_bounded_file
 
     _require(type(read_binding) is _NativeFileCreateReadBinding,
         'ntfs.original_read_binding_required')
+    _require(not _requires_native_experimental_history(read_binding)
+        or history_bindings is not None,'ntfs.original_history_binding_mismatch')
     # Recheck immutable configuration/current registry before any lock write.
     _resolve_native_file_create_read_binding(manifest_bytes=read_binding.manifest_bytes,
         expected_manifest_digest=read_binding.manifest_digest, registry=read_binding.registry)
@@ -1446,10 +1486,17 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
         _validate_native_history_bindings(read_binding,history_bindings))
     static=tuple((row,parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2)) for row in bindings)
 
-    def historical_binding(contract,core,installation=None):
+    per_run=any(row.experimental_admission is not None for row in bindings) and history_bindings is not None
+
+    def historical_binding(contract,core,installation=None,*,run_id):
         # Select ONLY from accepted static data, never from original claims.
         # Contract-only selection is used solely for strict pre-intent rejects.
-        matches=[row for row,leaf in static if contract==leaf['contract'] and core==leaf['core']
+        candidates=static
+        if per_run:
+            from .installation import _native_experimental_history_binding_for_run
+            selected=_native_experimental_history_binding_for_run(bindings,run_id)
+            candidates=tuple((row,leaf) for row,leaf in static if row is selected)
+        matches=[row for row,leaf in candidates if contract==leaf['contract'] and core==leaf['core']
             and (installation is None or installation=={
                 'id':leaf['installation_id'],'descriptor_digest':row.manifest_digest})]
         _require(len(matches)==1,'ntfs.original_history_binding_mismatch')
@@ -1517,9 +1564,9 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
         _require(receipt.get('contract')==leaf['contract'] and receipt.get('core')==leaf['core']
             and receipt.get('run_id')==run_id, 'ntfs.original_receipt_binding_mismatch')
         binding=receipt['contract']
-        registry.resolve_contract(binding['id'],binding['version'],binding['package_digest'],
+        selected.registry.resolve_contract(binding['id'],binding['version'],binding['package_digest'],
             core_version=receipt['core']['version'])
-        validate_receipt(receipt,registry)
+        validate_receipt(receipt,selected.registry)
         _require(receipt['terminal_status']==('validated_planned' if planned else 'rejected')
             and receipt['execution_disposition']=='not_executed'
             and receipt['mutation_attempted'] is False
@@ -1558,7 +1605,7 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
         _require(type(proof) is dict and type(proof.get('installation')) is dict
             and set(proof['installation'])=={'id','descriptor_digest'},
             'ntfs.original_history_binding_mismatch')
-        selected=historical_binding(receipt.get('contract'),receipt.get('core'),proof['installation'])
+        selected=historical_binding(receipt.get('contract'),receipt.get('core'),proof['installation'],run_id=run.name)
         checked = verify_native_terminal_proof(selected,run,receipt)
         _require(receipt['evidence']['finalization_status'] == 'finalized'
             and receipt['recovery_required'] is False
@@ -1637,16 +1684,18 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
                 if 'intent.json' not in names:
                     receipt,_=control(run/'receipt.json')
                     _require(type(receipt) is dict,'ntfs.original_receipt_binding_mismatch')
-                    selected=historical_binding(receipt.get('contract'),receipt.get('core'))
+                    selected=historical_binding(receipt.get('contract'),receipt.get('core'),run_id=entry.name)
                     no_effect_receipt(receipt,entry.name,attachments,planned=False,selected=selected)
                     continue
                 intent,_=control(run/'intent.json')
                 _require(type(intent) is dict and intent.get('phase_intent_version')=='1.2',
                     'ntfs.original_native_intent_required')
-                validate_intent(intent,registry)
-                _require(intent['run_id']==entry.name and intent['registry_snapshot_digest']==registry.digest,
+                native=intent.get('native_binding')
+                original_installation=native.get('installation') if type(native) is dict else None
+                selected=historical_binding(intent.get('contract'),intent.get('core'),original_installation,run_id=entry.name)
+                validate_intent(intent,selected.registry)
+                _require(intent['run_id']==entry.name and intent['registry_snapshot_digest']==selected.registry.digest,
                     'ntfs.original_intent_mismatch')
-                selected=historical_binding(intent['contract'],intent['core'],intent['native_binding']['installation'])
                 expected=selected._parser_bindings(intent)
                 for key,value in [('installed_core_binding',intent['core']),
                     ('installed_native_binding',intent['native_binding']),
@@ -1695,7 +1744,7 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
                                 'ntfs.original_frozen_input_required')
                 # KEEP the native-installation refusal. Full content alone
                 # never closes a proofless native original or grants authority.
-                inspect_run(root,entry.name,registry)
+                inspect_run(root,entry.name,selected.registry)
 
     yielded=False;primary_error=None
     try:

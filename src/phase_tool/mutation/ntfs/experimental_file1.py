@@ -190,8 +190,11 @@ def _experimental_admission(binding):
         return None
     from .experimental_file2 import _ExperimentalFile2Admission
     from .experimental_version1 import _ExperimentalVersion1Admission
+    from .experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
     _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalFile2Admission,
-            _ExperimentalVersion1Admission),
+            _ExperimentalVersion1Admission, _ExperimentalHistoryFile1Admission,
+            _ExperimentalHistoryVersion1Admission),
         'ntfs.experimental_admission_required')
     context.check_binding(binding)
     return context
@@ -207,10 +210,16 @@ def _is_native_authority(value):
     from .experimental_authority import _ExperimentalFile1Authority
     from .experimental_file2_authority import _ExperimentalFile2Authority
     from .experimental_version1_authority import _ExperimentalVersion1Authority
+    from .experimental_history_authority import _ExperimentalHistoryAuthority
     if type(value) is _NativeFileCreateAuthority:
         return getattr(getattr(value, 'read_binding', None), 'experimental_admission', None) is None
     from .experimental_file2 import _ExperimentalFile2Admission
     from .experimental_version1 import _ExperimentalVersion1Admission
+    from .experimental_history import (_ExperimentalHistoryFile1Admission,
+        _ExperimentalHistoryVersion1Admission)
+    if type(value) is _ExperimentalHistoryAuthority:
+        return type(_experimental_admission(value.read_binding)) in (
+            _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
     paired = {_ExperimentalFile1Authority: _ExperimentalFile1Admission,
         _ExperimentalFile2Authority: _ExperimentalFile2Admission,
         _ExperimentalVersion1Authority: _ExperimentalVersion1Admission}

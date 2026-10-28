@@ -91,8 +91,62 @@ def _native_history_manifest_buffers(raw, expected_digest, *, active_bytes, acti
     return tuple(buffers)
 
 
+def _native_experimental_history_buffers(raw, expected_digest, *, active_bytes, active_digest):
+    """Three accepted per-run read expectations, never an evidence-derived index.
+
+    The fixed experiment is File1 -> Version1 -> Version1. Every invocation
+    retains its single active admission; companion bytes grant no dispatch.
+    Historical config1.0/1.1 and their manifest sets remain unchanged.
+    """
+    _require(type(raw) is bytes and len(raw)<=2*1024**2
+        and type(expected_digest) is str and digest_bytes(raw)==expected_digest,
+        'ntfs.accepted_history_binding_mismatch')
+    value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+    _require(type(value) is dict and canonical_bytes(value)==raw
+        and set(value)=={'history_manifest_set_version','manifests'}
+        and value['history_manifest_set_version']=='1.2'
+        and type(value['manifests']) is list and len(value['manifests'])==3,
+        'ntfs.accepted_history_shape')
+    roles=(('file_create.v1','1.1'),('publish_new_version.v1','1.2'),
+        ('publish_new_version.v1','1.2'))
+    buffers=[];runs=set()
+    for row,(role,generation) in zip(value['manifests'],roles,strict=True):
+        _require(type(row) is dict and set(row)=={'manifest_base64','manifest_digest',
+            'experimental_admission_base64','experimental_admission_digest'},
+            'ntfs.accepted_history_shape')
+        decoded=[]
+        for stem,limit in (('manifest',2*1024**2),('experimental_admission',32768)):
+            encoded,sha=row[stem+'_base64'],row[stem+'_digest']
+            _require(type(encoded) is str and type(sha) is str
+                and re.fullmatch('sha256:[0-9a-f]{64}',sha) is not None,
+                'ntfs.accepted_history_shape')
+            try:leaf=base64.b64decode(encoded,validate=True)
+            except (ValueError,UnicodeError) as error:
+                raise PhaseError('ntfs.accepted_history_shape') from error
+            _require(len(leaf)<=limit and base64.b64encode(leaf).decode('ascii')==encoded
+                and digest_bytes(leaf)==sha,'ntfs.accepted_history_binding_mismatch')
+            doc=parse_json_bytes(leaf,maximum_bytes=limit)
+            _require(type(doc) is dict and canonical_bytes(doc)==leaf,
+                'ntfs.accepted_history_shape')
+            decoded.append((leaf,sha,doc))
+        manifest,admission=(part[2] for part in decoded)
+        _require(manifest.get('native_read_installation_version')==generation
+            and type(manifest.get('contract')) is dict
+            and manifest['contract'].get('id')==role
+            and admission.get('contract')==manifest['contract']
+            and type(admission.get('run_id')) is str and admission['run_id'] not in runs,
+            'ntfs.accepted_history_shape')
+        runs.add(admission['run_id'])
+        buffers.append((decoded[0][0],decoded[0][1],decoded[1][0],decoded[1][1]))
+    _require(type(active_bytes) is bytes and type(active_digest) is str
+        and digest_bytes(active_bytes)==active_digest
+        and sum(leaf==active_bytes and sha==active_digest for leaf,sha,_,_ in buffers)==1,
+        'ntfs.accepted_history_binding_mismatch')
+    return tuple(buffers)
+
+
 def _accepted_launch_history(config, manifest_bytes, manifest_digest):
-    """Closed config1.0 unchanged; config1.1 supplies accepted companion data."""
+    """Closed config1.0/1.1 preserved; config1.2 is a separate experiment."""
     fields={'native_launch_version','phase_wheel','phase_wheel_digest',
         'dependency_file_digests','windows_launcher','linux_launcher','docker_executable',
         'core_container_id','reader_container_id','image_digest','linux_python',
@@ -103,7 +157,7 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest):
     if version=='1.0':
         _require(set(config)==fields,'ntfs.accepted_launch_shape')
         return None,None
-    _require(version=='1.1' and set(config)==fields|{
+    _require(version in {'1.1','1.2'} and set(config)==fields|{
         'history_manifest_set_base64','history_manifest_set_digest'}
         and type(config['history_manifest_set_base64']) is str,
         'ntfs.accepted_launch_shape')
@@ -113,7 +167,9 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest):
     _require(base64.b64encode(raw).decode('ascii')==config['history_manifest_set_base64'],
         'ntfs.accepted_history_shape')
     digest=config['history_manifest_set_digest']
-    _native_history_manifest_buffers(raw,digest,active_bytes=manifest_bytes,active_digest=manifest_digest)
+    parser=(_native_experimental_history_buffers if version=='1.2' else
+        _native_history_manifest_buffers)
+    parser(raw,digest,active_bytes=manifest_bytes,active_digest=manifest_digest)
     return raw,digest
 
 
@@ -173,8 +229,17 @@ class _NativeAcceptedLaunch:
         config=parse_json_bytes(config_bytes,maximum_bytes=2*1024**2)
         manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
         invocation=parse_json_bytes(invocation_bytes,maximum_bytes=2*1024**2)
-        _require(canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
+        _require(type(config) is dict and canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
             and canonical_bytes(invocation)==invocation_bytes,'ntfs.accepted_launch_shape')
+        _require(config.get('native_launch_version')!='1.2'
+            or _experimental_admission_context is not None,'ntfs.experimental_admission_required')
+        if _experimental_admission_context is not None:
+            from .experimental_history import (_ExperimentalHistoryFile1Admission,
+                _ExperimentalHistoryVersion1Admission)
+            shared=type(_experimental_admission_context) in (
+                _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
+            _require(shared==(config.get('native_launch_version')=='1.2'),
+                'ntfs.experimental_admission_scope')
         self._history_manifest_set=_accepted_launch_history(config,manifest_bytes,expected_manifest_digest)
         _require(type(invocation) is dict and set(invocation)=={'run_id','channel_id','operation_nonce','request'}
             and type(invocation['run_id']) is str
@@ -203,8 +268,10 @@ class _NativeAcceptedLaunch:
         self._held=[]
         self._finalization_attempted=set()
         if _experimental_admission_context is not None:
-            from ...installation import _native_read_binding_for_launch
-            _native_read_binding_for_launch(self)
+            from ...installation import _native_read_binding_for_launch,_resolve_native_history_bindings
+            binding=_native_read_binding_for_launch(self)
+            if self._history_manifest_set[0] is not None:
+                _resolve_native_history_bindings(binding,*self._history_manifest_set)
         self.check_runtime()
 
     @property

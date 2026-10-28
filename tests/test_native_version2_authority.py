@@ -23,7 +23,7 @@ if sys.platform.startswith('linux'):
 class Version2AuthorityRefusalTests(unittest.TestCase):
     def setUp(self):
         registry=_native_experimental_version2_registry()
-        exact=registry.guarantee_profile_bindings()['phase.native.ntfs.experiment.version2.authority.v2@1.0.0']
+        exact=registry.guarantee_profile_bindings()['phase.native.ntfs.experiment.version2.authority.v3@1.0.0']
         descriptor=registry.resolve_guarantee_profile(exact);implementation=descriptor['implementation']
         self.profile=GuaranteeProfileBinding(exact['id'],exact['version'],exact['descriptor_digest'],
             implementation['id'],implementation['version'],implementation['artifact_digest'])

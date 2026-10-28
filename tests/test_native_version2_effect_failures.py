@@ -24,11 +24,12 @@ def algorithm(*,fault=None,close_failure=False):
     files={current:bytearray(b'old synthetic')}
     identities={current:NativeIdentity(1,'3'*32)}
     record=SimpleNamespace(order=[],created=[],closed=[],close_attempts=[],entered=[],stage=None,
-        mutations_after_seal=0,old_pin_held=False)
+        mutations_after_seal=0,old_pin_held=False,read_modes=[])
 
     class Handle:
-        def __init__(self,io,key):
+        def __init__(self,io,key,*,replacement_read=False):
             self.io,self.key,self.data,self.identity=io,key,files[key],identities[key]
+            self.replacement_read=replacement_read
             self.closed=False;io._handles.add(self)
         def __enter__(self):record.entered.append(self);return self
         def close(self):
@@ -67,6 +68,8 @@ def algorithm(*,fault=None,close_failure=False):
         def rename(self,handle,parent,name,*,replace=False,**_):
             key=(parent[0],parent[1]+name);self.event('replace' if replace else 'rename',key)
             if replace:record.old_pin_held=any(h.key==current and h is not handle and not h.closed for h in self._handles)
+            if replace and any(h.key==current and not h.closed and not h.replacement_read for h in self._handles):
+                raise PhaseError('synthetic.sharing_violation')
             if replace and fault=='rename_trace':
                 self.trace_fault=True;raise PhaseError('synthetic.rename_unknown')
             if not replace and key in files:raise PhaseError('synthetic.exists')
@@ -85,8 +88,10 @@ def algorithm(*,fault=None,close_failure=False):
         def close(self):pass
         __exit__=NativeHandle.__exit__
         def assert_bound(self):pass
-        def open_file(self,*,expected):
-            assert identities[self.key]==expected;return Handle(self.io,self.key)
+        def open_file(self,*,expected,_replacement_read=False):
+            assert identities[self.key]==expected
+            record.read_modes.append((self.key,_replacement_read))
+            return Handle(self.io,self.key,replacement_read=_replacement_read)
         def assert_file_name(self,handle,identity):assert handle.key==self.key and identities[self.key]==identity
 
     class Mutex:
@@ -139,6 +144,8 @@ class Version2EffectFailureTests(unittest.TestCase):
             self.assertLess(order.index(('flush_file',('current_root',physical['temporary_locators']['current']))),replace)
             self.assertGreater(order.index(('flush_namespace',('current_root',''))),replace)
             self.assertIs(f.record.old_pin_held,True)
+            self.assertIn((f.targets['current'],True),f.record.read_modes)
+            self.assertTrue(all(mode is False for key,mode in f.record.read_modes if key!=f.targets['current']))
             self.assertEqual(physical['handle_finalization'],'closed')
             self.assertEqual(len(f.record.io._handles),0)
             self.assertEqual(len(f.record.created),3)

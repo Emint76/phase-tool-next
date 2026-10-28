@@ -115,7 +115,8 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                         current_scope=pins.enter_context(NativeScopedTarget(io,accepted['current_root'],
                             targets['current'][1],namespace_flush=True))
                         current_id=NativeIdentity.parse(before_native['current']['native_identity'])
-                        current=pins.enter_context(current_scope.open_file(expected=current_id))
+                        current=pins.enter_context(current_scope.open_file(expected=current_id,
+                            _replacement_read=True))
                         sampled,_=_native_state(io,current_scope,current,current_id,effect['archive_length'])
                         _require(sampled==before['current'],'publish.current_changed_during_object_capture')
                         old_content=b''.join(io.read_chunks(current,effect['archive_length']))
@@ -154,8 +155,10 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                         latest,_=_native_state(io,current_scope,current,current_id,effect['archive_length'])
                         _require(latest==before['current'],'publish.current_verification_failed')
                         for scope,handle,identity in objects.values():scope.assert_file_name(handle,identity)
-                        # The original current read handle remains pinned across
-                        # the native final replace. No close-and-blind-rename fallback.
+                        # Retain the old OBJECT, with DELETE sharing compatible
+                        # with the POSIX replace. Ancestors and both Phase mutexes
+                        # stay pinned. This is not leaf-name CAS against external
+                        # noncooperating renamers; no close/blind-rename fallback.
                         call(io.rename,staged,current_scope.parent,current_scope.name,
                             expected_source=staged_id,expected_parent=current_scope.parent_identity,replace=True)
                         replace_completed=True

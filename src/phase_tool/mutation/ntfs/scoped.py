@@ -196,10 +196,20 @@ class NativeScopedTarget:
                 'missing_relative_components':list(self._missing_ancestors),
                 'existing_parent_identity':self.parent_identity.as_dict()}
 
-    def open_file(self, *, expected: NativeIdentity | None = None) -> NativeHandle:
+    def open_file(self, *, expected: NativeIdentity | None = None,
+                  _replacement_read: bool = False) -> NativeHandle:
+        """Pin an object; the explicit replacement read does not reserve its name.
+
+        Default readers retain their NoDelete lease. The Version2 worker needs
+        to read the old object across a POSIX replace while both Phase root
+        mutexes and the ancestor pins remain held. That read must share DELETE;
+        it is not an atomic compare-and-replace against an external renamer.
+        """
+        _require(type(_replacement_read) is bool,'ntfs.invalid_replacement_read')
         _require(not self._missing_ancestors,'ntfs.partial_scope_has_no_leaf_parent')
         self.assert_bound()
-        result = self.io.child(self.parent,self.name,directory=False)
+        result = (self.io._open(self.name,parent=self.parent,directory=False,sharing=7)
+                  if _replacement_read else self.io.child(self.parent,self.name,directory=False))
         try:
             self.io.assert_object(result,directory=False,expected=expected)
             self.assert_bound()

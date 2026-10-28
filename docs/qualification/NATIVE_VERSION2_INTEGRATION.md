@@ -34,3 +34,60 @@ remain separate required work.
 A05 and applicable G01 remain `NOT_VERIFIED`. No production Phase or Hermes
 configuration changes, supported release, merge or deployment are authorized
 by these results.
+
+## First physical Version2 result and correction candidate
+
+The exact `ee99d950046af2f44921766536bcd19d9d74385c` build passed ordinary
+Linux CI. Its first physical Windows Version2 operation did **not** succeed.
+Both immutable content objects were created and flushed; the current file
+remained at its previous 32 bytes. The final `NtSetInformationFile` class 65,
+flags 3 returned `0xC0000043` (sharing violation). The current reader's own
+NoDelete lease conflicted with that replacement.
+
+Core retained an `indeterminate` receipt with `recovery_required=true` and
+`retry_disposition=forbidden`. A separate inspect read that same receipt; its
+successful inspection command is not a successful publication. The staging
+file and both content objects remain preserved. The concrete worker's retained
+creation HANDLE reported wait 0 and exit 0, and its owned handles, streams and
+mutexes finalized. Worker termination does not make the effect successful.
+
+The original collection contains 14 files / 47,186 bytes; its serialized
+SHA-256 is `ac5d0f6673c1bf69e4c5ef1bd845cfa058f660556870f5d2357b61c6b03b2244`.
+Receipt digest:
+`sha256:707b0f3d7acc2bc8fa60fa32d4975decd09538f970577f9e656aa1c2fd1d5471`.
+Two separate agents independently checked the originals, byte observations,
+bindings and process witness on the shared test host/toolchain. This is not
+external reviewer approval or environmental qualification.
+
+The correction candidate explicitly opens only the Version2 current reader
+with DELETE sharing. It retains the old **object**, the ancestor NoDelete
+pins, both existing Phase root mutexes, identity/data/name checks, single
+replacement attempt, flush and independent observations. Other readers retain
+their default NoDelete mode. No close-and-blind-rename fallback is introduced.
+
+Profile revision 3 and its new registry preserve the prior descriptors and
+registry entries byte-for-byte. The unchanged provider artifact keeps its
+implementation version 2.0.0; the selected wheel and complete artifact graph
+identify the physical code change. Coverage and conformance remain empty.
+This revision covers cooperating Phase operations using the same root mutexes.
+It does not reserve the current leaf name against a noncooperating external
+renamer or provide atomic compare-and-replace against the old NativeID. Such
+an external race may be undetected. Those stronger properties remain
+`NOT_VERIFIED`; this correction must not be represented as qualifying them.
+
+The correction has not yet passed real Windows execution. No failed write has
+been retried, recovered, erased or reclassified as successful. A new controlled
+experiment requires its own exact source/build admission and a link to this
+preserved failure. Bundle integration and Windows failure/recovery, installation
+and rollback acceptance remain unfinished.
+
+The first affected portable test run recorded ten passes and four errors,
+rather than a passing correction: two test doubles lacked an explicit
+`assert_object` spec, and the new profile package omitted its existing schema
+and vocabulary bindings. The unpublished revision 3 candidate now retains
+those three dependencies from revision 2, with a recomputed package and
+registry digest; revisions 1 and 2 remain unchanged. The two test doubles use
+an explicit interface spec. The four affected methods subsequently passed;
+the ten earlier passes were not rerun. These are portable/model results, not
+native replacement acceptance. The original failing output remains retained
+separately; the corrective HEAD still requires CI and real Windows execution.

@@ -76,15 +76,35 @@ class Version2AdmissionBoundaryTests(unittest.TestCase):
     def test_new_provider_generation_matches_artifact_and_preserves_v1(self):
         registry=_native_experimental_version2_registry();bindings=registry.guarantee_profile_bindings()
         old=registry.resolve_guarantee_profile(bindings['phase.native.ntfs.experiment.version2.authority.v1@1.0.0'])
-        new=registry.resolve_guarantee_profile(bindings['phase.native.ntfs.experiment.version2.authority.v2@1.0.0'])
+        previous=registry.resolve_guarantee_profile(bindings['phase.native.ntfs.experiment.version2.authority.v2@1.0.0'])
+        new=registry.resolve_guarantee_profile(bindings['phase.native.ntfs.experiment.version2.authority.v3@1.0.0'])
         old_raw=files('phase_tool').joinpath('mutation','ntfs','experimental_version2_authority.py').read_bytes()
         new_raw=files('phase_tool').joinpath('mutation','ntfs','experimental_version2_authority_v2.py').read_bytes()
         self.assertEqual(digest_bytes(old_raw),'sha256:e7c91eb99777202de8f4e8fc8e684695da1b1e6aafe0616e0fe1180421ae4464')
         self.assertEqual(old['implementation']['artifact_digest'],digest_bytes(old_raw))
         self.assertEqual(new['implementation']['artifact_digest'],digest_bytes(new_raw))
         self.assertEqual(new['implementation']['version'],'2.0.0')
+        self.assertEqual(new['implementation'],previous['implementation'])
         self.assertEqual(new['provided_guarantees'],[])
         self.assertEqual(new['conformance'],[])
+
+    def test_replacement_reader_profile_preserves_historical_bindings_and_limits_claims(self):
+        from phase_tool.mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
+        root=files('phase_tool').joinpath('data')
+        old_raw=root.joinpath('registries','native-version2-experiment-v2.json').read_bytes()
+        self.assertEqual(digest_bytes(old_raw),'sha256:6f742b400a6bd9be7932dc5a673a41b421c357d475355adac9e9be925a155b1f')
+        old=parse_json_bytes(old_raw);registry=_native_experimental_version2_registry()
+        self.assertEqual(registry.to_document()['entries'][:-1],old['entries'])
+        self.assertEqual(registry.to_document()['trust_roots'],old['trust_roots'])
+        old_profile=root.joinpath('descriptors','guarantee',
+            'phase.native.ntfs.experiment.version2.authority.v2.json').read_bytes()
+        self.assertEqual(digest_bytes(old_profile),'sha256:a3e48def7f56bce11fdb57c1ed4ec9e0ac3b9be03248a297aea4d073d0fd366c')
+        binding=registry.guarantee_profile_bindings()[_ExperimentalVersion2Admission._profile]
+        profile=registry.resolve_guarantee_profile(binding)
+        self.assertEqual(profile['id'],'phase.native.ntfs.experiment.version2.authority.v3')
+        self.assertIs(profile['storage_scope']['cooperating_processes_only'],True)
+        self.assertEqual(profile['provided_guarantees'],[]);self.assertEqual(profile['conformance'],[])
+        self.assertTrue(any('NOT_VERIFIED' in text and 'external' in text for text in profile['limitations']))
 
     def test_normal_startup_still_refuses_new_experimental_generation(self):
         registry=_native_experimental_version2_registry()

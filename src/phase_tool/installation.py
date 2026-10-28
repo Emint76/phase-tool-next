@@ -1158,8 +1158,8 @@ def _native_experimental_version1_installation(*, manifest_bytes, expected_manif
 
 def _native_experimental_version2_registry():
     """Closed unpublished Version2 candidate; ordinary startup remains refused."""
-    registry = _load_native_file_create_registry('registries/native-version2-experiment-v2.json',
-        'sha256:6f742b400a6bd9be7932dc5a673a41b421c357d475355adac9e9be925a155b1f',
+    registry = _load_native_file_create_registry('registries/native-version2-experiment-v3.json',
+        'sha256:9045d2fa305039aeb6be186d0011cd6b8f33a48844e173199ba1f04759a45f54',
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
     from .mutation.ntfs.experimental_version2 import _VERSION2_CONTRACT
     from .mutation.ntfs.native import _require

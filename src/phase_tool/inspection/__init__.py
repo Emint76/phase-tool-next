@@ -585,6 +585,16 @@ def inspect_run(
                 attachment_digests.add(progress_digest)
         if native_proof is not None:
             attachment_digests.add(native_proof["attachment_digest"])
+            from ..mutation.ntfs.bundle_execution import _BUNDLE2_CONTRACTS
+            if intent["contract"] in _BUNDLE2_CONTRACTS:
+                controls = native_proof["immutable_files"]
+                prepared_control = controls.get("attachments/prepared-stage.json")
+                if prepared_control is not None:
+                    # The native verifier adds this binding only after checking
+                    # the existing prepared records. Never union claimed hashes.
+                    if "preparation-binding.json" not in controls:
+                        raise PhaseError("recovery.preparation_binding_mismatch")
+                    attachment_digests.add(prepared_control[0])
         if attachment_digests != claimed:
             raise PhaseError("inspection.attachment_set_mismatch")
         _verify_intent_blobs(run_root, intent, plan)

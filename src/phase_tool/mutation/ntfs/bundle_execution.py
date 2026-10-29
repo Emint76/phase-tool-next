@@ -22,13 +22,22 @@ from .windows_pipe import WindowsPipeFrames
 
 _BUNDLE1_CONTRACT = {'id': 'bundle_create.v1', 'version': '1.1.0', 'package_digest': 'sha256:6881c1d18034a71723df68873cf7c9762d92bd456cc586614de561a6282f6743'}
 _BUNDLE1_MECHANISM = {'id': 'mechanism.bundle_create_v1', 'version': '1.1.0', 'package_digest': 'sha256:bb8dc72d3b6ff3d03352b3e033c714d6256d289cb452c81d03a66d7b930fee1d'}
+# Windows codec must remain independent of Core's Pydantic record models.
+# The Linux checkpoint regression binds this literal to NATIVE_BOUND_CONTRACT.
+_BUNDLE2_CONTRACT = {'id':'bundle_create.v2','version':'1.2.0',
+    'package_digest':'sha256:26926c1b6ae7fa02f98d7946943cbb5fee10b57adaf2c8c1d118aa15c9754421'}
+_BUNDLE2_MECHANISM = {'id':'mechanism.bundle_create_v2','version':'1.2.0',
+    'package_digest':'sha256:3443af779f138251c5a1e175398e37cb5988f37e06b5d7e8d6774d68ac9c55f8'}
 _DIGEST = re.compile('sha256:[0-9a-f]{64}')
 _EFFECT_FIELDS={'effect_id','kind','target','input_binding','content_source','content_digest',
     'content_length','preconditions','lock_scope','durability_policy_id','on_failure'}
 
 
 def _bundle_context(value):
-    return _worker_context(value,'1.4')
+    _require(type(value) is dict and type(value.get('worker_version')) is str
+        and value['worker_version'] in {'1.4','1.5'},
+        'ntfs.original_bundle_context_required')
+    return _worker_context(value,value['worker_version'])
 
 
 def _bundle_projection_value(projection):
@@ -41,7 +50,9 @@ def _bundle_projection_value(projection):
         and canonical_bytes(grant.as_dict())==projection.grant_bytes
         and canonical_bytes(effect)==projection.effect_bytes
         and canonical_bytes(contract)==projection.contract_bytes
-        and contract==_BUNDLE1_CONTRACT,'ntfs.original_bundle_projection_binding')
+        and ((contract==_BUNDLE1_CONTRACT and context['worker_version']=='1.4')
+             or (contract==_BUNDLE2_CONTRACT and context['worker_version']=='1.5')),
+        'ntfs.original_bundle_projection_binding')
     manifest=parse_manifest(projection.manifest_bytes)
     _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
         and type(effect['effect_id']) is str and bool(effect['effect_id'])
@@ -89,7 +100,7 @@ def _bundle_wire_header(projection,channel_id):
 def _bundle_ready_value(projection,channel_id,pid):
     value=_bundle_projection_value(projection)
     _require(type(pid) is int and pid>0,'ntfs.worker_pid_required')
-    return {'worker_ready_version':'1.4','context':value['context'],'pid':pid,
+    return {'worker_ready_version':value['context']['worker_version'],'context':value['context'],'pid':pid,
         'grant_digest':digest_bytes(projection.grant_bytes),'effect_digest':digest_bytes(projection.effect_bytes),
         'content_digest':projection.content_digest,'content_length':projection.content_length,
         'timestamp':projection.timestamp,'ready_token':parse_json_bytes(_bundle_token(
@@ -122,6 +133,9 @@ class _BundleWorkerInput:
         self._first_attempted=self._go_attempted=False
         self._failed=self._complete=False;self._summary=None
         self._member=self._offset=self._released=0
+        self._prepared_attempted=False
+        self._prepared_message=None
+        self._prepared_ack=None
 
     @property
     def complete(self):return self._complete
@@ -204,6 +218,26 @@ class _BundleWorkerInput:
             'released_bytes':self._released,'complete':self._complete,'failed':self._failed,
             'summary':None if self._summary is None else dict(self._summary)}
 
+    def checkpoint_prepared(self,stage_native):
+        """One PREPARED/ACK, same borrowed pipe and original GO deadline."""
+        from .bundle_prepared import prepared_message,validate_prepared_ack
+        try:
+            self._check()
+            _require(self._complete and self._go_attempted and not self._prepared_attempted,
+                'ntfs.bundle_prepared_checkpoint_consumed')
+            self._prepared_attempted=True  # Sticky before any PREPARED byte leaves.
+            message=prepared_message(self.projection,self.channel_id,os.getpid(),stage_native)
+            self._prepared_message=message
+            self._pipe.send_frame(canonical_bytes(message),self._deadline)
+            raw,_=self._pipe.receive_frame(self._deadline,maximum_bytes=32768)
+            ack=validate_prepared_ack(raw,message=message)
+            self._prepared_ack=ack
+            self._check()
+            return ack
+        except BaseException:
+            self._failed=True
+            raise
+
 
 def run_bundle_worker(pipe,projection,channel_id,*,_transfer_deadline_ns):
     from .file_create import NativeFileCreateOutcomeUnavailable
@@ -221,11 +255,11 @@ def run_bundle_worker(pipe,projection,channel_id,*,_transfer_deadline_ns):
             source.accept_go(raw)
             receipt,evidence=execute_bundle_create(_grant(value['grant']),value['effect'],source,
                 run_id=binding['run_id'],timestamp=value['timestamp'])
-            completion={'worker_completion_version':'1.4','context':binding,'pid':os.getpid(),
+            completion={'worker_completion_version':binding['worker_version'],'context':binding,'pid':os.getpid(),
                 'effect_receipt':receipt,'physical_evidence':evidence,'error':None,'worker_exit_established':False}
         except BaseException as error:
             primary=error
-            completion={'worker_completion_version':'1.4','context':binding,'pid':os.getpid(),
+            completion={'worker_completion_version':binding['worker_version'],'context':binding,'pid':os.getpid(),
                 'effect_receipt':None,'physical_evidence':error.evidence
                     if isinstance(error,NativeFileCreateOutcomeUnavailable)else None,
                 'error':_diagnostic(error),'worker_exit_established':False}
@@ -255,6 +289,17 @@ def validate_bundle_observation(raw,grant_data,locator,*,projection=None):
         and canonical_bytes(raw['grant'])==canonical_bytes(grant_data)
         and raw['locator']==locator and raw['handles_finalized'] is True,'ntfs.bundle_observer_binding_mismatch')
     state,native=raw['state'],raw['native']
+    _validate_bundle_content(state,native,grant_data,projection=projection)
+    return parse_json_bytes(canonical_bytes(raw))
+
+
+def _validate_bundle_content(state,native,grant_data,*,projection=None):
+    """Shared byte/identity checks without claiming any handle was closed.
+
+    Prepared B2 stages retain their real stage lease while Core checkpoints.
+    The finished observation wrapper separately requires closed observer handles.
+    """
+    grant=_grant(grant_data)
     _require(type(state) is dict and set(state)=={'known','exists','digest','length','head_token'}
         and state['known'] is True and type(state['exists']) is bool and state['head_token'] is None
         and type(native) is dict and type(native.get('exists')) is bool and native['exists'] is state['exists'],
@@ -295,7 +340,6 @@ def validate_bundle_observation(raw,grant_data,locator,*,projection=None):
                 and owner['plan_digest']==value['context']['effect_plan_digest']
                 and native['member_count']==len(manifest['members'])
                 and native['total_length']==manifest['total_length'],'ntfs.bundle_result_binding_mismatch')
-    return parse_json_bytes(canonical_bytes(raw))
 
 
 def validate_bundle_worker_completion(raw,*,context,grant_data,effect,expected_pid):
@@ -304,7 +348,7 @@ def validate_bundle_worker_completion(raw,*,context,grant_data,effect,expected_p
     _require(type(expected_pid) is int and expected_pid>0,'ntfs.worker_pid_required')
     value=_frame(raw,{'worker_completion_version','context','pid','effect_receipt',
         'physical_evidence','error','worker_exit_established'})
-    _require(value['worker_completion_version']=='1.4' and canonical_bytes(value['context'])==canonical_bytes(binding)
+    _require(value['worker_completion_version']==binding['worker_version'] and canonical_bytes(value['context'])==canonical_bytes(binding)
         and type(value['pid']) is int and value['pid']==expected_pid
         and value['worker_exit_established'] is False,'ntfs.worker_completion_binding_mismatch')
     receipt,physical,error=value['effect_receipt'],value['physical_evidence'],value['error']
@@ -313,7 +357,7 @@ def validate_bundle_worker_completion(raw,*,context,grant_data,effect,expected_p
             and receipt.get('effect_id')==effect['effect_id'] and receipt.get('kind')=='exclusive_create',
             'ntfs.worker_receipt_binding_mismatch')
     if physical is not None:
-        _require(type(physical) is dict and physical.get('native_bundle_create_version')=='1.0'
+        _require(type(physical) is dict and physical.get('native_bundle_create_version')==('1.1' if binding['worker_version']=='1.5' else '1.0')
             and physical.get('run_id')==binding['run_id'] and physical.get('effect_id')==effect['effect_id']
             and canonical_bytes(physical.get('grant'))==canonical_bytes(grant.as_dict())
             and physical.get('locator')==effect['target']['relative_locator']
@@ -331,7 +375,7 @@ def validate_bundle_parent_completion(reply,*,context,grant_data,effect):
     _bundle_context(context)
     _require(type(reply) is dict and set(reply)=={'parent_execution_version','context','completion',
         'process_witness','owner_finalization','post_observation','ingress_state'}
-        and reply['parent_execution_version']=='1.4' and canonical_bytes(reply['context'])==canonical_bytes(context)
+        and reply['parent_execution_version']==context['worker_version'] and canonical_bytes(reply['context'])==canonical_bytes(context)
         and reply['ingress_state']=='consumed','ntfs.parent_execution_binding_mismatch')
     completion=reply['completion']
     _require(type(completion) is dict and type(completion.get('pid')) is int,'ntfs.worker_completion_binding_mismatch')
@@ -405,6 +449,20 @@ def validate_bundle_parent_finalization(reply,checked,*,grant_data,effect,projec
             and receipt['bytes_written']==physical['acknowledged_bytes_written_lower_bound']==expected_bytes
             and receipt['after']=={'known':True,'exists':True,'digest':projection.content_digest,
                 'length':projection.content_length,'head_token':None},'ntfs.worker_receipt_binding_mismatch')
+    if parse_json_bytes(projection.context_bytes)['worker_version']=='1.5':
+        from .bundle_prepared import validate_prepared_message,validate_prepared_ack,prepared_locator
+        checkpoint=physical.get('prepared_checkpoint')
+        _require(type(checkpoint) is dict and set(checkpoint)=={'message','ack'},
+            'ntfs.bundle_prepared_binding_mismatch')
+        if success:
+            message=validate_prepared_message(checkpoint['message'],projection=projection,
+                channel_id=channel,expected_pid=checked['pid'])
+            validate_prepared_ack(canonical_bytes(checkpoint['ack']),message=message)
+            _require(message['stage_locator']==physical['stage_locator']==prepared_locator(projection)
+                and message['native']['native_identity']==physical['stage_identity']==observed['native']['native_identity']
+                and message['native']==observed['native'],'ntfs.bundle_prepared_binding_mismatch')
+        elif receipt['status']=='failed_no_effect':
+            _require(checkpoint=={'message':None,'ack':None},'ntfs.bundle_prepared_binding_mismatch')
     return observed
 
 

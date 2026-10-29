@@ -193,7 +193,7 @@ def validate_version2_worker_completion(raw,*,context,grant_data,effect,expected
 
 
 def _worker_context(value: object, version: str) -> dict:
-    _require(version in ('1.0','1.1','1.2','1.3','1.4'),'ntfs.worker_protocol_unsupported')
+    _require(version in ('1.0','1.1','1.2','1.3','1.4','1.5'),'ntfs.worker_protocol_unsupported')
     _require(type(value) is dict and set(value) == _CONTEXT, 'ntfs.worker_context_shape')
     result = parse_json_bytes(canonical_bytes(value))
     _require(result['worker_protocol'] == 'phase.native.file-worker' and result['worker_version'] == version,

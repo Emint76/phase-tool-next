@@ -14,6 +14,9 @@ from .evidence import _write_bytes_exclusive_atomic
 
 BINDING_RESOURCE = 'schemas/preparation-binding.schema.json'
 BOUND_CONTRACT = ('bundle_create.v2', '1.1.0')
+# New closed native package; the historical Host binding keeps its semantics.
+NATIVE_BOUND_CONTRACT = ('bundle_create.v2', '1.2.0',
+    'sha256:26926c1b6ae7fa02f98d7946943cbb5fee10b57adaf2c8c1d118aa15c9754421')
 
 
 class PreparationBinding(BaseModel):
@@ -32,7 +35,8 @@ class PreparationBinding(BaseModel):
 
 def requires_preparation_binding(intent):
     binding = intent['contract']
-    return (binding['id'], binding['version']) == BOUND_CONTRACT
+    return ((binding['id'], binding['version']) == BOUND_CONTRACT
+        or (binding['id'], binding['version'], binding['package_digest']) == NATIVE_BOUND_CONTRACT)
 
 
 def binding_value(intent, effect, prepared):

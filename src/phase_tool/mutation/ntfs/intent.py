@@ -103,8 +103,9 @@ def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
                 and plan['mechanism']['version']=='1.0.0',
                 'ntfs.original_file2_effect_required')
         if _bundle:
-            from .bundle_execution import _BUNDLE1_CONTRACT, _BUNDLE1_MECHANISM
-            _require(binding==_BUNDLE1_CONTRACT and plan['mechanism']==_BUNDLE1_MECHANISM,
+            from .bundle_execution import _BUNDLE1_CONTRACT, _BUNDLE1_MECHANISM, _BUNDLE2_CONTRACT, _BUNDLE2_MECHANISM
+            _require((binding==_BUNDLE1_CONTRACT and plan['mechanism']==_BUNDLE1_MECHANISM)
+                or (binding==_BUNDLE2_CONTRACT and plan['mechanism']==_BUNDLE2_MECHANISM),
                 'ntfs.original_bundle_effect_required')
         _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
             and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
@@ -209,7 +210,11 @@ def _original_control_suffix(*, intent: dict, plan: dict, contract,
         'ntfs.original_precondition_bytes_required')
     verify_saved_precondition_results(registry,contract,intent,plan,pre_validator_bytes)
     native=intent['native_binding']
-    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.4' if _bundle else '1.3' if _version2 else '1.2' if _file2 else '1.1' if _version1 else '1.0','run_id':intent['run_id'],
+    bundle_worker_version='1.4'
+    if _bundle:
+        from .bundle_execution import _BUNDLE2_CONTRACT
+        if binding==_BUNDLE2_CONTRACT:bundle_worker_version='1.5'
+    context={'worker_protocol':'phase.native.file-worker','worker_version':bundle_worker_version if _bundle else '1.3' if _version2 else '1.2' if _file2 else '1.1' if _version1 else '1.0','run_id':intent['run_id'],
         'intent_digest':expected_intent_digest,'effect_plan_digest':intent['effect_plan_digest'],
         'native_binding_digest':digest_bytes(canonical_bytes(native)),
         'installation_digest':native['installation']['descriptor_digest'],

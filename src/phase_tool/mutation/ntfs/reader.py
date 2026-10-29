@@ -207,7 +207,8 @@ def _verify_file2_original_blob(*, evidence_root: Path,
 
 
 def _frozen_bundle_digest(intent):
-    _require(intent['contract']['id']=='bundle_create.v1' and len(intent['inputs'])==1,
+    from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT
+    _require(intent['contract'] in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT) and len(intent['inputs'])==1,
         'ntfs.original_bundle_effect_required')
     frozen=intent['inputs'][0]
     _require(frozen['binding_id']=='payload' and frozen['freeze_strategy']=='manifest_and_hash'

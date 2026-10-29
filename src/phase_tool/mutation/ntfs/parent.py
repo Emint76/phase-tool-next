@@ -56,7 +56,7 @@ class _NativeWindowsParent:
         self._file2_exchange_deadline=None
         generation=launch.manifest['native_read_installation_version']
         self._channel_version=(('1.3' if self._file2 else '1.2') if generation=='1.4' else
-            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5'}[generation])
+            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5','1.7':'1.6'}[generation])
         self._inspection_only=launch._inspection_only
         _require(type(self._inspection_only) is bool,'ntfs.fixed_role_required')
         self._consumed=self._inspection_only  # Read role has no unused GO slot.
@@ -191,10 +191,12 @@ class _NativeWindowsParent:
             else:
                 self._launch.send_worker_original(pipe,parsed)
             if self._bundle:
-                self._transfer_bundle(pipe,parsed,handshake_deadline,_common)
+                early_completion=self._transfer_bundle(pipe,parsed,handshake_deadline,_common)
                 from .bundle_execution import validate_bundle_worker_completion
                 completion_check=validate_bundle_worker_completion
-                raw,_=pipe.receive_frame(handshake_deadline,maximum_bytes=512*1024)
+                if early_completion is None:
+                    raw,_=pipe.receive_frame(handshake_deadline,maximum_bytes=512*1024)
+                else:raw=early_completion
             elif self._file2:
                 self._transfer_file2(pipe,parsed,handshake_deadline,_common)
                 from .file2_execution import validate_file2_worker_completion
@@ -244,7 +246,7 @@ class _NativeWindowsParent:
                     else:secondary.append(error)
         # Retain structured partial facts BEFORE late RO/runtime/reporting failure.
         # This is transient diagnosis, never a second receipt or success proof.
-        partial={'parent_execution_version':'1.4' if self._bundle else '1.3' if self._version2 else '1.2' if self._file2 else '1.1' if self._version1 else '1.0','context':context,'completion':completion,
+        partial={'parent_execution_version':context['worker_version'] if self._bundle else '1.3' if self._version2 else '1.2' if self._file2 else '1.1' if self._version1 else '1.0','context':context,'completion':completion,
             'process_witness':process_fact,'owner_finalization':{
                 'worker_stdin':'closed' if self._worker_finalized else 'unknown',
                 'worker_stdout':'closed' if self._worker_finalized else 'unknown',
@@ -377,6 +379,22 @@ class _NativeWindowsParent:
             raw,_=self._pipe.receive_frame(deadline,maximum_bytes=2*1024**2)
             receiver.feed(raw);pipe.send_frame(raw,deadline)
         receiver.finish()
+        if context['worker_version']=='1.5':
+            from .bundle_prepared import validate_prepared_message,validate_prepared_ack
+            raw,_=pipe.receive_frame(deadline,maximum_bytes=512*1024)
+            candidate=parse_json_bytes(raw,maximum_bytes=512*1024)
+            if type(candidate) is dict and 'worker_completion_version' in candidate:
+                # A bound negative completion without a stage is still validated
+                # by the common completion/process-witness path above.
+                return raw
+            _require(canonical_bytes(candidate)==raw,'ntfs.bundle_prepared_binding_mismatch')
+            message=validate_prepared_message(candidate,projection=parsed,
+                channel_id=self._launch.channel_id,expected_pid=self._worker.pid)
+            self._pipe.send_frame(canonical_bytes(common|{'ok':True,'value':{
+                'bundle_stage':'prepared','prepared':message},'error':None}),deadline)
+            ack_raw,_=self._pipe.receive_frame(deadline,maximum_bytes=32768)
+            validate_prepared_ack(ack_raw,message=message)
+            pipe.send_frame(ack_raw,deadline)
 
     def serve(self):
         """Core requests and its final serialized response share owned framing.

@@ -47,7 +47,8 @@ def execute_bundle_create(grant, effect, source, *, run_id, timestamp):
         and value['context']['run_id']==run_id and value['timestamp']==timestamp
         and canonical_bytes(value['grant'])==canonical_bytes(grant.as_dict())
         and canonical_bytes(value['effect'])==canonical_bytes(effect)
-        and value['contract']['id']=='bundle_create.v1','ntfs.worker_go_binding_mismatch')
+        and value['contract']['id'] in {'bundle_create.v1','bundle_create.v2'},'ntfs.worker_go_binding_mismatch')
+    bundle2=value['context']['worker_version']=='1.5'
     manifest_raw=source.projection.manifest_bytes
     manifest=parse_manifest(manifest_raw)
     locator=safe_relative_locator(effect['target']['relative_locator'])
@@ -144,9 +145,15 @@ def execute_bundle_create(grant, effect, source, *, run_id, timestamp):
                                 directory=directories[path]
                                 invoke(io.flush_namespace,directory,io.identity(directory))
                         # All member/child handles closed before directory rename.
-                        verify_bundle_handle(io,stage,expected_identity=stage_id,
+                        stage_native=verify_bundle_handle(io,stage,expected_identity=stage_id,
                             expected_manifest=manifest_raw,run_id=run_id,plan_digest=plan_digest)
                         scope.assert_bound();lock.assert_held()
+                        if bundle2:
+                            # The same Core must durably save/read BOTH existing
+                            # prepared records before the sole consumer commit.
+                            # Root mutex and stage DELETE HANDLE remain retained.
+                            source.checkpoint_prepared(stage_native)
+                            scope.assert_bound();lock.assert_held()
                         # Sole publication point; no copy/delete or replacement fallback.
                         rename=invoke(io.rename,stage,scope.parent,scope.name,
                             expected_source=stage_id,expected_parent=scope.parent_identity,replace=False)
@@ -174,7 +181,7 @@ def execute_bundle_create(grant, effect, source, *, run_id, timestamp):
     if not closed:status='indeterminate';after=_unknown();after_native=None;error='ntfs.worker_finalization_unknown'
     primary_info=None if primary is None else _diagnostic(primary)
     if primary_info is not None:error=primary_info['code'] or 'ntfs.native_execution_failed'
-    physical={'native_bundle_create_version':'1.0','run_id':run_id,'effect_id':effect['effect_id'],
+    physical={'native_bundle_create_version':'1.1' if bundle2 else '1.0','run_id':run_id,'effect_id':effect['effect_id'],
         'grant':grant.as_dict(),'locator':locator,'before':before_native,'after':after_native,
         'stage_locator':stage_locator,'stage_identity':None if stage_id is None else stage_id.as_dict(),
         'rename':rename,'namespace_flushed':namespace_flushed,'mutation_trace':trace.snapshot(),
@@ -183,6 +190,8 @@ def execute_bundle_create(grant, effect, source, *, run_id, timestamp):
         'remaining_handle_count':len(io._handles),'unproven_handle_ownership':getattr(io,'_bundle_stat_ownership_unknown',False),
         'acknowledged_bytes_written_lower_bound':written,'primary_error':primary_info,
         'finalization_errors':[_diagnostic(e)for e in errors],'worker_exit_established':False}
+    if bundle2:
+        physical['prepared_checkpoint']={'message':source._prepared_message,'ack':source._prepared_ack}
     if not observed_before:
         failure=NativeFileCreateOutcomeUnavailable(physical)
         failure.primary_error=primary;failure.finalization_errors=tuple(errors)

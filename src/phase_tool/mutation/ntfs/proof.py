@@ -56,7 +56,7 @@ def _facts(binding, manifest, receipt, proof):
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
     version2 = manifest['contract']['id'] == 'publish_new_version.v2'
     file2=manifest['contract']['id']=='file_create.v2'
-    bundle=manifest['contract']['id']=='bundle_create.v1'
+    bundle=manifest['contract']['id'] in {'bundle_create.v1','bundle_create.v2'}
     grant = manifest['root_grants'] if version2 else manifest['root_grants'][0]
     _require(set(physical['observations']) <= {'pre_operation','post_operation'},
         'ntfs.native_proof_shape')
@@ -173,8 +173,27 @@ def _verify_original_semantics(binding, manifest, receipt, proof):
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
     version2 = manifest['contract']['id'] == 'publish_new_version.v2'
     versioned = version1 or version2
-    bundle=manifest['contract']['id']=='bundle_create.v1'
+    bundle=manifest['contract']['id'] in {'bundle_create.v1','bundle_create.v2'}
     effect,actual_effect = plan['effects'][0],effects[0]
+    if manifest['contract']['id']=='bundle_create.v2' and actual_effect['status']=='applied_verified':
+        from ...continuation import prepared_record
+        from ...prepared_binding import verify_prepared_binding
+        from .bundle_prepared import prepared_locator,validate_prepared_message,validate_prepared_ack
+        parsed=binding.read(run_id=receipt['run_id'],intent_digest=digest)
+        parent=proof['physical']['parent_response']
+        checkpoint=parent['completion']['physical_evidence']['prepared_checkpoint']
+        message=validate_prepared_message(checkpoint['message'],projection=parsed,
+            channel_id=checkpoint['message']['channel_id'],expected_pid=parent['completion']['pid'])
+        ack=validate_prepared_ack(canonical_bytes(checkpoint['ack']),message=message)
+        prepared=verify_prepared_binding(binding.registry,contract,intent,plan,run)
+        pair=message['native']['stat_identity']
+        _require(prepared==prepared_record(intent,effect,prepared_locator(parsed),
+            device=pair['device'],inode=pair['inode'])
+            and ack['prepared_stage_digest']==digest_bytes(canonical_bytes(prepared)),
+            'recovery.preparation_mismatch')
+        bound,bound_raw=_canonical(run/'preparation-binding.json')
+        _require(ack['preparation_binding_digest']==digest_bytes(bound_raw),
+            'recovery.preparation_binding_mismatch')
     _require(actual_effect['effect_id'] == effect['effect_id']
         and actual_effect['kind'] == effect['kind'] == ('publish_new_version' if versioned else 'exclusive_create'),
         'ntfs.native_receipt_semantic_mismatch')
@@ -368,6 +387,14 @@ def verify_native_terminal_proof(binding, run_root, receipt):
         plan, _ = _canonical(run_root/'attachments'/'effect-plan.json')
         _verify_bound_pre_validators(run_root,intent);_verify_intent_blobs(run_root,intent,plan)
         files['intent.json'] = digest_bytes(original),len(original)
+        if manifest['contract']['id']=='bundle_create.v2' and (run_root/'preparation-binding.json').exists():
+            from ...prepared_binding import verify_prepared_binding
+            exact=manifest['contract']
+            contract=binding.registry.resolve_contract(exact['id'],exact['version'],exact['package_digest'],
+                core_version=manifest['core']['version'])
+            verify_prepared_binding(binding.registry,contract,intent,plan,run_root)
+            _value,bound_raw=_canonical(run_root/'preparation-binding.json')
+            files['preparation-binding.json']=digest_bytes(bound_raw),len(bound_raw)
     else:
         _require(not (run_root/'intent.json').exists(), 'ntfs.original_intent_mismatch')
     # Pre-intent rejection/reuse may retain frozen blobs without an intent.
@@ -379,7 +406,7 @@ def verify_native_terminal_proof(binding, run_root, receipt):
             _require(re.fullmatch('[0-9a-f]{64}',path.name) is not None,
                 'ntfs.original_frozen_input_required')
             digest = 'sha256:'+path.name
-            if manifest['contract']['id']=='file_create.v2':
+            if manifest['contract']['id'] in {'file_create.v2','bundle_create.v1','bundle_create.v2'}:
                 from ...streaming import FILE_LIMIT,hash_file
                 actual,length=hash_file(path,FILE_LIMIT)
                 _require(actual==digest,'ntfs.original_evidence_bytes_mismatch')

@@ -40,6 +40,23 @@ def _read_canonical(path: Path) -> tuple[Any, str]:
     return value, digest_bytes(data)
 
 
+def _verify_native_bundle_projection(contract,receipt,run_id,authority,observation,locator):
+    """Bind a fresh bundle sample to its original owner and manifest lineage.
+
+    Reuse already verifies its original receipt recursively. Its current run ID
+    is not the directory owner's creation ID and must never replace that ID.
+    """
+    if receipt['execution_disposition']=='reused_existing':return
+    from ..mutation.ntfs.bundle_execution import (
+        _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,validate_bundle_observation)
+    exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
+        'package_digest':contract.package_digest}
+    if exact not in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT):
+        raise PhaseError('inspection.native_binding_mismatch')
+    projection=authority.read_binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest'])
+    validate_bundle_observation(observation,authority._manifest['root_grants'][0],locator,projection=projection)
+
+
 def _verify_bound_pre_validators(run_root: Path, intent: Mapping[str, Any]) -> None:
     if not pre_validator_binding_required(intent):
         return
@@ -642,12 +659,9 @@ def inspect_run(
                 else:
                     observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
                         locator=canonical_result['locator'], expected_identity=native_proof['target_identity'])
-                if contract.document['identity']['id']=='bundle_create.v1' and receipt['execution_disposition']!='reused_existing':
-                    from ..mutation.ntfs.bundle_execution import validate_bundle_observation
-                    projection=_native_authority.read_binding.read(run_id=run_id,
-                        intent_digest=receipt['evidence']['intent_digest'])
-                    validate_bundle_observation(observation,_native_authority._manifest['root_grants'][0],
-                        canonical_result['locator'],projection=projection)
+                if contract.document['identity']['id'] in {'bundle_create.v1','bundle_create.v2'}:
+                    _verify_native_bundle_projection(contract,receipt,run_id,_native_authority,
+                        observation,canonical_result['locator'])
                 streamed_state = observation['state']
                 native_target_identity = observation['native']['native_identity']
             else:

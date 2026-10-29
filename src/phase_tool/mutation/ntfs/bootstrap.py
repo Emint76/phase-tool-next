@@ -247,7 +247,7 @@ class _NativeAcceptedLaunch:
             and invocation['run_id'] not in {'.','..'}
             and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
                 for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4','1.5','1.6'}
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4','1.5','1.6','1.7'}
             and type(manifest.get('root_grants')) is list
             and len(manifest['root_grants'])==(2 if manifest['native_read_installation_version']=='1.5' else 1),
             'ntfs.accepted_launch_binding_required')
@@ -256,6 +256,11 @@ class _NativeAcceptedLaunch:
             from .bundle_execution import _BUNDLE1_CONTRACT
             _require(type(_experimental_admission_context) is _ExperimentalBundle1Admission
                 and manifest.get('contract')==_BUNDLE1_CONTRACT,'ntfs.experimental_admission_required')
+        if manifest['native_read_installation_version']=='1.7':
+            from .experimental_bundle2 import _ExperimentalBundle2Admission
+            from .bundle_execution import _BUNDLE2_CONTRACT
+            _require(type(_experimental_admission_context) is _ExperimentalBundle2Admission
+                and manifest.get('contract')==_BUNDLE2_CONTRACT,'ntfs.experimental_admission_required')
         if manifest['native_read_installation_version']=='1.5':
             from .experimental_version2 import _ExperimentalVersion2Admission,_VERSION2_CONTRACT
             from .version2_observation import _version2_grants
@@ -334,7 +339,9 @@ class _NativeAcceptedLaunch:
     @property
     def _bundle(self):
         manifest=self.manifest
-        return manifest['native_read_installation_version']=='1.6' and manifest['contract']['id']=='bundle_create.v1'
+        from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT
+        return ((manifest['native_read_installation_version']=='1.6' and manifest['contract']==_BUNDLE1_CONTRACT)
+            or (manifest['native_read_installation_version']=='1.7' and manifest['contract']==_BUNDLE2_CONTRACT))
 
     def check_runtime(self):
         _require(self._owner==(os.getpid(),threading.get_ident())

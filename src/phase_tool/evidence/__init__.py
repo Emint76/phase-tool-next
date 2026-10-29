@@ -597,14 +597,14 @@ def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id
         'ntfs.native_durability_dependency_mismatch')
     for name, binding in expected_files.items():
         parts = name.split('/')
-        _require((parts in (['receipt.json'], ['intent.json'])
+        _require((parts in (['receipt.json'], ['intent.json'], ['preparation-binding.json'])
                 or (len(parts) == 2 and parts[0] == 'attachments'
                     and re.fullmatch(r'[a-z][a-z0-9.-]*\.json',parts[1]) is not None)
                 or (len(parts) == 2 and parts[0] == 'blobs'
                     and re.fullmatch('[0-9a-f]{64}',parts[1]) is not None))
             and type(binding) is tuple and len(binding) == 2
             and type(binding[0]) is str and re.fullmatch('sha256:[0-9a-f]{64}',binding[0]) is not None
-            and type(binding[1]) is int and 0 <= binding[1] <= 2*1024**2,
+            and type(binding[1]) is int and 0 <= binding[1] <= (2*1024**3 if parts[0]=='blobs' else 2*1024**2),
             'ntfs.native_durability_dependency_mismatch')
 
     owner = os.getpid(),threading.get_ident()
@@ -656,7 +656,9 @@ def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id
     def inventory():
         run = directories['run']['fd']
         names = set(os.listdir(run))
-        _require(names <= {'intent.json','receipt.json','attachments','blobs'},
+        allowed={'intent.json','receipt.json','attachments','blobs'}
+        if 'preparation-binding.json' in expected_files:allowed.add('preparation-binding.json')
+        _require(names <= allowed,
             'ntfs.native_durability_dependency_mismatch')
         actual = names - {'attachments','blobs'}
         for child in ('attachments','blobs'):
@@ -900,11 +902,25 @@ def _write_native_canonical(store,binding,relative,value):
     _require(type(store) is EvidenceStore and type(binding) is _NativeFileCreateReadBinding,
         'ntfs.native_failure_store_required')
     _require(relative in {'receipt.json','attachments/native-terminal-proof.json',
-        'attachments/native-parent-failure.json'},'evidence.invalid_path')
+        'attachments/native-parent-failure.json','prepared-stage-checkpoint'},'evidence.invalid_path')
     root=binding.check_evidence_root()
     manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
     expected_root=manifest['evidence_identity']
     run_id=validate_run_id(store.run_root.name)
+    checkpoint=relative=='prepared-stage-checkpoint'
+    if checkpoint:
+        from ..prepared_binding import NATIVE_BOUND_CONTRACT, PreparationBinding
+        from ..continuation import PreparedStage
+        exact=dict(zip(('id','version','package_digest'),NATIVE_BOUND_CONTRACT))
+        _require(manifest['native_read_installation_version']=='1.7'
+            and manifest['contract']==exact and type(value) is dict
+            and set(value)=={'prepared','binding'},'ntfs.original_closed_checkpoint_required')
+        PreparedStage.model_validate(value['prepared'])
+        PreparationBinding.model_validate(value['binding'])
+        _require(value['prepared']['run_id']==value['binding']['run_id']==run_id
+            and value['prepared']['contract']==value['binding']['contract']==exact
+            and value['binding']['preparation_digest']==digest_bytes(canonical_bytes(value['prepared'])),
+            'recovery.preparation_binding_mismatch')
     _require(root==store.evidence_root and store.run_root==root/'.phase'/'runs'/run_id,
         'ntfs.native_failure_binding_mismatch')
     owner=os.getpid(),threading.get_ident()
@@ -942,7 +958,7 @@ def _write_native_canonical(store,binding,relative,value):
         expected_attachment=getattr(store,'_native_owned_attachment_identity',None)
         _require(relative!='receipt.json' or expected_attachment is not None,
             'ntfs.native_terminal_attachment_unowned')
-        if relative.startswith('attachments/') or expected_attachment is not None:
+        if checkpoint or relative.startswith('attachments/') or expected_attachment is not None:
             before_pin=len(opened)
             try:attachment=pin('attachments',run_descriptor)
             except FileNotFoundError:
@@ -961,9 +977,24 @@ def _write_native_canonical(store,binding,relative,value):
             current=attachment if relative.startswith('attachments/') else run_descriptor
         for record in opened:check(record)
         binding.check_evidence_root()
-        path=store.run_root/relative
-        data=canonical_bytes(value)
-        _write_bytes_exclusive_atomic(path,data,relative,_parent_descriptor=current)
+        if checkpoint:
+            from ..recovery import read_record
+            writes=(('attachments/prepared-stage.json',value['prepared'],attachment),
+                    ('preparation-binding.json',value['binding'],run_descriptor))
+            for leaf,record_value,parent_fd in writes:
+                for record in opened:check(record)
+                _write_bytes_exclusive_atomic(store.run_root/leaf,canonical_bytes(record_value),leaf,
+                    _parent_descriptor=parent_fd)
+                for record in opened:check(record)
+            for leaf,record_value,_parent_fd in writes:
+                _require(read_record(store.run_root/leaf)==record_value,'recovery.preparation_binding_mismatch')
+                for record in opened:check(record)
+            path=store.run_root/'attachments/prepared-stage.json'
+            data=canonical_bytes(value['prepared'])
+        else:
+            path=store.run_root/relative
+            data=canonical_bytes(value)
+            _write_bytes_exclusive_atomic(path,data,relative,_parent_descriptor=current)
         for record in opened:check(record)
         binding.check_evidence_root()
         if relative=='receipt.json':store._authoritative_evidence_published=True

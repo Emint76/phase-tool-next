@@ -147,6 +147,12 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
     _PROTOCOL_VERSION='1.5'
     _EXECUTE_KINDS=frozenset({'execute_bundle'})
 
+    def _prepare_bundle_exchange(self,projection):
+        """B1 has no Core checkpoint or additional frame."""
+
+    def _bundle_terminal(self,common,deadline,*,projection,expected_pid):
+        return self._receive_bound(common,deadline)
+
     def _request(self,kind,run_id,intent_digest,payload):
         _require(kind not in {'execute_file_create','execute_version1','execute_version2','execute_file2'},
             'ntfs.original_closed_role_required')
@@ -169,6 +175,7 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
             self._request('execute_bundle',run_id,intent_digest,{})
             _require(not self._possible_dispatch,'ntfs.channel_execution_consumed')
             value=_bundle_projection_value(projection)
+            self._prepare_bundle_exchange(projection)
             _require(value['context']['run_id']==run_id
                 and value['context']['intent_digest']==intent_digest
                 and type(source) is _BundleSnapshotSource
@@ -200,7 +207,7 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
             # The SAME gate remains held through rewind, sole parent GO, checked
             # replay, terminal response and all channel checks. No repeated RPC.
             for raw in source.replay_frames():self._send_frame(raw,deadline)
-            answer=self._receive_bound(common,deadline)
+            answer=self._bundle_terminal(common,deadline,projection=projection,expected_pid=checked['pid'])
             self._terminal_value_bytes=canonical_bytes(answer)  # BEFORE release/late owner failure.
             self._usable()
         except BaseException as error:

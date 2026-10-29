@@ -1,14 +1,15 @@
 # Experimental native bundle2 through the existing Core
 
-Status: integrated source candidate with portable model results; no physical
-Windows bundle2 execution or native prepared recovery is claimed yet. A05,
+Status: corrected source candidate; the first real Windows bundle2 invocation
+was rejected before intent/worker dispatch. No successful physical bundle2
+creation or native prepared recovery is claimed. A05,
 applicable G01 and supported MIX/FULL qualification remain NOT_VERIFIED.
 Ordinary admission/production guard, production installations and Hermes are
 unchanged. This checkpoint is not a supported NTFS release.
 
 ## Reused lifecycle
 
-The exact native bundle_create.v2@1.2.0 binding uses the existing Core intent,
+The exact native bundle_create.v2 bindings use the existing Core intent,
 frozen inputs, EffectBroker, EvidenceStore, receipt and independent inspect.
 PreparedStage1.0 and PreparationBinding1.0 retain their formats and original
 run ownership. There is no second journal, operation queue, history store or Core.
@@ -29,7 +30,7 @@ session finalization remain separate requirements of the existing proof.
 Fresh inspect checks original bundle ownership and plan for both native bindings;
 reused-existing operations retain the original creator's identity.
 
-New immutable experimental bindings are separate from historical Host/B1 rows:
+The initial immutable experimental 1.2.0 bindings remain available:
 
 - Contract package: sha256:26926c1b6ae7fa02f98d7946943cbb5fee10b57adaf2c8c1d118aa15c9754421.
 - Mechanism package: sha256:3443af779f138251c5a1e175398e37cb5988f37e06b5d7e8d6774d68ac9c55f8.
@@ -39,6 +40,48 @@ Only the fixed closed experimental bundle2 composition selects generation1.7,
 channel1.6 and worker1.5. All 156 prior registry entries and trust roots are
 retained; the candidate profile declares no provided guarantees or conformance.
 The default registry/guard rejects that experimental generation.
+
+## Actual admission refusal and corrected source
+
+The accepted initial build passed its Linux CI, including all portable bundle2
+models. Its single isolated Windows invocation nevertheless returned exit10,
+`ntfs.experimental_requirements_mismatch`, `not_executed`, before intent or worker
+dispatch. Separate inspect returned `inspection.run_unavailable`. Independent
+restoration and a fresh RO census found only the eight initialization/input
+files; the synthetic target was absent. No receipt was created for this early
+admission rejection. This is a contract/admission defect, not evidence of an
+incompatible physical rename primitive. The failure remains retained.
+
+The 1.2.0 contract carried an empty requirement mapping inherited from the Host
+contract, while the experimental admission requires the five native obligations.
+The corrected immutable contract **bundle_create.v2@1.2.1** supplies all five:
+exclusive create, readback verification, cross-process serialization, bound
+namespace mutation and namespace metadata flush attempted. The strict admission
+and qualification guard remain unchanged. The physical mechanism1.2.0 is reused.
+
+- Corrected contract package: sha256:f3d5ff90a36a41b2021ba59179eff3cdbbac47cd07da47f38305029893720052.
+- New registry: sha256:dc6dddae1e655b0c114b7dd556c55e4499b97aee97185b33f40b8883663be2d5.
+- New profile descriptor1.0.1: sha256:6cfb5c5d60a7ee539053168c8b0e62f688c30b6ee3b9f586db1f9f00b257b3d4.
+
+The closed manifest1.8 selects a separate provider artifact and admission type.
+The new snapshot appends only the contract and profile to all159 existing rows;
+the old snapshots, descriptors, provider and contract remain unchanged. Channel1.6,
+worker1.5, prepared-record formats, Core, receipts and version semantics are reused.
+Provided guarantees and conformance stay empty; ordinary startup continues to
+refuse this experimental composition. The correction is source work pending its
+own exact-build CI and a separately identified physical experiment.
+
+Review also found two integration gaps: the new launcher must decode the bundle
+worker's projection context for the exact new generation, and the Core inventory
+must recognize the exact new preparation binding on subsequent invocations.
+Focused decoder/inventory regressions accompany those corrections. Their model
+scope does not certify worker execution or terminal closure.
+
+The original canary recorder rejected a valid early-error envelope with null
+nested run_id, and its positive-only oracle then raised a secondary missing-field
+error. Complete raw frames and original file bytes survived; neither failure was
+converted to a successful result. A corrected recorder must retain early refusal
+envelopes while keeping the successful lifecycle oracle strict.
 
 ## Actual portable check and retained negative
 

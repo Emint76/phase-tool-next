@@ -56,7 +56,7 @@ class _NativeWindowsParent:
         self._file2_exchange_deadline=None
         generation=launch.manifest['native_read_installation_version']
         self._channel_version=(('1.3' if self._file2 else '1.2') if generation=='1.4' else
-            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5','1.7':'1.6'}[generation])
+            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5','1.7':'1.6','1.8':'1.6'}[generation])
         self._inspection_only=launch._inspection_only
         _require(type(self._inspection_only) is bool,'ntfs.fixed_role_required')
         self._consumed=self._inspection_only  # Read role has no unused GO slot.

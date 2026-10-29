@@ -957,7 +957,8 @@ class PhaseCore:
             if native_ctx is not None and native_ctx.native_authority is not None:
                 from .mutation.ntfs.experimental_bundle1_authority import _ExperimentalBundle1Authority
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
-                native_bundle = type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority)
+                from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
+                native_bundle = type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2)
             if native_bundle:
                 frozen = native_ctx.native_authority.freeze_inputs(
                     contract, request, parse_json_bytes(candidate.canonical_bytes),
@@ -1244,7 +1245,8 @@ class PhaseCore:
             intent_digest = profile_digest("intent", intent)
             if execute and native_authority is not None:
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
-                if type(native_authority) is _ExperimentalBundle2Authority:
+                from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
+                if type(native_authority) in (_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2):
                     # Pass the existing Core store and receipt attachment list;
                     # checkpointing never creates another evidence owner.
                     native_authority.bind_prepared_checkpoint(store,contract,plan,intent_path,
@@ -1573,11 +1575,12 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
                     safe_info(path,directory=False)
                     prepared_control=False
                     if entry.name=='preparation-binding.json':
-                        from .prepared_binding import NATIVE_BOUND_CONTRACT
+                        from .prepared_binding import NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2
                         original,_raw=control(run/'intent.json')
                         prepared_control=(original.get('phase_intent_version')=='1.2'
                             and original.get('execution_requested') is True
-                            and original.get('contract')==dict(zip(('id','version','package_digest'),NATIVE_BOUND_CONTRACT)))
+                            and original.get('contract') in tuple(dict(zip(('id','version','package_digest'),b))
+                                for b in (NATIVE_BOUND_CONTRACT,NATIVE_BOUND_CONTRACT_V2)))
                     _require(entry.name in {'intent.json','receipt.json'} or prepared_control,
                         'ntfs.original_evidence_name_unsafe')
         return names,attachments

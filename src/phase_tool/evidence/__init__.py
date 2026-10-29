@@ -909,10 +909,12 @@ def _write_native_canonical(store,binding,relative,value):
     run_id=validate_run_id(store.run_root.name)
     checkpoint=relative=='prepared-stage-checkpoint'
     if checkpoint:
-        from ..prepared_binding import NATIVE_BOUND_CONTRACT, PreparationBinding
+        from ..prepared_binding import NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2, PreparationBinding
         from ..continuation import PreparedStage
-        exact=dict(zip(('id','version','package_digest'),NATIVE_BOUND_CONTRACT))
-        _require(manifest['native_read_installation_version']=='1.7'
+        selected={'1.7':NATIVE_BOUND_CONTRACT,'1.8':NATIVE_BOUND_CONTRACT_V2}.get(manifest['native_read_installation_version'])
+        _require(selected is not None,'ntfs.original_closed_checkpoint_required')
+        exact=dict(zip(('id','version','package_digest'),selected))
+        _require(manifest['native_read_installation_version'] in {'1.7','1.8'}
             and manifest['contract']==exact and type(value) is dict
             and set(value)=={'prepared','binding'},'ntfs.original_closed_checkpoint_required')
         PreparedStage.model_validate(value['prepared'])

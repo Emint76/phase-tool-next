@@ -48,10 +48,10 @@ def _verify_native_bundle_projection(contract,receipt,run_id,authority,observati
     """
     if receipt['execution_disposition']=='reused_existing':return
     from ..mutation.ntfs.bundle_execution import (
-        _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,validate_bundle_observation)
+        _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2,validate_bundle_observation)
     exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
         'package_digest':contract.package_digest}
-    if exact not in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT):
+    if exact not in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2):
         raise PhaseError('inspection.native_binding_mismatch')
     projection=authority.read_binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest'])
     validate_bundle_observation(observation,authority._manifest['root_grants'][0],locator,projection=projection)

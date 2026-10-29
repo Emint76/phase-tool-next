@@ -21,9 +21,9 @@ _LIMIT = 32768
 
 
 def prepared_locator(projection):
-    from .bundle_execution import _bundle_projection_value, _BUNDLE2_CONTRACT
+    from .bundle_execution import _bundle_projection_value, _BUNDLE2_CONTRACTS
     value = _bundle_projection_value(projection)
-    _require(value['contract'] == _BUNDLE2_CONTRACT, 'ntfs.bundle2_projection_required')
+    _require(value['contract'] in _BUNDLE2_CONTRACTS, 'ntfs.bundle2_projection_required')
     target = value['effect']['target']['relative_locator']
     parent = target.rsplit('/',1)[0]+'/' if '/' in target else ''
     return parent+stage_name(value['context']['run_id'],value['effect'])
@@ -40,9 +40,9 @@ def prepared_message(projection, channel_id, pid, stage_native):
 
 
 def validate_prepared_message(message, *, projection, channel_id, expected_pid=None):
-    from .bundle_execution import _bundle_projection_value, _validate_bundle_content, _BUNDLE2_CONTRACT
+    from .bundle_execution import _bundle_projection_value, _validate_bundle_content, _BUNDLE2_CONTRACTS
     value = _bundle_projection_value(projection)
-    _require(value['contract'] == _BUNDLE2_CONTRACT
+    _require(value['contract'] in _BUNDLE2_CONTRACTS
         and type(channel_id) is str and _CHANNEL.fullmatch(channel_id) is not None,
         'ntfs.bundle2_projection_required')
     _require(type(message) is dict and set(message) == {'bundle_prepared_version','context',
@@ -94,17 +94,18 @@ class _CoreBundleCheckpoint:
                  attachment_digests):
         from ...installation import _NativeFileCreateReadBinding
         from ...evidence import EvidenceStore
-        from .bundle_execution import _BUNDLE2_CONTRACT
+        from .bundle_execution import _BUNDLE2_CONTRACT, _BUNDLE2_CONTRACT_V2, _BUNDLE2_CONTRACTS
         _require(type(binding) is _NativeFileCreateReadBinding and type(store) is EvidenceStore
             and type(attachment_digests) is list
             and all(type(d) is str and _DIGEST.fullmatch(d) is not None for d in attachment_digests)
             and type(expected_intent_digest) is str and _DIGEST.fullmatch(expected_intent_digest) is not None,
             'ntfs.original_closed_checkpoint_required')
-        _require({'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
-            'package_digest':contract.package_digest} == _BUNDLE2_CONTRACT
-            and plan['contract'] == _BUNDLE2_CONTRACT, 'ntfs.bundle2_projection_required')
+        exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
+            'package_digest':contract.package_digest}
+        _require(exact in _BUNDLE2_CONTRACTS and plan['contract'] == exact, 'ntfs.bundle2_projection_required')
         manifest = parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
-        _require(manifest['native_read_installation_version'] == '1.7'
+        _require(((manifest['native_read_installation_version']=='1.7' and exact==_BUNDLE2_CONTRACT)
+            or (manifest['native_read_installation_version']=='1.8' and exact==_BUNDLE2_CONTRACT_V2))
             and intent_path == Path(manifest['evidence_root'])/'.phase'/'runs'/plan['run_id']/'intent.json'
             and store.run_root == intent_path.parent and store.evidence_root == Path(manifest['evidence_root'])
             and type(operation_nonce) is str and _CHANNEL.fullmatch(operation_nonce) is not None,

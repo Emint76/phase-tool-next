@@ -26,6 +26,8 @@ _BUNDLE1_MECHANISM = {'id': 'mechanism.bundle_create_v1', 'version': '1.1.0', 'p
 # The Linux checkpoint regression binds this literal to NATIVE_BOUND_CONTRACT.
 _BUNDLE2_CONTRACT = {'id':'bundle_create.v2','version':'1.2.0',
     'package_digest':'sha256:26926c1b6ae7fa02f98d7946943cbb5fee10b57adaf2c8c1d118aa15c9754421'}
+_BUNDLE2_CONTRACT_V2 = {'id': 'bundle_create.v2', 'package_digest': 'sha256:f3d5ff90a36a41b2021ba59179eff3cdbbac47cd07da47f38305029893720052', 'version': '1.2.1'}
+_BUNDLE2_CONTRACTS = (_BUNDLE2_CONTRACT, _BUNDLE2_CONTRACT_V2)
 _BUNDLE2_MECHANISM = {'id':'mechanism.bundle_create_v2','version':'1.2.0',
     'package_digest':'sha256:3443af779f138251c5a1e175398e37cb5988f37e06b5d7e8d6774d68ac9c55f8'}
 _DIGEST = re.compile('sha256:[0-9a-f]{64}')
@@ -51,7 +53,7 @@ def _bundle_projection_value(projection):
         and canonical_bytes(effect)==projection.effect_bytes
         and canonical_bytes(contract)==projection.contract_bytes
         and ((contract==_BUNDLE1_CONTRACT and context['worker_version']=='1.4')
-             or (contract==_BUNDLE2_CONTRACT and context['worker_version']=='1.5')),
+             or (contract in _BUNDLE2_CONTRACTS and context['worker_version']=='1.5')),
         'ntfs.original_bundle_projection_binding')
     manifest=parse_manifest(projection.manifest_bytes)
     _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'

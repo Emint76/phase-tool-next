@@ -18,6 +18,8 @@ BOUND_CONTRACT = ('bundle_create.v2', '1.1.0')
 NATIVE_BOUND_CONTRACT = ('bundle_create.v2', '1.2.0',
     'sha256:26926c1b6ae7fa02f98d7946943cbb5fee10b57adaf2c8c1d118aa15c9754421')
 
+NATIVE_BOUND_CONTRACT_V2 = ('bundle_create.v2', '1.2.1', 'sha256:f3d5ff90a36a41b2021ba59179eff3cdbbac47cd07da47f38305029893720052')
+
 
 class PreparationBinding(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
@@ -36,7 +38,7 @@ class PreparationBinding(BaseModel):
 def requires_preparation_binding(intent):
     binding = intent['contract']
     return ((binding['id'], binding['version']) == BOUND_CONTRACT
-        or (binding['id'], binding['version'], binding['package_digest']) == NATIVE_BOUND_CONTRACT)
+        or (binding['id'], binding['version'], binding['package_digest']) in (NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2))
 
 
 def binding_value(intent, effect, prepared):

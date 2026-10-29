@@ -23,13 +23,14 @@ cleanup before formatting errors. Unknown mutation outcomes seal further
 mutation and remain indeterminate; there is no automatic rename retry or
 deletion of possible orphan objects.
 
-Source181 preserves the exact reviewed implementation, test sources and review
-preimages. Source review is not executable acceptance. Portable protocol and
+Source181 preserves the initial reviewed implementation, test sources and review
+preimages; later corrections retain their own exact source/build identities.
+Source review is not executable acceptance. Portable protocol and
 failure tests use explicit substitutes and cannot establish real NTFS behavior.
 The Linux-only Host/Core tests must execute on Linux, rather than count as
-Windows passes. Physical Windows execution, fresh independent inspection,
-remaining contracts, failure/recovery scenarios and final artifact acceptance
-remain separate required work.
+Windows passes. The full physical Windows contract family, failure/recovery scenarios and final
+artifact acceptance remain separate required work. The isolated Version2 result
+below does not complete those requirements.
 
 A05 and applicable G01 remain `NOT_VERIFIED`. No production Phase or Hermes
 configuration changes, supported release, merge or deployment are authorized
@@ -75,19 +76,24 @@ renamer or provide atomic compare-and-replace against the old NativeID. Such
 an external race may be undetected. Those stronger properties remain
 `NOT_VERIFIED`; this correction must not be represented as qualifying them.
 
-The correction has not yet passed real Windows execution. No failed write has
-been retried, recovered, erased or reclassified as successful. A new controlled
-experiment requires its own exact source/build admission and a link to this
-preserved failure. Bundle integration and Windows failure/recovery, installation
-and rollback acceptance remain unfinished.
+The corrected CAC80 build subsequently passed one real Windows Version2
+experiment with a separate synthetic fixture, followed by fresh independent
+inspection and two independent evidence reviews. See
+[FIRST_NATIVE_VERSION2_RESULT.md](FIRST_NATIVE_VERSION2_RESULT.md) for exact
+build, run, receipt, object hashes and retained worker-completion evidence.
+The old failed write was not retried, recovered, erased or reclassified.
+Bundle integration and Windows failure/recovery, installation and rollback
+acceptance remain unfinished; this is not qualification of a supported route.
 
 The first affected portable test run recorded ten passes and four errors,
 rather than a passing correction: two test doubles lacked an explicit
 `assert_object` spec, and the new profile package omitted its existing schema
-and vocabulary bindings. The unpublished revision 3 candidate now retains
+and vocabulary bindings. The revision 3 candidate retains
 those three dependencies from revision 2, with a recomputed package and
 registry digest; revisions 1 and 2 remain unchanged. The two test doubles use
 an explicit interface spec. The four affected methods subsequently passed;
 the ten earlier passes were not rerun. These are portable/model results, not
 native replacement acceptance. The original failing output remains retained
-separately; the corrective HEAD still requires CI and real Windows execution.
+separately. Exact-HEAD CAC80 CI subsequently passed both 1907-test suites
+(1906 PASS and one unchanged SKIP) and installed resource checks; the separate
+physical result above is limited to that recorded experiment and wheel.

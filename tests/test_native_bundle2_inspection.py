@@ -203,8 +203,8 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         (run/'intent.json').write_bytes(canonical_bytes(intent))
         (run/'preparation-binding.json').write_bytes(canonical_bytes(binding_value(intent, effect, prepared)))
         (run/'blobs'/project.content_digest[7:]).write_bytes(project.manifest_bytes)
-        receipt['evidence']['attachment_digests'] = sorted(
-            digest_bytes(path.read_bytes()) for path in (run/'attachments').iterdir())
+        receipt['evidence']['attachment_digests'] = sorted({
+            digest_bytes(path.read_bytes()) for path in (run/'attachments').iterdir()})
         (run/'receipt.json').write_bytes(canonical_bytes(receipt))
         validate_intent(intent, registry)
         validate_receipt(receipt, registry)
@@ -277,7 +277,9 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
 
     def test_current_b2_seven_controls_reach_later_blob_sentinel_without_inspected_success(self):
         fixture = self.fixture()
-        self.assertEqual(len(fixture.receipt['evidence']['attachment_digests']), 7)
+        self.assertEqual(len(list((fixture.run/'attachments').iterdir())), 7)
+        # The identical pre/final model results share one content digest.
+        self.assertEqual(len(fixture.receipt['evidence']['attachment_digests']), 6)
         # The pre-fix inspector raises attachment_set_mismatch instead. No
         # success-shaped inspection output is supplied or accepted by this test.
         self.assert_stops(fixture, _LaterBlobSentinel)
@@ -290,7 +292,7 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         fixture.receipt['evidence']['attachment_digests'].append(digest_bytes(extra))
         fixture.receipt['evidence']['attachment_digests'].sort()
         (fixture.run/'receipt.json').write_bytes(canonical_bytes(fixture.receipt))
-        self.assertEqual(len(fixture.receipt['evidence']['attachment_digests']), 8)
+        self.assertEqual(len(fixture.receipt['evidence']['attachment_digests']), 7)
         self.assert_stops(fixture, 'inspection.attachment_set_mismatch')
 
     def test_prepared_stage_without_same_verified_binding_projection_is_refused(self):

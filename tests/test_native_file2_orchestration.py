@@ -215,7 +215,7 @@ def test_parent_real_orchestration_body_uses_one_model_owner_and_sole_go(tmp_pat
         finalize_worker=finalize,check_runtime=lambda:None)
     owner._launch=launch;owner._pipe=SimpleNamespace(receive_frame=receive_core,
         send_frame=lambda raw,*_:core_sent.append(parse_json_bytes(raw)))
-    owner._file2=True;owner._version1=False;owner._version2=False;owner._inspection_only=False;owner._consumed=True
+    owner._file2=True;owner._version1=False;owner._version2=False;owner._bundle=False;owner._inspection_only=False;owner._consumed=True
     owner._spawn_attempted=owner._go_attempted=False;owner._worker=None;owner._worker_count=0
     owner._worker_finalized=False;owner._partial_bytes=owner._ready_wire=owner._completion_wire=None
     owner._file2_exchange_deadline=time.perf_counter_ns()+30_000_000_000

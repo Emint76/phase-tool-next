@@ -7,8 +7,9 @@ unchanged. No production installation or Hermes profile is changed.
 
 The earlier real native file1, file2, Version1 shared history and corrected
 Version2 results use their recorded builds. They do not validate this draft.
-CI40793668402 passed on documentation HEAD658a32e8; it does not test these new
-uncommitted source changes. No native bundle receipt or inspect PASS exists yet.
+CI40793668402 passed on historical documentation HEAD658a32e8. The bundle
+implementation is now committed; current C2 CI failed in test fixtures as
+recorded below. No accepted new build or native bundle receipt/inspect PASS exists.
 
 ## One existing lifecycle
 
@@ -122,3 +123,13 @@ independent preparation-binding on ext4 before directory commit, acknowledge in
 the same execute epoch, then connect explicit native continuation to existing
 recovery before any POSIX path operations. V1 grants no such recovery authority.
 No second journal/queue/version subsystem is proposed.
+
+
+The next exact-HEAD CI run40812232474 reached the full test suite. Both Python3.11
+and Python3.12 jobs reported1927 cases each:1917 PASS,9 FAIL and one unchanged SKIP. All nine failures
+are AttributeError for a missing `_bundle` field in three deliberately
+unconstructed parent model shells (seven File2 parameters and two Version1
+methods). The real constructor already initializes this field. The correction
+only adds `_bundle=False` to those fixtures; assertions and product code remain
+unchanged. This negative is retained. The correction requires its own CI result;
+no bundle wheel, Windows execution or qualification follows from source review.

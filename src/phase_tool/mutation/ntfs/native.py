@@ -307,6 +307,94 @@ class NativeIO:
             raise PhaseError('ntfs.identity_query_failed', details={'winerror': C.get_last_error()})
         return NativeIdentity(data.VolumeSerialNumber, bytes(data.FileId).hex())
 
+    def directory_stat_identity(self, handle: NativeHandle, expected: NativeIdentity) -> dict:
+        """Actual bundle owner1.0 stat, never a fabricated POSIX root identity.
+
+        Duplicate the SAME pinned directory HANDLE, transfer only that duplicate
+        to CPython's CRT, and compare its real fstat with full native FileIdInfo.
+        The original lease remains pinned. Unknown transfer/close is retained in
+        the existing handle table and forbids a successful worker finalization.
+        """
+        import msvcrt
+        import stat
+        import sys
+        _require(os.name == 'nt' and sys.implementation.name == 'cpython'
+                 and sys.version_info[:3] == (3,12,10), 'ntfs.bundle_stat_runtime_required')
+        _require(not getattr(self,'_bundle_stat_ownership_unknown',False),'ntfs.bundle_stat_ownership_unknown')
+        self.assert_object(handle,directory=True,expected=expected)
+        duplicate = C.c_void_p()
+        kernel = self.kernel
+        kernel.DuplicateHandle.argtypes = [C.c_void_p,C.c_void_p,C.c_void_p,
+            C.POINTER(C.c_void_p),C.c_uint32,C.c_int32,C.c_uint32]
+        kernel.DuplicateHandle.restype = C.c_int32
+        process = kernel.GetCurrentProcess()
+        success = kernel.DuplicateHandle(process,handle.value,process,C.byref(duplicate),0,False,2)
+        error = C.get_last_error() if not success else None
+        if not success or not duplicate.value:
+            if duplicate.value:self._bundle_stat_ownership_unknown = True
+            raise PhaseError('ntfs.bundle_stat_duplicate_failed',details={
+                'winerror':error,'output_handle_present':bool(duplicate.value),
+                'ownership':'unproven'})
+        try:
+            borrowed = self._adopt(duplicate.value,directory=True)
+        except BaseException:
+            # A registration conflict or interrupted adoption never licenses
+            # closing a value that might belong to an already registered owner.
+            self._bundle_stat_ownership_unknown = True
+            raise
+        pre_crt_primary = None
+        try:
+            self.assert_object(borrowed,directory=True,expected=expected)
+            # Consume BEFORE calling the transfer API: an exception never licenses
+            # closing or re-transferring a possibly already CRT-owned HANDLE.
+            borrowed.finalization_state = 'crt_transfer_pending'
+            try:
+                descriptor = msvcrt.open_osfhandle(borrowed.value,os.O_RDONLY|os.O_BINARY)
+            except BaseException:
+                borrowed.finalization_state = 'unknown'
+                self._bundle_stat_ownership_unknown = True
+                raise
+            borrowed.finalization_state = 'crt_owned'
+            primary = None
+            try:
+                info = os.fstat(descriptor)
+                _require(stat.S_ISDIR(info.st_mode)
+                    and type(info.st_dev) is int and type(info.st_ino) is int
+                    and info.st_dev == expected.volume_serial
+                    and info.st_ino == int.from_bytes(bytes.fromhex(expected.file_id),'little')
+                    and info.st_ino > 0, 'ntfs.bundle_stat_identity_mismatch')
+            except BaseException as caught:
+                primary = caught
+                raise
+            finally:
+                borrowed.finalization_state = 'closing'
+                try:
+                    os.close(descriptor)  # Exactly one CRT close, never CloseHandle afterwards.
+                except BaseException as close_error:
+                    borrowed.finalization_state = 'unknown'
+                    self._bundle_stat_ownership_unknown = True
+                    if primary is not None:
+                        raise _finalization_failure('ntfs.bundle_stat_finalization_failed',primary,close_error) from primary
+                    raise
+                self._handles.pop(borrowed.value)
+                borrowed.value,borrowed.finalization_state = None,'closed'
+            self.assert_object(handle,directory=True,expected=expected)
+            return {'device':info.st_dev,'inode':info.st_ino}
+        except BaseException as caught:
+            pre_crt_primary = caught
+            raise
+        finally:
+            # Only a duplicate NEVER transferred to CRT can use native close.
+            # Unknown transfer/close stays registered; do not retry either API.
+            if borrowed.finalization_state == 'open':
+                try:borrowed.close()
+                except BaseException as close_error:
+                    self._bundle_stat_ownership_unknown = True
+                    if pre_crt_primary is not None:
+                        raise _finalization_failure('ntfs.bundle_stat_finalization_failed',
+                            pre_crt_primary,close_error) from pre_crt_primary
+                    raise
+
     def info(self, handle: NativeHandle) -> dict:
         self._live(handle)
         data = _BasicInfo()

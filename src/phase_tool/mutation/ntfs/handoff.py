@@ -37,3 +37,10 @@ class _OriginalControlProjection:
     input_binding: str | None
     content_digest: str
     content_length: int
+
+
+@dataclass(frozen=True)
+class _BundleControlProjection(_OriginalControlProjection):
+    """Exact manifest occurrence binding; no content FD, target or GO authority."""
+    manifest_bytes: bytes
+    contract_bytes: bytes

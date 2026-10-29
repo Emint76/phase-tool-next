@@ -155,6 +155,8 @@ class _NativeFileCreateReadBinding:
         if (manifest['native_read_installation_version'] in {'1.3','1.4'}
             and manifest['contract']['id']=='file_create.v2'):
             return self._read_file2(run_id=run_id,intent_digest=intent_digest,execution_requested=True)
+        if manifest['native_read_installation_version']=='1.6':
+            return self._read_bundle(run_id=run_id,intent_digest=intent_digest,execution_requested=True)
         version1 = manifest['native_read_installation_version'] in {'1.2','1.4'} and manifest['contract']['id'] == 'publish_new_version.v1'
         version2 = manifest['native_read_installation_version']=='1.5' and manifest['contract']['id']=='publish_new_version.v2'
         reader = read_original_version2_buffers if version2 else read_original_version1_buffers if version1 else read_original_file_create_buffers
@@ -184,6 +186,9 @@ class _NativeFileCreateReadBinding:
         if (manifest['native_read_installation_version'] in {'1.3','1.4'}
             and manifest['contract']['id']=='file_create.v2'):
             self._read_file2(run_id=run_id,intent_digest=intent_digest,execution_requested=False)
+            return
+        if manifest['native_read_installation_version']=='1.6':
+            self._read_bundle(run_id=run_id,intent_digest=intent_digest,execution_requested=False)
             return
         version1 = manifest['native_read_installation_version'] in {'1.2','1.4'} and manifest['contract']['id'] == 'publish_new_version.v1'
         version2 = manifest['native_read_installation_version']=='1.5' and manifest['contract']['id']=='publish_new_version.v2'
@@ -226,6 +231,34 @@ class _NativeFileCreateReadBinding:
         admission = _experimental_admission(self)
         if admission is not None:
             admission.check_original(intent, parse_json_bytes(plan, maximum_bytes=2*1024**2))
+        self.check_evidence_root()
+        return projection
+
+    def _read_bundle(self,*,run_id,intent_digest,execution_requested):
+        from .canonical import canonical_bytes, canonical_digest, parse_json_bytes
+        from .mutation.ntfs.native import _require
+        from .mutation.ntfs.reader import _read_original_control_buffers, _frozen_bundle_digest, _verify_bundle_original_blobs
+        from .mutation.ntfs.intent import _parse_bundle_control_projection
+        from .streaming import read_bounded_file
+        manifest=parse_json_bytes(self.manifest_bytes,maximum_bytes=2*1024**2)
+        _require(manifest['native_read_installation_version']=='1.6'
+            and manifest['contract']['id']=='bundle_create.v1'
+            and self.registry.digest==manifest['registry_snapshot_digest']==canonical_digest(self.registry.to_document()),
+            'ntfs.original_registry_mismatch')
+        original,plan,pre=_read_original_control_buffers(evidence_root=Path(manifest['evidence_root']),
+            installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),registry=self.registry,
+            run_id=run_id,expected_intent_digest=intent_digest,_bundle=True)
+        intent=parse_json_bytes(original,maximum_bytes=2*1024**2);digest=_frozen_bundle_digest(intent)
+        raw=read_bounded_file(Path(manifest['evidence_root'])/'.phase'/'runs'/run_id/'blobs'/digest[7:],1024**2)
+        projection=_parse_bundle_control_projection(intent_bytes=original,plan_bytes=plan,
+            pre_validator_bytes=pre,manifest_bytes=raw,registry=self.registry,expected_run_id=run_id,
+            expected_intent_digest=intent_digest,_execution_requested=execution_requested,**self._parser_bindings(intent))
+        _verify_bundle_original_blobs(evidence_root=Path(manifest['evidence_root']),
+            installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),intent=intent,projection=projection)
+        from .mutation.ntfs.experimental_file1 import _experimental_admission
+        admission=_experimental_admission(self)
+        _require(admission is not None,'ntfs.experimental_admission_required')
+        admission.check_original(intent,parse_json_bytes(plan,maximum_bytes=2*1024**2))
         self.check_evidence_root()
         return projection
 
@@ -292,10 +325,12 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         == canonical_digest(registry.to_document()), 'ntfs.original_registry_mismatch')
     binding = manifest['contract']
     version = manifest.get('native_read_installation_version')
-    _require(binding['version'] == '1.0.0' and ((binding['id'] == 'file_create.v1' and version not in {'1.3','1.5'})
-        or (version in {'1.2','1.4'} and binding['id'] == 'publish_new_version.v1')
-        or (version in {'1.3','1.4'} and binding['id'] == 'file_create.v2')
-        or (version=='1.5' and binding['id']=='publish_new_version.v2')),
+    from .mutation.ntfs.bundle_execution import _BUNDLE1_CONTRACT
+    _require((version=='1.6' and binding==_BUNDLE1_CONTRACT)
+        or (binding['version']=='1.0.0' and ((binding['id']=='file_create.v1' and version not in {'1.3','1.5','1.6'})
+        or (version in {'1.2','1.4'} and binding['id']=='publish_new_version.v1')
+        or (version in {'1.3','1.4'} and binding['id']=='file_create.v2')
+        or (version=='1.5' and binding['id']=='publish_new_version.v2'))),
         'ntfs.original_single_effect_required')
     contract = registry.resolve_contract(binding['id'], binding['version'], binding['package_digest'],
         core_version=manifest['core']['version'])
@@ -314,9 +349,9 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         'composition': native['composition'], 'evidence_identity': native['evidence_identity'],
         'root_grants': schema['properties']['idempotency']['properties']['root_identities'],
         'evidence_root': {'type': 'string', 'minLength': 1}}
-    _require(type(version) is str and version in {'1.0', '1.1', '1.2', '1.3', '1.4', '1.5'},
+    _require(type(version) is str and version in {'1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6'},
         'ntfs.original_installation_version_unsupported')
-    if version in {'1.1','1.2','1.3','1.4','1.5'}:
+    if version in {'1.1','1.2','1.3','1.4','1.5','1.6'}:
         # New static generation binds MIX preparation and opaque projections.
         # Historical 1.0 keys/semantics and intent1.2 bytes remain unchanged.
         properties.update({
@@ -346,7 +381,7 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         _require(len(grants) == 1 and {grants[0].binding} == {row['binding_id'] for row in scope['roots']}
             and grants[0].binding == contract.document['canonical_result']['root_binding']
             and grants[0].binding not in scope['forbidden_root_bindings'], 'ntfs.original_root_binding_mismatch')
-    if version in {'1.1','1.2','1.3','1.4','1.5'}:
+    if version in {'1.1','1.2','1.3','1.4','1.5','1.6'}:
         preparation = PurePosixPath(manifest['preparation_root'])
         _require(preparation.is_absolute() and str(preparation) == manifest['preparation_root']
             and str(preparation) != '/' and '..' not in preparation.parts
@@ -601,7 +636,7 @@ class _NativeFileCreateInstallation:
         _require(_is_native_authority(authority)
             and authority.read_binding is read_binding, 'ntfs.closed_native_installation_required')
         manifest = parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2*1024**2)
-        _require(manifest['native_read_installation_version'] in {'1.1','1.2','1.3','1.4','1.5'},
+        _require(manifest['native_read_installation_version'] in {'1.1','1.2','1.3','1.4','1.5','1.6'},
             'ntfs.original_preparation_root_required')
         _require(manifest['native_read_installation_version']!='1.4' or history_bindings is not None,
             'ntfs.original_history_binding_mismatch')
@@ -663,9 +698,12 @@ class _NativeFileCreateInstallation:
         # This is admission of prepared paths, never a copy-out or target reader.
         version1 = manifest['native_read_installation_version'] in {'1.2','1.4'} and manifest['contract']['id'] == 'publish_new_version.v1'
         file2=manifest['native_read_installation_version'] in {'1.3','1.4'} and manifest['contract']['id']=='file_create.v2'
-        prepared = [(Path(request.candidate_path),1024**2),
-            *((Path(p),2*1024**3 if file2 else 16*1024**2 if version1 else 1024**2) for p in request.input_paths.values())]
-        for path,maximum in prepared:
+        bundle=manifest['native_read_installation_version']=='1.6' and manifest['contract']['id']=='bundle_create.v1'
+        if bundle:
+            _require(set(request.input_paths)=={'payload'},'ntfs.original_bundle_effect_required')
+        prepared = [(Path(request.candidate_path),1024**2,False),
+            *((Path(p),2*1024**3 if file2 else 16*1024**2 if version1 else 1024**2,bundle) for p in request.input_paths.values())]
+        for path,maximum,directory_input in prepared:
             _require(path.is_absolute() and path == Path(os.path.abspath(path)),
                 'ntfs.prepared_input_outside_root')
             try:
@@ -678,10 +716,10 @@ class _NativeFileCreateInstallation:
                 current = current / part
                 info = current.lstat()
                 last = index == len(relative.parts)-1
-                _require((stat.S_ISREG(info.st_mode) if last else stat.S_ISDIR(info.st_mode))
+                _require((stat.S_ISDIR(info.st_mode) if not last or directory_input else stat.S_ISREG(info.st_mode))
                     and info.st_uid == os.geteuid() and not info.st_mode & 0o022,
                     'ntfs.prepared_input_unsafe')
-                if last:
+                if last and not directory_input:
                     _require(info.st_nlink == 1 and info.st_size <= maximum,
                         'ntfs.prepared_input_unsafe')
         return Path(manifest['evidence_root'])
@@ -859,6 +897,7 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
     if _experimental_admission_context is not None:
         from .mutation.ntfs.native import _require
         from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
+        from .mutation.ntfs.experimental_bundle1 import _ExperimentalBundle1Admission
         from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
         from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
         from .mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
@@ -875,6 +914,7 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
         _require(history_manifest_set_bytes is None and history_manifest_set_digest is None,
             "ntfs.experimental_admission_scope")
         factories = {_ExperimentalFile1Admission: _native_experimental_file1_installation,
+            _ExperimentalBundle1Admission: _native_experimental_bundle1_installation,
             _ExperimentalFile2Admission: _native_experimental_file2_installation,
             _ExperimentalVersion1Admission: _native_experimental_version1_installation,
             _ExperimentalVersion2Admission: _native_experimental_version2_installation}
@@ -1008,12 +1048,13 @@ def _native_read_binding_for_launch(launch):
         # Preserve refusal of unselected subclasses BEFORE reading any launch
         # fields. Argument evaluation must not outrun the exact-type gate.
         from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
+        from .mutation.ntfs.experimental_bundle1 import _ExperimentalBundle1Admission
         from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
         from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
         from .mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
         from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
             _ExperimentalHistoryVersion1Admission)
-        _require(type(admission) in (_ExperimentalFile1Admission,_ExperimentalFile2Admission,
+        _require(type(admission) in (_ExperimentalFile1Admission,_ExperimentalBundle1Admission,_ExperimentalFile2Admission,
             _ExperimentalVersion1Admission,_ExperimentalVersion2Admission,_ExperimentalHistoryFile1Admission,
             _ExperimentalHistoryVersion1Admission),'ntfs.experimental_admission_required')
         binding=_native_experimental_read_binding(manifest_bytes=launch._manifest_bytes,
@@ -1035,6 +1076,7 @@ def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,
     """Data-only historical resolver; no launch, channel or current-wheel check."""
     from dataclasses import replace
     from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
+    from .mutation.ntfs.experimental_bundle1 import _ExperimentalBundle1Admission
     from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
     from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
     from .mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
@@ -1042,6 +1084,7 @@ def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,
         _ExperimentalHistoryVersion1Admission)
     from .mutation.ntfs.native import _require
     registries={_ExperimentalFile1Admission:_native_experimental_file1_registry,
+        _ExperimentalBundle1Admission:_native_experimental_bundle1_registry,
         _ExperimentalFile2Admission:_native_experimental_file2_registry,
         _ExperimentalVersion1Admission:_native_experimental_version1_registry,
         _ExperimentalVersion2Admission:_native_experimental_version2_registry,
@@ -1226,3 +1269,35 @@ def _native_experimental_history_installation(*,manifest_bytes,expected_manifest
         canonical_bytes(manifest['root_projections']),channel,run_id=run_id,
         operation_nonce=operation_nonce,_inspection_only=_inspection_only)
     return binding.registry,_NativeFileCreateInstallation(binding,authority,history_bindings=history)
+
+
+def _native_experimental_bundle1_registry():
+    """Literal private bundle generation; no request-selected registry/trust."""
+    registry=_load_native_file_create_registry('registries/native-bundle1-experiment-v1.json','sha256:5a28e9aa8eb1462b8cb83a462fbd1dc24138e6572741778722dbefc65fa64963',
+        'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
+    from .mutation.ntfs.bundle_execution import _BUNDLE1_CONTRACT
+    from .mutation.ntfs.native import _require
+    _require(registry.contract_bindings().get('bundle_create.v1@1.1.0')==_BUNDLE1_CONTRACT,
+        'ntfs.native_registry_selection_mismatch')
+    return registry
+
+
+def _native_experimental_bundle1_installation(*,manifest_bytes,expected_manifest_digest,
+    run_id,operation_nonce,channel_id,_inspection_only=False,admission):
+    from dataclasses import replace
+    from .canonical import canonical_bytes,parse_json_bytes
+    from .mutation.ntfs.experimental_bundle1 import _ExperimentalBundle1Admission
+    from .mutation.ntfs.experimental_bundle1_authority import _ExperimentalBundle1Authority
+    from .mutation.ntfs.channel_v4 import LinuxNativeBundleChannel
+    from .mutation.ntfs.native import _require
+    _require(type(admission) is _ExperimentalBundle1Admission and type(_inspection_only) is bool,
+        'ntfs.experimental_admission_required')
+    registry=_native_experimental_bundle1_registry()
+    binding=replace(_resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest,registry=registry),experimental_admission=admission)
+    _require(admission.check_binding(binding)['run_id']==run_id,'ntfs.experimental_run_mismatch')
+    profile=admission.profile(binding);manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
+    channel=LinuxNativeBundleChannel(channel_id,_inspection_only=_inspection_only)
+    authority=_ExperimentalBundle1Authority(binding,profile,canonical_bytes(manifest['root_projections']),channel,
+        run_id=run_id,operation_nonce=operation_nonce,_inspection_only=_inspection_only)
+    return registry,_NativeFileCreateInstallation(binding,authority)

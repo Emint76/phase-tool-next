@@ -462,9 +462,22 @@ class ValidatorRunner:
                 effect = effect_plan["effects"][0]
                 expected = effect["content_digest"]
                 try:
-                    target = Path(root_bindings[effect["target"]["root_binding"]]) / effect["target"]["relative_locator"]
-                    verify_bundle(target, expected, run_id=run_id, plan_digest=profile_digest("effect-plan", effect_plan))
-                    status, code, actual, blockers = "pass", "validation.pass", expected, []
+                    if self._native_authority is not None:
+                        from ..mutation.ntfs.bundle_execution import bundle_postcondition
+                        authority=self._native_authority;authority.require_contract(contract)
+                        observation=authority.observe(run_id=run_id,root_binding=effect['target']['root_binding'],
+                            locator=effect['target']['relative_locator'],expected_identity=authority.expected_after_identity(effect))
+                        from ..streaming import read_bounded_file
+                        # The existing binding/parser owns original byte verification.
+                        original=parse_json_bytes(read_bounded_file(Path(evidence_root)/'.phase'/'runs'/run_id/'intent.json',2*1024**2),maximum_bytes=2*1024**2)
+                        intent_digest=profile_digest('intent',original)
+                        projection=authority.read_binding.read(run_id=run_id,intent_digest=intent_digest)
+                        status,code,expected,actual,blockers=bundle_postcondition(observation,
+                            grant_data=parse_json_bytes(projection.grant_bytes),effect=effect,projection=projection)
+                    else:
+                        target = Path(root_bindings[effect["target"]["root_binding"]]) / effect["target"]["relative_locator"]
+                        verify_bundle(target, expected, run_id=run_id, plan_digest=profile_digest("effect-plan", effect_plan))
+                        status, code, actual, blockers = "pass", "validation.pass", expected, []
                 except (OSError, PhaseError):
                     status, code, actual, blockers = "fail", "bundle.verification_failed", None, ["bundle.verification_failed"]
                 completed[index] = self._result(declaration, run_id=run_id, timestamp=timestamp,

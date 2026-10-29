@@ -951,15 +951,26 @@ class PhaseCore:
                 validator_results = [schema_result]
                 raise PhaseError(schema_result["code"])
             lifecycle.append("freeze")
-            frozen = freeze_declared_inputs(
-                contract.document,
-                parse_json_bytes(candidate.canonical_bytes),
-                request.input_paths,
-                request.root_bindings,
-                store.blob_root,
-                frozen_at=timestamp,
-                maximum_structured_bytes=request.maximum_candidate_bytes,
-            )
+            # A checked native bundle uses the same ext4 freezer without treating
+            # opaque Windows result projections as Linux result directories.
+            native_bundle = False
+            if native_ctx is not None and native_ctx.native_authority is not None:
+                from .mutation.ntfs.experimental_bundle1_authority import _ExperimentalBundle1Authority
+                native_bundle = type(native_ctx.native_authority) is _ExperimentalBundle1Authority
+            if native_bundle:
+                frozen = native_ctx.native_authority.freeze_inputs(
+                    contract, request, parse_json_bytes(candidate.canonical_bytes),
+                    store.blob_root, frozen_at=timestamp)
+            else:
+                frozen = freeze_declared_inputs(
+                    contract.document,
+                    parse_json_bytes(candidate.canonical_bytes),
+                    request.input_paths,
+                    request.root_bindings,
+                    store.blob_root,
+                    frozen_at=timestamp,
+                    maximum_structured_bytes=request.maximum_candidate_bytes,
+                )
             # Bind the caller's captured identity to Core's actual frozen input,
             # not to the mutable pathname handed across the application seam.
             for binding_id, expected in (request.expected_inputs or {}).items():

@@ -39,10 +39,10 @@ def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
     registry: RegistrySnapshot, expected_run_id: str, expected_intent_digest: str,
     installed_core_binding: bytes, installed_native_binding: bytes,
     installed_implementation_binding: bytes, _execution_requested: bool,
-    _version1: bool, _file2: bool = False, _version2: bool = False):
+    _version1: bool, _file2: bool = False, _version2: bool = False, _bundle: bool = False):
     """Existing checks BEFORE payload verification; never a complete projection."""
     _require(type(_version1) is bool and type(_file2) is bool and type(_version2) is bool
-        and sum((_version1, _file2, _version2)) <= 1
+        and type(_bundle) is bool and sum((_version1, _file2, _version2, _bundle)) <= 1
         and type(_execution_requested) is bool,
         'ntfs.original_closed_role_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
@@ -102,6 +102,10 @@ def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
                 and plan['mechanism']['id']=='mechanism.exclusive_create_v2'
                 and plan['mechanism']['version']=='1.0.0',
                 'ntfs.original_file2_effect_required')
+        if _bundle:
+            from .bundle_execution import _BUNDLE1_CONTRACT, _BUNDLE1_MECHANISM
+            _require(binding==_BUNDLE1_CONTRACT and plan['mechanism']==_BUNDLE1_MECHANISM,
+                'ntfs.original_bundle_effect_required')
         _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
             and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
             and effect['lock_scope'] is None and effect['durability_policy_id']=='file_data_synced'
@@ -137,7 +141,7 @@ def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
     else:
         inputs=intent['inputs']
         _require(len(inputs)==1 and inputs[0]['binding_id']==value['input_binding']
-            and inputs[0]['freeze_strategy']=='copy_and_hash','ntfs.original_frozen_input_required')
+            and inputs[0]['freeze_strategy']==('manifest_and_hash' if _bundle else 'copy_and_hash'),'ntfs.original_frozen_input_required')
     return intent,plan,contract
 
 
@@ -177,7 +181,7 @@ def _verify_original_blob_bytes(intent: dict, plan: dict, blob_bytes: bytes,
 def _original_control_suffix(*, intent: dict, plan: dict, contract,
     registry: RegistrySnapshot, pre_validator_bytes: bytes,
     installed_root_grants: bytes, expected_intent_digest: str,
-    _version1: bool, _file2: bool = False, _version2: bool = False) -> _OriginalControlProjection:
+    _version1: bool, _file2: bool = False, _version2: bool = False, _bundle: bool = False) -> _OriginalControlProjection:
     """Existing checks AFTER the payload slot; no actual-content proof here."""
     effect=plan['effects'][0];candidate=intent['candidate'];value=candidate['storage']['value']
     inputs=intent['inputs'];binding=intent['contract']
@@ -205,13 +209,16 @@ def _original_control_suffix(*, intent: dict, plan: dict, contract,
         'ntfs.original_precondition_bytes_required')
     verify_saved_precondition_results(registry,contract,intent,plan,pre_validator_bytes)
     native=intent['native_binding']
-    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.3' if _version2 else '1.2' if _file2 else '1.1' if _version1 else '1.0','run_id':intent['run_id'],
+    context={'worker_protocol':'phase.native.file-worker','worker_version':'1.4' if _bundle else '1.3' if _version2 else '1.2' if _file2 else '1.1' if _version1 else '1.0','run_id':intent['run_id'],
         'intent_digest':expected_intent_digest,'effect_plan_digest':intent['effect_plan_digest'],
         'native_binding_digest':digest_bytes(canonical_bytes(native)),
         'installation_digest':native['installation']['descriptor_digest'],
         'implementation_artifact_digest':implementation['authority']['provider']['artifact_digest'],
         'operation_nonce':native['operation_nonce']}
-    checked_context=_version2_context(context) if _version2 else _file2_context(context) if _file2 else _version1_context(context) if _version1 else _context(context)
+    if _bundle:
+        from .bundle_execution import _bundle_context
+        checked_context=_bundle_context(context)
+    else:checked_context=_version2_context(context) if _version2 else _file2_context(context) if _file2 else _version1_context(context) if _version1 else _context(context)
     return _OriginalControlProjection(canonical_bytes(checked_context),canonical_bytes(root_records if _version2 else grants[0].as_dict()),
         canonical_bytes(effect),intent['created_at'],effect['input_binding'],effect['content_digest'],
         effect['content_length'])
@@ -386,3 +393,32 @@ def _parse_file2_control_projection(*, intent_bytes: bytes, plan_bytes: bytes,
         intent=intent,plan=plan,contract=contract,registry=registry,
         pre_validator_bytes=pre_validator_bytes,installed_root_grants=installed_root_grants,
         expected_intent_digest=expected_intent_digest,_version1=False,_file2=True)
+
+
+def _parse_bundle_control_projection(*, intent_bytes, plan_bytes, pre_validator_bytes,
+    manifest_bytes, registry, expected_run_id, expected_intent_digest, installed_core_binding,
+    installed_native_binding, installed_root_grants, installed_implementation_binding,
+    _execution_requested):
+    """Same original semantics, a fixed manifest role; no bytes/GO from declarations."""
+    from ...bundle import parse_manifest, validate_members
+    from .handoff import _BundleControlProjection
+    from .bundle_execution import _bundle_projection_value
+    intent,plan,contract=_original_control_prefix(intent_bytes=intent_bytes,plan_bytes=plan_bytes,
+        registry=registry,expected_run_id=expected_run_id,expected_intent_digest=expected_intent_digest,
+        installed_core_binding=installed_core_binding,installed_native_binding=installed_native_binding,
+        installed_implementation_binding=installed_implementation_binding,
+        _execution_requested=_execution_requested,_version1=False,_bundle=True)
+    manifest=parse_manifest(manifest_bytes)
+    _original_content_binding(intent,plan,digest_bytes(manifest_bytes),len(manifest_bytes))
+    value=intent['candidate']['storage']['value'];frozen=intent['inputs'][0]
+    _require(value['input_binding']=='payload' and frozen['manifest_digest']==digest_bytes(manifest_bytes)
+        and validate_members(value['members'])==[row['path']for row in manifest['members']],
+        'ntfs.original_bundle_manifest_mismatch')
+    base=_original_control_suffix(intent=intent,plan=plan,contract=contract,registry=registry,
+        pre_validator_bytes=pre_validator_bytes,installed_root_grants=installed_root_grants,
+        expected_intent_digest=expected_intent_digest,_version1=False,_bundle=True)
+    projection=_BundleControlProjection(base.context_bytes,base.grant_bytes,base.effect_bytes,
+        base.timestamp,base.input_binding,base.content_digest,base.content_length,manifest_bytes,
+        canonical_bytes(intent['contract']))
+    _bundle_projection_value(projection)
+    return projection

@@ -188,12 +188,13 @@ def _experimental_admission(binding):
     context = getattr(binding, 'experimental_admission', None)
     if context is None:
         return None
+    from .experimental_bundle1 import _ExperimentalBundle1Admission
     from .experimental_file2 import _ExperimentalFile2Admission
     from .experimental_version1 import _ExperimentalVersion1Admission
     from .experimental_version2 import _ExperimentalVersion2Admission
     from .experimental_history import (_ExperimentalHistoryFile1Admission,
         _ExperimentalHistoryVersion1Admission)
-    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalFile2Admission,
+    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalBundle1Admission, _ExperimentalFile2Admission,
             _ExperimentalVersion1Admission, _ExperimentalVersion2Admission, _ExperimentalHistoryFile1Admission,
             _ExperimentalHistoryVersion1Admission),
         'ntfs.experimental_admission_required')
@@ -209,6 +210,8 @@ def _is_native_authority(value):
         return False
     from .authority import _NativeFileCreateAuthority
     from .experimental_authority import _ExperimentalFile1Authority
+    from .experimental_bundle1_authority import _ExperimentalBundle1Authority
+    from .experimental_bundle1 import _ExperimentalBundle1Admission
     from .experimental_file2_authority import _ExperimentalFile2Authority
     from .experimental_version1_authority import _ExperimentalVersion1Authority
     from .experimental_version2_authority import _ExperimentalVersion2Authority
@@ -225,6 +228,7 @@ def _is_native_authority(value):
         return type(_experimental_admission(value.read_binding)) in (
             _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
     paired = {_ExperimentalFile1Authority: _ExperimentalFile1Admission,
+        _ExperimentalBundle1Authority: _ExperimentalBundle1Admission,
         _ExperimentalFile2Authority: _ExperimentalFile2Admission,
         _ExperimentalVersion1Authority: _ExperimentalVersion1Admission,
         _ExperimentalVersion2Authority: _ExperimentalVersion2Admission,

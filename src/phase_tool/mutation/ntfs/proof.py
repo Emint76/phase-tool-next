@@ -56,6 +56,7 @@ def _facts(binding, manifest, receipt, proof):
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
     version2 = manifest['contract']['id'] == 'publish_new_version.v2'
     file2=manifest['contract']['id']=='file_create.v2'
+    bundle=manifest['contract']['id']=='bundle_create.v1'
     grant = manifest['root_grants'] if version2 else manifest['root_grants'][0]
     _require(set(physical['observations']) <= {'pre_operation','post_operation'},
         'ntfs.native_proof_shape')
@@ -63,7 +64,10 @@ def _facts(binding, manifest, receipt, proof):
         _require(set(wrapped) == {'run_id','observation'} and wrapped['run_id'] == receipt['run_id'],
             'ntfs.native_proof_shape')
         item = wrapped['observation']
-        if file2:
+        if bundle:
+            from .bundle_execution import validate_bundle_observation
+            validate_bundle_observation(item,grant,item['locator'])
+        elif file2:
             from .file2_execution import validate_file2_observation
             validate_file2_observation(item,grant,item['locator'])
         elif not version1 and not version2:
@@ -102,6 +106,12 @@ def _facts(binding, manifest, receipt, proof):
         from .file2_execution import validate_file2_parent_completion,validate_file2_parent_finalization
         completion_check=validate_file2_parent_completion
         finalization_check=validate_file2_parent_finalization
+    if bundle:
+        from .bundle_execution import validate_bundle_parent_completion,validate_bundle_parent_finalization
+        completion_check=validate_bundle_parent_completion
+        def finalization_check(reply,checked,*,grant_data,effect):
+            return validate_bundle_parent_finalization(reply,checked,grant_data=grant_data,
+                effect=effect,projection=parsed)
     checked = completion_check(raw, context=context, grant_data=grant, effect=effect)
     _require(len(receipt['effect_receipts']) == 1
         and checked['effect_receipt'] == receipt['effect_receipts'][0]
@@ -163,13 +173,14 @@ def _verify_original_semantics(binding, manifest, receipt, proof):
     version1 = manifest['contract']['id'] == 'publish_new_version.v1'
     version2 = manifest['contract']['id'] == 'publish_new_version.v2'
     versioned = version1 or version2
+    bundle=manifest['contract']['id']=='bundle_create.v1'
     effect,actual_effect = plan['effects'][0],effects[0]
     _require(actual_effect['effect_id'] == effect['effect_id']
         and actual_effect['kind'] == effect['kind'] == ('publish_new_version' if versioned else 'exclusive_create'),
         'ntfs.native_receipt_semantic_mismatch')
     if not versioned and actual_effect['status'] == 'applied_verified':
         _require(type(actual_effect['bytes_written']) is int
-            and actual_effect['bytes_written'] == effect['content_length']
+            and (bundle or actual_effect['bytes_written'] == effect['content_length'])
             and actual_effect['after']['digest'] == effect['content_digest']
             and actual_effect['after']['length'] == effect['content_length'],
             'ntfs.native_receipt_semantic_mismatch')
@@ -214,6 +225,17 @@ def _verify_original_semantics(binding, manifest, receipt, proof):
             projected = runner._result(declaration,run_id=receipt['run_id'],timestamp=intent['created_at'],
                 status=status,code=code,expected=expected,actual=actual,blockers=blockers)
             _require(canonical_bytes(projected) == canonical_bytes(record),'ntfs.native_validator_semantic_mismatch')
+            continue
+        if bundle:
+            _require(declaration['binding']['id']=='bundle.result_v1','ntfs.original_bundle_effect_required')
+            from .bundle_execution import bundle_postcondition
+            parsed=binding.read(run_id=receipt['run_id'],intent_digest=digest)
+            status,code,expected,actual,blockers=bundle_postcondition(
+                None if observation is None else observation['observation'],
+                grant_data=manifest['root_grants'][0],effect=effect,projection=parsed)
+            projected=runner._result(declaration,run_id=receipt['run_id'],timestamp=intent['created_at'],
+                status=status,code=code,expected=expected,actual=actual,blockers=blockers)
+            _require(canonical_bytes(projected)==canonical_bytes(record),'ntfs.native_validator_semantic_mismatch')
             continue
         _require(declaration['binding']['id'] == 'validator.result_digest_v1',
             'ntfs.original_single_effect_required')

@@ -642,6 +642,12 @@ def inspect_run(
                 else:
                     observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
                         locator=canonical_result['locator'], expected_identity=native_proof['target_identity'])
+                if contract.document['identity']['id']=='bundle_create.v1' and receipt['execution_disposition']!='reused_existing':
+                    from ..mutation.ntfs.bundle_execution import validate_bundle_observation
+                    projection=_native_authority.read_binding.read(run_id=run_id,
+                        intent_digest=receipt['evidence']['intent_digest'])
+                    validate_bundle_observation(observation,_native_authority._manifest['root_grants'][0],
+                        canonical_result['locator'],projection=projection)
                 streamed_state = observation['state']
                 native_target_identity = observation['native']['native_identity']
             else:

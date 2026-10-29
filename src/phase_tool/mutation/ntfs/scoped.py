@@ -233,6 +233,16 @@ class NativeScopedTarget:
         self.assert_bound()
         self.io.assert_object(handle,directory=False,expected=expected)
 
+    def assert_directory_name(self, handle: NativeHandle, expected: NativeIdentity) -> None:
+        """Bind the bundle directory name while its original DELETE lease is held."""
+        _require(not self._missing_ancestors,'ntfs.partial_scope_has_no_leaf_parent')
+        self.assert_bound()
+        self.io.assert_object(handle,directory=True,expected=expected)
+        with self.io._open(self.name,parent=self.parent,directory=True,sharing=7) as fresh:
+            self.io.assert_object(fresh,directory=True,expected=expected)
+        self.assert_bound()
+        self.io.assert_object(handle,directory=True,expected=expected)
+
     def close(self) -> None:
         _require(self._state in ('open','opening'),'ntfs.scope_closed_or_unknown')
         self._state = 'closing'

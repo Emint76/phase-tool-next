@@ -46,7 +46,7 @@ class _MutationTrace:
     execution log authority, or a replacement for independent qualification.
     """
     def __init__(self, *, _maximum_creates: int = 1):
-        _require(type(_maximum_creates) is int and _maximum_creates in (1,4,6),
+        _require(type(_maximum_creates) is int and _maximum_creates in (1,4,6,32771),
                  'ntfs.invalid_trace_role')
         self._maximum_creates = _maximum_creates
         self._create_events: list[dict] = []

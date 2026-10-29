@@ -46,7 +46,7 @@ def _check_original_root_identity(root: Path, expected: dict) -> None:
 
 def _read_original_control_buffers(*, evidence_root: Path,
     installed_evidence_identity: bytes, registry: RegistrySnapshot,
-    run_id: str, expected_intent_digest: str, _version2: bool = False) -> tuple[bytes,bytes,bytes]:
+    run_id: str, expected_intent_digest: str, _version2: bool = False, _bundle: bool = False) -> tuple[bytes,bytes,bytes]:
     """Read three existing raw controls; never a parsed handoff or GO token.
 
     The full reader/parser still owns content and semantic verification.
@@ -54,7 +54,7 @@ def _read_original_control_buffers(*, evidence_root: Path,
     Callers keep the SAME expected intent digest and installed binding.
     """
     _require(sys.platform.startswith('linux'),'ntfs.original_linux_reader_required')
-    _require(type(_version2) is bool,'ntfs.original_closed_role_required')
+    _require(type(_version2) is bool and type(_bundle) is bool and not (_version2 and _bundle),'ntfs.original_closed_role_required')
     _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
     _require(type(run_id) is str,'evidence.invalid_run_id')
     validate_run_id(run_id)
@@ -77,7 +77,9 @@ def _read_original_control_buffers(*, evidence_root: Path,
         and intent['registry_snapshot_digest']==registry.digest,'ntfs.original_intent_mismatch')
     _require(canonical_bytes(intent['native_binding']['evidence_identity'])==installed_evidence_identity,
         'ntfs.original_evidence_identity_mismatch')
-    if _version2:
+    if _bundle:
+        _frozen_bundle_digest(intent)
+    elif _version2:
         _require(intent['contract']['id']=='publish_new_version.v2' and intent['inputs']==[],
             'ntfs.original_version2_content_binding')
     else:
@@ -201,4 +203,34 @@ def _verify_file2_original_blob(*, evidence_root: Path,
     actual=hash_file(blob,FILE_LIMIT)
     _require(actual==(projection.content_digest,projection.content_length),
         'ntfs.original_evidence_bytes_mismatch')
+    _check_original_root_identity(root,expected)
+
+
+def _frozen_bundle_digest(intent):
+    _require(intent['contract']['id']=='bundle_create.v1' and len(intent['inputs'])==1,
+        'ntfs.original_bundle_effect_required')
+    frozen=intent['inputs'][0]
+    _require(frozen['binding_id']=='payload' and frozen['freeze_strategy']=='manifest_and_hash'
+        and type(frozen['blob_digest']) is str and _DIGEST.fullmatch(frozen['blob_digest']) is not None
+        and frozen['blob_digest']==frozen['digest']==frozen['manifest_digest'],
+        'ntfs.original_bundle_manifest_mismatch')
+    return frozen['blob_digest']
+
+
+def _verify_bundle_original_blobs(*,evidence_root,installed_evidence_identity,intent,projection):
+    """Complete independent RO member-byte check, never declarations as bytes."""
+    from ...bundle import parse_manifest, verify_frozen_members
+    from .bundle_execution import _bundle_projection_value
+    _require(sys.platform.startswith('linux'),'ntfs.original_linux_reader_required')
+    _bundle_projection_value(projection)
+    expected=_evidence_identity(installed_evidence_identity);root=Path(evidence_root)
+    qualify_host_authority_roots({'phase_evidence_root':root})
+    _require(_linux_filesystem_type(root)=='ext4','ntfs.original_ext4_evidence_required')
+    _check_original_root_identity(root,expected);validate_run_id(intent['run_id'])
+    digest=_frozen_bundle_digest(intent)
+    _require(digest==projection.content_digest,'ntfs.original_bundle_manifest_mismatch')
+    blobs=root/'.phase'/'runs'/intent['run_id']/'blobs'
+    raw=read_bounded_file(blobs/digest.removeprefix('sha256:'),1024**2)
+    _require(raw==projection.manifest_bytes,'ntfs.original_evidence_bytes_mismatch')
+    verify_frozen_members(parse_manifest(raw),blobs)
     _check_original_root_identity(root,expected)

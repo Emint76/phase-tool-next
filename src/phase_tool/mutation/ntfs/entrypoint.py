@@ -51,6 +51,8 @@ def run_native_worker(launch,original,initial_pipe,*,_transfer_deadline_ns=None)
     from .worker import run_file_create_worker
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
+    if getattr(launch,'_bundle',False):
+        return _run_bundle_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
     if launch._file2:
         return _run_file2_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
     if launch._version2:
@@ -494,6 +496,29 @@ def _run_file2_worker_transfer(launch,original,pipe,deadline):
     try:
         launch.check_runtime()
         run_file2_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline)
+        launch.check_runtime()
+    except BaseException as error:primary=error
+    _close_worker_stdio(primary)
+    return 0
+
+
+def _run_bundle_worker_transfer(launch,original,pipe,deadline):
+    """Metadata initial frame; fixed worker verifies first-pass bytes before native I/O."""
+    from .bundle_execution import _bundle_projection_from_value,run_bundle_worker
+    _require(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=30_000_000_000,
+        'ntfs.bundle_owned_deadline_required')
+    _require(type(original) is dict and set(original)=={'native_worker_original_version','channel_id','projection'}
+        and original['native_worker_original_version']=='3.0'
+        and original['channel_id']==launch.channel_id,'ntfs.worker_original_binding_mismatch')
+    parsed=_bundle_projection_from_value(original['projection'])
+    context=parse_json_bytes(parsed.context_bytes)
+    _require(context['run_id']==launch.run_id and context['operation_nonce']==launch.operation_nonce
+        and context['installation_digest']==launch.installation_digest
+        and parse_json_bytes(parsed.grant_bytes)==launch.root_grant,'ntfs.worker_original_binding_mismatch')
+    primary=None
+    try:
+        launch.check_runtime()
+        run_bundle_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline)
         launch.check_runtime()
     except BaseException as error:primary=error
     _close_worker_stdio(primary)

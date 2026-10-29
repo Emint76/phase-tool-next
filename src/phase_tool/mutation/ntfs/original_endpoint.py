@@ -152,7 +152,7 @@ def native_original_query(launch,query):
         and (query['intent_digest'] is None or (type(query['intent_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
-    _require(publication is None or (not launch._version1 and not launch._file2 and not launch._version2),'ntfs.original_query_binding_mismatch')
+    _require(publication is None or (not launch._version1 and not launch._file2 and not launch._version2 and not getattr(launch,'_bundle',False)),'ntfs.original_query_binding_mismatch')
     _require(version1_publication is None or launch._version1,'ntfs.original_query_binding_mismatch')
     from ...installation import _native_read_binding_for_launch
     binding=_native_read_binding_for_launch(launch)
@@ -171,7 +171,7 @@ def native_original_query(launch,query):
         original,plan_raw,_=_read_original_control_buffers(
             evidence_root=Path(launch.manifest['evidence_root']),
             installed_evidence_identity=canonical_bytes(launch.manifest['evidence_identity']),
-            registry=registry,run_id=query['run_id'],expected_intent_digest=digest,_version2=launch._version2)
+            registry=registry,run_id=query['run_id'],expected_intent_digest=digest,_version2=launch._version2,_bundle=getattr(launch,'_bundle',False))
         intent=parse_json_bytes(original,maximum_bytes=2*1024**2)
         _require(intent['native_binding']['operation_nonce']==query['operation_nonce'],
             'ntfs.original_current_invocation_mismatch')
@@ -184,7 +184,10 @@ def native_original_query(launch,query):
                 _require_version1_publication_original(intent=intent,
                     plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
                     parsed=parsed,query=query,binding=launch.manifest['contract'])
-            if launch._file2:
+            if getattr(launch,'_bundle',False):
+                from .bundle_execution import _bundle_projection_value
+                value=_bundle_projection_value(parsed)
+            elif launch._file2:
                 from .file2_execution import _file2_projection_value
                 value=_file2_projection_value(parsed)
             elif launch._version1 or launch._version2:

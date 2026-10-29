@@ -63,6 +63,22 @@ and up to1024 snapshot descriptors; existing source preflight remains required.
 The fixed30-second experimental exchange is not a verified full-range Windows
 performance envelope. No file-count or size limit is raised to get a PASS.
 
+## First new-head CI collection result
+
+Commit `8b3bca7f2aacfd639822c3696ed95129b9b6f89a` was pushed after canonical
+source/result retention and independent restoration. CI40808474469 failed during
+collection on both Python3.11/3.12, before any test bodies: the new failure-model
+module used a top-level sibling import although `tests` is a package. The prior
+local unittest invocation had added the tests directory to its path and masked
+this error. The negative CI log is retained; resource checks were skipped.
+
+The correction changes only that import to a relative package import. A fresh
+standard Python package-aware collection resolved the real `tests` package and
+helper and collected all four failure-model methods without executing them or
+injecting a tests-directory path. This does not claim a pytest collection PASS:
+pytest is absent on the host, and the next exact-head CI must verify pytest and
+the full regressions. No package, product guard or environment setting changed.
+
 ## Verification still required
 
 Source-only review found and corrected a misspelled existing parser seam,

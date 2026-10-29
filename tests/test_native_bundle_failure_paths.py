@@ -9,7 +9,7 @@ from phase_tool.mutation.ntfs.native import NativeIO,NativeIdentity
 from phase_tool.mutation.ntfs.bundle_observation import _BundleHandlePins
 from phase_tool.mutation.ntfs.bundle_effect import _bundle_mutation_call
 from phase_tool.mutation.ntfs import bundle_execution as worker
-from test_native_bundle_protocol import projection,CHANNEL
+from .test_native_bundle_protocol import projection,CHANNEL
 
 
 class BundleFailureOwnershipTests(unittest.TestCase):

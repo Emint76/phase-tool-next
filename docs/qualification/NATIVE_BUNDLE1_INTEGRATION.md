@@ -1,19 +1,17 @@
-# Native bundle1 connected draft
+# Experimental native bundle1 through Phase Core
 
-Status: implementation draft, not yet executed or functionally accepted. A05,
-applicable G01, native bundle boundary/failure/recovery coverage and supported
-NTFS qualification remain NOT_VERIFIED. Ordinary startup/production guard is
-unchanged. No production installation or Hermes profile is changed.
+Status: one real isolated Windows create and separate inspect passed independent
+review on the exact build recorded below. A05, applicable G01, native boundary,
+failure/recovery coverage and supported NTFS qualification remain NOT_VERIFIED.
+Ordinary startup/production guard is unchanged. No production installation or
+Hermes profile is changed. This result does not authorize a supported release.
 
 The earlier real native file1, file2, Version1 shared history and corrected
-Version2 results use their recorded builds. They do not validate this draft.
-CI40793668402 passed on historical documentation HEAD658a32e8. The bundle
-implementation is now committed; current C2 CI failed in test fixtures as
-recorded below. No accepted new build or native bundle receipt/inspect PASS exists.
+Version2 results use their separately recorded builds. Bundle2 remains unfinished.
 
 ## One existing lifecycle
 
-The draft connects the existing Core/EffectBroker native dispatch, original
+The implementation connects the existing Core/EffectBroker native dispatch, original
 intent reader, frozen bundle input, root coordination, owned Windows process,
 EvidenceStore, standard effect receipt, terminal proof and separate inspect.
 There is no additional journal, document history, operation queue or Core.
@@ -77,10 +75,11 @@ The correction changes only that import to a relative package import. A fresh
 standard Python package-aware collection resolved the real `tests` package and
 helper and collected all four failure-model methods without executing them or
 injecting a tests-directory path. This does not claim a pytest collection PASS:
-pytest is absent on the host, and the next exact-head CI must verify pytest and
-the full regressions. No package, product guard or environment setting changed.
+pytest was absent on the host, so at that point the next exact-head CI still
+had to verify pytest and full regressions. That later result is recorded below.
+No package, product guard or environment setting changed.
 
-## Verification still required
+## Retained correction history
 
 Source-only review found and corrected a misspelled existing parser seam,
 unproven DuplicateHandle ownership, loss of primary/close errors and an exact
@@ -110,13 +109,14 @@ source review. Assertions, resolver and product guards were unchanged. All20
 unique methods now have a PASS as18+1+1 across three captures; both earlier
 negative captures are preserved, and passed methods were not repeated. Two
 independent agents verified the recorded results. These are portable models,
-not physical Windows bundle evidence. The complete original parser still requires execution coverage;
-source review alone is not that regression result.
+not physical Windows bundle evidence. At that portable-only stage, the complete
+original parser still required execution coverage. The later real create below
+exercises its successful path; negative/parser failure coverage remains separate.
 
-Next acceptance is a clean candidate build and actual isolated Core -> worker
--> NTFS bundle -> receipt -> separate inspect, followed by conflicts/replay and
-failure paths. The ordinary bind transport remains UNSUPPORTED. FULL, native
-MCP/install/rollback and whole-family final-artifact qualification are unfinished.
+The clean-build and first isolated create/inspect acceptance is recorded below.
+Conflicts/replay, interruptions and failure paths remain unfinished. The ordinary
+bind transport remains UNSUPPORTED. FULL, native MCP/install/rollback and
+whole-family final-artifact qualification are unfinished.
 
 Bundle v2 is separate unfinished work: reuse the existing prepared-stage and
 independent preparation-binding on ext4 before directory commit, acknowledge in
@@ -131,5 +131,65 @@ are AttributeError for a missing `_bundle` field in three deliberately
 unconstructed parent model shells (seven File2 parameters and two Version1
 methods). The real constructor already initializes this field. The correction
 only adds `_bundle=False` to those fixtures; assertions and product code remain
-unchanged. This negative is retained. The correction requires its own CI result;
-no bundle wheel, Windows execution or qualification follows from source review.
+unchanged. This negative is retained. At that point there was no accepted
+corrected build; the later CI and physical results below are separate evidence.
+
+
+## Accepted build and first physical Windows result
+
+Source commit `de8d92369e1595e3ddf5284834fcdaff5e8932ec`, tree
+`4afec39db9501ccfc1190a9535efcb3fb14a801e`, passed all three jobs of
+[CI 40817094533](https://github.com/Emint76/phase-tool-next/actions/runs/40817094533).
+Each Python lane reported 1926 PASS, one unchanged SKIP and no failures; this
+includes all 20 new bundle methods. The installed CLI/MCP, historical evidence,
+ordinary ext4 publication, existing prepared recovery, package rollback and
+resource checks also passed. Two separate reviewers checked original CI artifacts
+and every packaged product byte against Git. These Linux results do not qualify
+Windows storage. The selected wheel is 875245 bytes with SHA-256
+`d84561ce7b541ec059403b8e7095e50e7569c1ce017fa94e4e62d128217ffea3`.
+The selected sdist SHA-256 is
+`aba0f398ab3f28d1397b08204a9337e600a48c8f6b8e8618ccc050c1a42f305e`.
+
+One actual synthetic run, `ntfs-bundle1-74f15e4c-cb16-4704-99a2-778a29e49617`,
+then completed through existing Phase Core -> owned Windows worker -> NTFS
+bundle -> standard receipt -> separate inspect. The source harness was preserved
+before execution with SHA-256
+`d2e946f9033e4055c412d6b2dff33698a08b9ae0df8e71642705e71846ad191a`.
+Preparation, cold startup checks, execute, inspect and RO collection each ran
+once, with exit0 and no stderr. No physical publication was retried.
+
+The directory contains five payload members totaling 524362 bytes: three empty
+files and two distinct paths with identical 262181-byte data, one nested. The
+manifest is 668 bytes, SHA-256
+`43663e75e12f6294387ace3af1205962e2429ef7df775b12b4bab3e3cc572b81`;
+the existing owner1.0 is 226 bytes. Independent reads matched complete membership,
+all bytes, owner/stat/native identity and absence of a retained stage or extra
+sibling. Native evidence shows one class10 NOREPLACE directory rename and parent
+flush, complete END stream, zero remaining handles, closed mutex/session/pipes
+and retained creation-HANDLE wait0/exit0. Outer launcher exit was not substituted
+for worker termination.
+
+The independent inspect returned `succeeded_verified`, `target_verified=true`
+and the same original bindings:
+
+- Receipt: `sha256:b723fdf4c6d5f696354e1fc504a8680c71fd6afa666d0c9a936cf4be0a008065`.
+- Intent: `sha256:65386ee77cf171030b8fa2016d06e5c13a5b53997525847d21fb7000c8fc677d`.
+- Plan: `sha256:5c505b473696de34a6f4df9028356566ed61f5dc8a6c4860db8da7c086c6d509`.
+- Raw native proof: `25b4a6308982f2101d51eeff02b9ed6292bac770b9b1de1ea176d3124c791fce`.
+- Full private originals collection: 1108101 bytes, SHA-256
+  `d9afc55f6daa840bfad164279bd7879f8ac4efadfb15a1e4002b017021a5ec94`.
+
+Both independent agent reviewers accepted this one functional result, checking
+original Core bindings, frozen inputs, Windows bytes and resource finalization.
+They share the test host/toolchain; this is not external human approval. The full
+private evidence remains outside the public repository. Scientific data,
+personal configuration and internal logs are not included here.
+
+## Remaining work
+
+Complete native bundle2 using existing preparation binding and explicit recovery,
+then applicable conflicts, repeats, interruptions, recovery, historical readback,
+clean installation, native MCP and runtime rollback. A05/G01 and broader safety
+qualification remain NOT_VERIFIED. This small create proves neither full MIX/FULL
+support nor the maximum member/size/deadline envelope. Ordinary unsupported
+configurations continue to refuse; no new journal, queue or version store is added.

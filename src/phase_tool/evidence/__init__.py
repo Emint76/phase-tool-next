@@ -356,6 +356,8 @@ class EvidenceStore:
             raise PhaseError("evidence.initialization_failed") from exc
 
     def write_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         if "/" in relative:
             parent_name, file_name = relative.split("/", 1)
             if parent_name != "attachments" or "/" in file_name:
@@ -403,6 +405,8 @@ class EvidenceStore:
         return True
 
     def write_or_verify_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         data = canonical_bytes(value)
         if "/" in relative:
             parent_name, file_name = relative.split("/", 1)
@@ -434,9 +438,13 @@ class EvidenceStore:
             return path, digest_bytes(data)
 
     def replace_attachment_canonical(self, file_name: str, value: Any) -> tuple[Path, str]:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         return replace_attachment_canonical(self.attachment_root, file_name, value)
 
     def write_blob_exact(self, digest: str, data: bytes) -> Path:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         if not digest.startswith("sha256:") or len(digest) != 71:
             raise PhaseError("evidence.invalid_blob_digest", digest)
         actual = digest_bytes(data)
@@ -744,6 +752,8 @@ def _write_native_parent_failure(store,binding,value):
     positively known; no fallback, overwrite or retry after any uncertain write.
     A failure attachment never supplies closure/quiescence or repairs completeness.
     """
+    if getattr(store, '_native_recovery_only', False):
+        raise PhaseError('recovery.original_write_forbidden')
     from ..installation import _NativeFileCreateReadBinding
     from ..mutation.ntfs.failure import validate_native_parent_failure
     from ..mutation.ntfs.native import _require
@@ -771,6 +781,157 @@ def _write_native_parent_failure(store,binding,value):
         'ntfs.native_failure_binding_mismatch')
     binding.check_evidence_root()
     return _write_native_canonical(store,binding,'attachments/native-parent-failure.json',value)
+
+
+def _open_native_recovery_store(binding, run_id):
+    """Open ONE existing original; never call the reserving constructor.
+
+    The caller already holds the native common guard and has fully verified
+    this selected original. Held root/run/attachment FDs survive the exchange.
+    Only _write_native_recovery_canonical can publish through this store.
+    """
+    import threading
+    from ..installation import _NativeFileCreateReadBinding
+    from ..canonical import parse_json_bytes
+    from ..mutation.ntfs.native import _require
+    _require(type(binding) is _NativeFileCreateReadBinding, 'ntfs.original_read_binding_required')
+    manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    _require(manifest['native_read_installation_version'] == '1.9', 'recovery.closed_native_role_required')
+    validate_run_id(run_id)
+    root = binding.check_evidence_root()
+    opened = []
+    try:
+        current = os.open(root, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        opened.append((current, None, root))
+        expected = manifest['evidence_identity']
+        info = os.fstat(current)
+        _require((info.st_dev, info.st_ino) == (expected['device'], expected['inode']),
+                 'ntfs.original_evidence_identity_mismatch')
+        for name in ('.phase', 'runs', run_id, 'attachments'):
+            parent = current
+            current = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC, dir_fd=parent)
+            opened.append((current, parent, name))
+        identities = []
+        for fd, parent, name in opened:
+            info = os.fstat(fd)
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                     and not info.st_mode&0o022 and info.st_dev==expected['device']
+                     and (info.st_dev,info.st_ino)==(named.st_dev,named.st_ino),
+                     'ntfs.original_evidence_object_unsafe')
+            identities.append((info.st_dev,info.st_ino))
+        store = object.__new__(EvidenceStore)
+        store.evidence_root = root
+        store.runs_root = root/'.phase/runs'
+        store.run_root = store.runs_root/run_id
+        store.attachment_root = store.run_root/'attachments'
+        store.blob_root = store.run_root/'blobs'
+        store.operational_lock_root = root/'.phase/locks'
+        store._owned_run_identity = identities[-2]
+        store._native_owned_attachment_identity = identities[-1]
+        store._authoritative_evidence_published = True
+        store._native_recovery_only = True
+        store._native_recovery_owner = os.getpid(), threading.get_ident()
+        store._native_recovery_fds = [list(row)+[identity] for row,identity in zip(opened,identities)]
+        store._native_recovery_binding = binding
+        return store
+    except BaseException as primary:
+        from ..mutation.ntfs.uncertainty import _diagnostic
+        errors=[]
+        for fd,_parent,_name in reversed(opened):
+            try:os.close(fd)
+            except BaseException as secondary:errors.append(secondary)
+        if errors:
+            raise PhaseError('recovery.store_open_failed',details={'primary':_diagnostic(primary),
+                'secondary':[_diagnostic(e)for e in errors]}) from primary
+        raise
+
+
+def _check_native_recovery_store(store):
+    import threading
+    from ..mutation.ntfs.native import _require
+    _require(type(store) is EvidenceStore and getattr(store,'_native_recovery_only',False) is True
+             and store._native_recovery_owner == (os.getpid(),threading.get_ident())
+             and store._native_recovery_fds, 'recovery.closed_native_store_required')
+    expected=store._native_recovery_fds[0][3][0]
+    for fd,parent,name,identity in store._native_recovery_fds:
+        current = os.fstat(fd)
+        named = os.stat(name,dir_fd=parent,follow_symlinks=False)
+        _require(stat.S_ISDIR(current.st_mode) and stat.S_ISDIR(named.st_mode)
+                 and current.st_uid==os.geteuid() and not current.st_mode&0o022 and current.st_dev==expected
+                 and identity==(current.st_dev,current.st_ino)==(named.st_dev,named.st_ino),
+                 'ntfs.original_evidence_identity_mismatch')
+    store._native_recovery_binding.check_evidence_root()
+
+
+def _write_native_recovery_canonical(store, leaf, value):
+    """Only existing recovery records/proof/digest observations; no original writes."""
+    from ..mutation.ntfs.native import _require
+    from ..streaming import read_bounded_file
+    _check_native_recovery_store(store)
+    _require(type(leaf) is str and (leaf in {'commit-intent.json','commit-receipt.json',
+        'native-commit-proof.json'} or re.fullmatch(r'[0-9a-f]{64}\.json',leaf) is not None),
+        'evidence.invalid_path')
+    records = store._native_recovery_fds
+    if len(records)==5:
+        run_fd = records[3][0]
+        try:
+            fd=os.open('recovery',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=run_fd)
+        except FileNotFoundError:
+            os.mkdir('recovery',0o700,dir_fd=run_fd)
+            os.fsync(run_fd)
+            fd=os.open('recovery',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=run_fd)
+        info=os.fstat(fd)
+        records.append([fd,run_fd,'recovery',(info.st_dev,info.st_ino)])
+    _check_native_recovery_store(store)
+    path=store.run_root/'recovery'/leaf
+    data=canonical_bytes(value)
+    _require(len(data)<=2*1024**2,'recovery.record_limit')
+    # An existing exact object is verified and durability-confirmed under the
+    # SAME common guard. A mismatching object never receives overwrite/retry.
+    if evidence_file_exists(path):
+        _require(read_bounded_file(path,2*1024**2)==data,'recovery.continuation_conflict')
+        descriptor=os.open(leaf,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=records[-1][0])
+        try:
+            info=os.fstat(descriptor);named=os.stat(leaf,dir_fd=records[-1][0],follow_symlinks=False)
+            _require(stat.S_ISREG(info.st_mode) and info.st_uid==os.geteuid()
+                and info.st_nlink==1 and not info.st_mode&0o022
+                and info.st_dev==records[0][3][0]
+                and (info.st_dev,info.st_ino)==(named.st_dev,named.st_ino),
+                'ntfs.original_evidence_object_unsafe')
+            os.fsync(descriptor)
+            _check_native_recovery_store(store)
+            named=os.stat(leaf,dir_fd=records[-1][0],follow_symlinks=False)
+            _require((info.st_dev,info.st_ino)==(named.st_dev,named.st_ino),
+                'ntfs.original_evidence_identity_mismatch')
+        finally:os.close(descriptor)
+        os.fsync(records[-1][0])
+    else:
+        _write_bytes_exclusive_atomic(path,data,'native-recovery',_parent_descriptor=records[-1][0])
+    _check_native_recovery_store(store)
+    _require(read_bounded_file(path,2*1024**2)==data,'recovery.continuation_conflict')
+    return path,digest_bytes(data)
+
+
+def _close_native_recovery_store(store):
+    from ..mutation.ntfs.native import _require
+    from ..mutation.ntfs.uncertainty import _diagnostic
+    errors=[]
+    try:
+        _check_native_recovery_store(store)
+    except BaseException as error:
+        errors.append(error)
+    for fd,_parent,_name,identity in reversed(store._native_recovery_fds):
+        try:
+            actual=os.fstat(fd)
+            _require((actual.st_dev,actual.st_ino)==identity,'ntfs.original_evidence_identity_mismatch')
+            os.close(fd)
+        except BaseException as error:
+            errors.append(error)
+    store._native_recovery_fds=[]
+    if errors:
+        raise PhaseError('recovery.store_finalization_unknown',details={
+            'primary':_diagnostic(errors[0]),'secondary':[_diagnostic(e)for e in errors[1:]]}) from errors[0]
 
 
 def _confirm_native_original_absent(binding,run_id):
@@ -895,6 +1056,8 @@ def _write_native_canonical(store,binding,relative,value):
     replacement directory. A changed namespace or failed ack is unresolved,
     never permission to repeat, overwrite, downgrade or publish elsewhere.
     """
+    if getattr(store, '_native_recovery_only', False):
+        raise PhaseError('recovery.original_write_forbidden')
     import threading
     from ..canonical import parse_json_bytes
     from ..installation import _NativeFileCreateReadBinding
@@ -911,10 +1074,10 @@ def _write_native_canonical(store,binding,relative,value):
     if checkpoint:
         from ..prepared_binding import NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2, PreparationBinding
         from ..continuation import PreparedStage
-        selected={'1.7':NATIVE_BOUND_CONTRACT,'1.8':NATIVE_BOUND_CONTRACT_V2}.get(manifest['native_read_installation_version'])
+        selected={'1.7':NATIVE_BOUND_CONTRACT,'1.8':NATIVE_BOUND_CONTRACT_V2,'1.9':NATIVE_BOUND_CONTRACT_V2}.get(manifest['native_read_installation_version'])
         _require(selected is not None,'ntfs.original_closed_checkpoint_required')
         exact=dict(zip(('id','version','package_digest'),selected))
-        _require(manifest['native_read_installation_version'] in {'1.7','1.8'}
+        _require(manifest['native_read_installation_version'] in {'1.7','1.8','1.9'}
             and manifest['contract']==exact and type(value) is dict
             and set(value)=={'prepared','binding'},'ntfs.original_closed_checkpoint_required')
         PreparedStage.model_validate(value['prepared'])

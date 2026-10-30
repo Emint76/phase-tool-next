@@ -459,7 +459,30 @@ class EffectBroker:
             raise PhaseError("broker.content_blob_mismatch", blob_digest)
         return content
 
-    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest, *, progress=None):
+    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest, *, progress=None,
+                               _native_checkpoint=None):
+        if self._native_authority is not None:
+            # Native dispatch precedes EVERY Host/POSIX root or lock operation.
+            from .ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+            from .ntfs.bundle_recovery import _NativeCommitCheckpoint
+            from .ntfs.native import _require
+            authority=self._native_authority
+            _require(type(authority) is _ExperimentalBundle2AuthorityV3
+                and type(_native_checkpoint) is _NativeCommitCheckpoint
+                and _native_checkpoint.binding is authority.read_binding
+                and _native_checkpoint.original['plan']==plan
+                and _native_checkpoint.context['intent_digest']==expected_intent_digest
+                and intent_path==_native_checkpoint.original['run']/'intent.json'
+                and str(target_root)==parse_json_bytes(authority._projections_bytes)['phase_result_root'],
+                'recovery.closed_native_role_required')
+            authority.require_contract(contract)
+            entry=self.registry.resolve_mechanism(plan['mechanism'])
+            descriptor=parse_json_bytes(self.registry.resource_bytes(str(entry['artifact'])))
+            _require(descriptor.get('execution_allowed') is True
+                and descriptor.get('recovery')=='explicit_prepared_commit','recovery.commit_not_authorized')
+            return authority.channel.recover_bundle(_native_checkpoint)
+        if _native_checkpoint is not None:
+            raise PhaseError('recovery.closed_native_role_required')
         from ..continuation_progress import RecoveryProgress, RecoveryRootLock
         from ..continuation import continue_locked
         progress = progress if progress is not None else RecoveryProgress()

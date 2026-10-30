@@ -394,6 +394,14 @@ def inspect_run(
             raise PhaseError("ntfs.closed_native_installation_required")
         _native_authority._usable()
         _native_authority.require_request_roots(root_bindings or {}, evidence_root)
+        from ..mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+        if (type(_native_authority) is _ExperimentalBundle2AuthorityV3
+                and (Path(evidence_root)/'.phase/runs'/run_id/'recovery/native-commit-proof.json').exists()):
+            if capture_expectations or _include_canonical_result:
+                raise PhaseError('inspection.recovered_projection_unsupported')
+            from ..mutation.ntfs.bundle_recovery_entrypoint import inspect_recovered_native
+            return inspect_recovered_native(_native_authority,evidence_root=evidence_root,run_id=run_id)
+
     try:
         root = Path(_platform_path(Path(evidence_root))).resolve(strict=True)
         run_root = (root / ".phase" / "runs" / run_id).resolve(strict=True)

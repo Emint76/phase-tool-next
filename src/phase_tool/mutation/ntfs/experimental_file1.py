@@ -191,12 +191,13 @@ def _experimental_admission(binding):
     from .experimental_bundle1 import _ExperimentalBundle1Admission
     from .experimental_bundle2 import _ExperimentalBundle2Admission
     from .experimental_bundle2_v2 import _ExperimentalBundle2AdmissionV2
+    from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
     from .experimental_file2 import _ExperimentalFile2Admission
     from .experimental_version1 import _ExperimentalVersion1Admission
     from .experimental_version2 import _ExperimentalVersion2Admission
     from .experimental_history import (_ExperimentalHistoryFile1Admission,
         _ExperimentalHistoryVersion1Admission)
-    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalBundle1Admission, _ExperimentalBundle2Admission, _ExperimentalBundle2AdmissionV2, _ExperimentalFile2Admission,
+    _require(type(context) in (_ExperimentalFile1Admission, _ExperimentalBundle1Admission, _ExperimentalBundle2Admission, _ExperimentalBundle2AdmissionV2, _ExperimentalBundle2AdmissionV3, _ExperimentalFile2Admission,
             _ExperimentalVersion1Admission, _ExperimentalVersion2Admission, _ExperimentalHistoryFile1Admission,
             _ExperimentalHistoryVersion1Admission),
         'ntfs.experimental_admission_required')
@@ -216,8 +217,10 @@ def _is_native_authority(value):
     from .experimental_bundle1 import _ExperimentalBundle1Admission
     from .experimental_bundle2 import _ExperimentalBundle2Admission
     from .experimental_bundle2_v2 import _ExperimentalBundle2AdmissionV2
+    from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
     from .experimental_bundle2_authority import _ExperimentalBundle2Authority
     from .experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
+    from .experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
     from .experimental_file2_authority import _ExperimentalFile2Authority
     from .experimental_version1_authority import _ExperimentalVersion1Authority
     from .experimental_version2_authority import _ExperimentalVersion2Authority
@@ -237,6 +240,7 @@ def _is_native_authority(value):
         _ExperimentalBundle1Authority: _ExperimentalBundle1Admission,
         _ExperimentalBundle2Authority: _ExperimentalBundle2Admission,
         _ExperimentalBundle2AuthorityV2: _ExperimentalBundle2AdmissionV2,
+        _ExperimentalBundle2AuthorityV3: _ExperimentalBundle2AdmissionV3,
         _ExperimentalFile2Authority: _ExperimentalFile2Admission,
         _ExperimentalVersion1Authority: _ExperimentalVersion1Admission,
         _ExperimentalVersion2Authority: _ExperimentalVersion2Admission,

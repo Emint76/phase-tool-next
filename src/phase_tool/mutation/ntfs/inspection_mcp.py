@@ -102,9 +102,15 @@ class _InspectionMCPCallOwner:
     Docker CLI finalization alone cannot establish a native worker's exit.
     Concurrent calls fail immediately; there is no queued or persistent work.
     """
-    def __init__(self,*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest):
+    def __init__(self,*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest,
+                 _experimental_admission_context=None):
         self._startup=dict(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
             manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest)
+        if _experimental_admission_context is not None:
+            from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV3,
+                'ntfs.experimental_admission_required')
+            self._startup['_experimental_admission_context']=_experimental_admission_context
         self._gate=threading.Lock()
         self._held_launch=None
         self._unavailable=False
@@ -162,6 +168,25 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
+            if launch.manifest['native_read_installation_version']=='1.9':
+                from ...installation import _native_registry_for_launch
+                registry=_native_registry_for_launch(launch)
+                if request.get('operation')=='recover_publication':
+                    from .bundle_recovery_entrypoint import validate_delivery
+                    validate_delivery(response,launch)
+                else:
+                    validate_command_result(result,registry)
+                    _require(set(response)=={'protocol','version','channel_id','run_id','result','exit_code'}
+                        and response['protocol']=='phase.native.command' and response['version']=='1.0'
+                        and response['channel_id']==launch.channel_id and response['run_id']==run_id
+                        and type(response['exit_code']) is int and type(result['exit_code']) is int
+                        and result['exit_code']==response['exit_code']
+                        and result['command']=='inspect' and result['run_id']==run_id,
+                        'ntfs.parent_command_binding_mismatch')
+                if result.get('inspection_required') is True or result['exit_code']!=0:
+                    self._unavailable=True
+                else:self._held_launch=None
+                return result
             registry=_native_registry_for_manifest(self._startup['manifest_bytes'],
                 self._startup['expected_manifest_digest'])
             validate_command_result(result,registry)

@@ -148,7 +148,7 @@ def native_original_query(launch,query):
         and re.fullmatch('[0-9a-f]{32}',query['operation_nonce']) is not None
         and query['channel_id']==launch.channel_id
         and query['installation_digest']==launch.installation_digest
-        and query['action'] in {'read_executing','verify_no_dispatch'}
+        and query['action'] in {'read_executing','verify_no_dispatch','read_recovery'}
         and (query['intent_digest'] is None or (type(query['intent_digest']) is str
             and re.fullmatch('sha256:[0-9a-f]{64}',query['intent_digest']) is not None)),
         'ntfs.original_query_binding_mismatch')
@@ -175,7 +175,16 @@ def native_original_query(launch,query):
         intent=parse_json_bytes(original,maximum_bytes=2*1024**2)
         _require(intent['native_binding']['operation_nonce']==query['operation_nonce'],
             'ntfs.original_current_invocation_mismatch')
-        if query['action']=='read_executing':
+        if query['action']=='read_recovery':
+            _require(launch.manifest['native_read_installation_version']=='1.9',
+                'recovery.closed_native_role_required')
+            from .bundle_recovery_original import verify_original
+            from .bundle_execution import _bundle_projection_value
+            from ...canonical import digest_bytes
+            checked=verify_original(binding,query['run_id'],intent['idempotency']['key'],digest)
+            value={'native_recovery_original_version':'1.0','projection':_bundle_projection_value(checked['projection']),
+                'prepared':checked['prepared'],'original_failure_digest':checked['files']['attachments/native-parent-failure.json'][0]}
+        elif query['action']=='read_executing':
             parsed=binding.read(run_id=query['run_id'],intent_digest=digest)
             if publication is not None:
                 _require_publication_original(intent=intent,plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),

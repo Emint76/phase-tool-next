@@ -8,6 +8,7 @@ def validate_command_result(value, registry):
         '1.0': 'stage3-command-result.schema.json',
         '1.1': 'stage3-command-result-1.1.schema.json',
         '1.2': 'stage3-command-result-1.2.schema.json',
+        '1.3': 'stage3-command-result-1.3.schema.json',
     }
     version = value.get('stage3_command_result_version') if isinstance(value, dict) else None
     if version not in resources:

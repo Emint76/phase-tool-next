@@ -44,6 +44,16 @@ class RecoveryResult(BaseModel):
     exit_code: int=40
 
 
+class NativeRecoveryResult(RecoveryResult):
+    """Exact native successor: delivery loss cannot manufacture an attempt bool."""
+    recovery_result_version: Literal['1.2']='1.2'
+    recovery_mutation_attempted: bool | None=None
+    native_error_details: list[dict]=Field(default_factory=list)
+    native_parent_response: dict | None=None
+    recovery_mode: Literal['observe','commit_prepared']='observe'
+    commit_finalization_verified: bool=False
+
+
 def read_record(path: Path) -> dict:
     _reject_existing_links(path)
     data=read_bounded_file(path,REQUEST_LIMIT)
@@ -168,6 +178,15 @@ def recover_publication(application, *, evidence_root: Path, run_id: str,
                         target_root: Path, request_id: str, expected_intent_digest: str,
                         mode: str = 'observe'):
     from .application import ApplicationResponse
+    # Select the closed native role BEFORE Host/POSIX load_context/_root/lock.
+    from .installation import _NativeFileCreateInstallation
+    if type(application.installation) is _NativeFileCreateInstallation:
+        from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+        authority=application.installation.authority
+        if type(authority) is not _ExperimentalBundle2AuthorityV3:
+            raise PhaseError('recovery.native_generation_unsupported')
+        return authority.recover_prepared(application,evidence_root=evidence_root,run_id=run_id,
+            target_root=target_root,request_id=request_id,expected_intent_digest=expected_intent_digest,mode=mode)
     result=RecoveryResult(run_id=run_id,request_id=request_id)
     progress=RecoveryProgress()
     run=None

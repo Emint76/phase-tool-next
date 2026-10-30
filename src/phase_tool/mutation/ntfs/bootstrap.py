@@ -247,7 +247,7 @@ class _NativeAcceptedLaunch:
             and invocation['run_id'] not in {'.','..'}
             and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
                 for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4','1.5','1.6','1.7','1.8'}
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4','1.5','1.6','1.7','1.8','1.9'}
             and type(manifest.get('root_grants')) is list
             and len(manifest['root_grants'])==(2 if manifest['native_read_installation_version']=='1.5' else 1),
             'ntfs.accepted_launch_binding_required')
@@ -265,6 +265,11 @@ class _NativeAcceptedLaunch:
             from .experimental_bundle2_v2 import _ExperimentalBundle2AdmissionV2
             from .bundle_execution import _BUNDLE2_CONTRACT_V2
             _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV2
+                and manifest.get('contract')==_BUNDLE2_CONTRACT_V2,'ntfs.experimental_admission_required')
+        if manifest['native_read_installation_version']=='1.9':
+            from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+            from .bundle_execution import _BUNDLE2_CONTRACT_V2
+            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV3
                 and manifest.get('contract')==_BUNDLE2_CONTRACT_V2,'ntfs.experimental_admission_required')
         if manifest['native_read_installation_version']=='1.5':
             from .experimental_version2 import _ExperimentalVersion2Admission,_VERSION2_CONTRACT
@@ -347,7 +352,7 @@ class _NativeAcceptedLaunch:
         from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2
         return ((manifest['native_read_installation_version']=='1.6' and manifest['contract']==_BUNDLE1_CONTRACT)
             or (manifest['native_read_installation_version']=='1.7' and manifest['contract']==_BUNDLE2_CONTRACT)
-            or (manifest['native_read_installation_version']=='1.8' and manifest['contract']==_BUNDLE2_CONTRACT_V2))
+            or (manifest['native_read_installation_version'] in {'1.8','1.9'} and manifest['contract']==_BUNDLE2_CONTRACT_V2))
 
     def check_runtime(self):
         _require(self._owner==(os.getpid(),threading.get_ident())
@@ -584,19 +589,28 @@ class _NativeAcceptedLaunch:
             _require(handle.closed,'ntfs.worker_finalization_unknown')
         except BaseException as error:errors.append(error)
         if errors:
+            if self.manifest['native_read_installation_version']=='1.9':
+                from .uncertainty import _diagnostic
+                raise PhaseError('ntfs.owner_finalization_unknown',details={
+                    'resource_closure_errors':[_diagnostic(e)for e in errors]}) from errors[0]
             primary=errors[0]
             for error in errors[1:]:
                 try:primary.add_note('Native owner secondary close: '+type(error).__name__)
                 except BaseException:pass
             raise primary
 
-    def _query_original(self,action,digest):
+    def _query_original(self,action,digest,*,_original_nonce=None):
         _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         from .process_witness import WindowsProcessWitness
         self._windows_required()
         _require(not self._original_query_attempted,'ntfs.original_query_consumed')
         self._original_query_attempted=True
         request=_original_query_request(self,action,digest)
+        if _original_nonce is not None:
+            _require(self.manifest['native_read_installation_version']=='1.9' and action in {'read_executing','read_recovery'}
+                and type(_original_nonce) is str and re.fullmatch('[0-9a-f]{32}',_original_nonce) is not None,
+                'recovery.closed_native_role_required')
+            request['operation_nonce']=_original_nonce
         process=self._spawn(self._linux_command('original'))
         witness=pipe=None
         answer=None

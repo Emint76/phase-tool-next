@@ -56,7 +56,7 @@ class _NativeWindowsParent:
         self._file2_exchange_deadline=None
         generation=launch.manifest['native_read_installation_version']
         self._channel_version=(('1.3' if self._file2 else '1.2') if generation=='1.4' else
-            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5','1.7':'1.6','1.8':'1.6'}[generation])
+            {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5','1.7':'1.6','1.8':'1.6','1.9':'1.7'}[generation])
         self._inspection_only=launch._inspection_only
         _require(type(self._inspection_only) is bool,'ntfs.fixed_role_required')
         self._consumed=self._inspection_only  # Read role has no unused GO slot.
@@ -85,7 +85,7 @@ class _NativeWindowsParent:
         kind=value.get('kind')
         # Irreversibly consume before parsing/binding/spawn/read failure. A
         # buffered/repeated GO or finish cannot restore an unused worker slot.
-        if kind in {'execute_file_create','execute_version1','execute_version2','execute_file2','execute_bundle','finish_without_execution'}:
+        if kind in {'execute_file_create','execute_version1','execute_version2','execute_file2','execute_bundle','recover_bundle','finish_without_execution'}:
             _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
             _require(not self._consumed,'ntfs.parent_execution_consumed')
             self._consumed=True
@@ -133,6 +133,10 @@ class _NativeWindowsParent:
                 'ntfs.parent_request_binding_mismatch')
             if self._file2 or self._bundle:self._file2_exchange_deadline=_deadline()
             answer=self._execute(value['intent_digest'],_common={k:value[k] for k in _COMMON})
+        elif kind=='recover_bundle':
+            _require(set(value)==_COMMON|{'prepared','recovery_context'},'ntfs.parent_request_shape')
+            from .bundle_recovery_parent import execute_recovery
+            answer=execute_recovery(self,value,{key:value[key]for key in _COMMON})
         elif kind=='finish_without_execution':
             _require(set(value)==_COMMON|{'operation_nonce','installation_digest'}
                 and value['run_id']==self._launch.run_id
@@ -160,6 +164,9 @@ class _NativeWindowsParent:
         return {key:value[key] for key in _COMMON},answer
 
     def _execute(self,intent_digest,*,_common=None):
+        if self._launch.manifest['native_read_installation_version']=='1.9':
+            from .bundle_recovery_capture import execute_original_with_capture
+            return execute_original_with_capture(self,intent_digest,common=_common)
         _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
         _require(self._consumed and not self._spawn_attempted,
             'ntfs.parent_execution_consumed')
@@ -390,6 +397,8 @@ class _NativeWindowsParent:
             _require(canonical_bytes(candidate)==raw,'ntfs.bundle_prepared_binding_mismatch')
             message=validate_prepared_message(candidate,projection=parsed,
                 channel_id=self._launch.channel_id,expected_pid=self._worker.pid)
+            if self._launch.manifest['native_read_installation_version']=='1.9':
+                self._bundle_ack_relay_entered=True
             self._pipe.send_frame(canonical_bytes(common|{'ok':True,'value':{
                 'bundle_stage':'prepared','prepared':message},'error':None}),deadline)
             ack_raw,_=self._pipe.receive_frame(deadline,maximum_bytes=32768)
@@ -417,6 +426,18 @@ class _NativeWindowsParent:
                         'ntfs.parent_execution_unresolved')
                     self._consumed=True
                     from .parent_result import _native_file_result_mode, validate_native_file_result_delivery
+                    if value.get('version')=='1.2':
+                        _require(self._launch.manifest['native_read_installation_version']=='1.9'
+                            and not self._inspection_only,'recovery.closed_native_role_required')
+                        from .bundle_recovery_entrypoint import validate_delivery
+                        validate_delivery(value,self._launch)
+                        if self._failed or (self._spawn_attempted and not self._worker_finalized):
+                            _require(value['result']['success'] is False
+                                and value['result']['inspection_required'] is True
+                                and value['result']['exit_code']==40,
+                                'recovery.native_uncertainty_delivery_required')
+                        self._finished=True
+                        return value
                     invocation=getattr(self._launch,'invocation',None)
                     request=invocation.get('request') if type(invocation) is dict else None
                     expects_result=_native_file_result_mode(request)
@@ -492,7 +513,15 @@ class _NativeWindowsParent:
                     response=common|{'ok':True,'value':answer,'error':None}
                 response_deadline=(self._file2_exchange_deadline if (self._file2 or self._bundle)
                     and value.get('kind') in {'execute_file2','execute_bundle'} else _deadline())
-                self._pipe.send_frame(canonical_bytes(response),response_deadline)
+                if (self._launch.manifest['native_read_installation_version']=='1.9'
+                        and value.get('kind') in {'execute_bundle','recover_bundle'} and hasattr(self,'_terminal_reply_deadline')):
+                    from .bundle_recovery_terminal import windows_terminal
+                    terminal_reply_deadline=self._terminal_reply_deadline
+                    del self._terminal_reply_deadline
+                    windows_terminal(self._pipe,sending=True,raw=canonical_bytes(response),
+                        deadline_ns=terminal_reply_deadline,maximum_bytes=2*1024**2)
+                else:
+                    self._pipe.send_frame(canonical_bytes(response),response_deadline)
         except BaseException:
             self._failed=True
             # Never fabricate a positive ACK or recover the control stream.

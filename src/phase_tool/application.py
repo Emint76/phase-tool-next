@@ -321,7 +321,9 @@ class PhaseApplication:
                 error=None,
                 exit_code=0,
             )
-            if not inspected["receipt_present"]:
+            if "native_recovery" in inspected:
+                payload.update(stage3_command_result_version="1.3",recovery=inspected["native_recovery"])
+            elif not inspected["receipt_present"]:
                 complete = inspected["inspection_status"] == "recovered_verified"
                 error = inspected["inspection_error"]
                 payload.update(

@@ -45,6 +45,7 @@ class WindowsPipeFrames:
         self._failed = True
         self._sealed = False
         self._eof_attempted = False
+        self._last_frame_failure = None
         self._owner = os.getpid(), threading.get_ident()
         self._gate = threading.Lock()
         self._streams = reader, writer  # Strong refs; lifetime remains owner's duty.
@@ -173,6 +174,7 @@ class WindowsPipeFrames:
             self._identity(1)
             if sending:
                 _require(type(raw) is bytes and 1 <= len(raw) <= MAX_FRAME, 'ntfs.pipe_frame_limit')
+                progress['expected_wire_bytes'] = len(raw)+10
                 self._write(f'{len(raw):08x}\n'.encode('ascii') + raw + b'\n', deadline_ns, progress)
                 answer = dict(progress)
             else:
@@ -186,6 +188,9 @@ class WindowsPipeFrames:
             self._usable()
             self._time(deadline_ns)
         except BaseException as error:
+            if getattr(self,'_last_frame_failure',None) is None:
+                self._last_frame_failure = {'direction': 'send' if sending else 'receive',
+                                            'progress': dict(progress)}
             self._failed, primary = True, error
         finally:
             if acquired:

@@ -958,7 +958,8 @@ class PhaseCore:
                 from .mutation.ntfs.experimental_bundle1_authority import _ExperimentalBundle1Authority
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
                 from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
-                native_bundle = type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2)
+                from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+                native_bundle = type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3)
             if native_bundle:
                 frozen = native_ctx.native_authority.freeze_inputs(
                     contract, request, parse_json_bytes(candidate.canonical_bytes),
@@ -1246,7 +1247,8 @@ class PhaseCore:
             if execute and native_authority is not None:
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
                 from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
-                if type(native_authority) in (_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2):
+                from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+                if type(native_authority) in (_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3):
                     # Pass the existing Core store and receipt attachment list;
                     # checkpointing never creates another evidence owner.
                     native_authority.bind_prepared_checkpoint(store,contract,plan,intent_path,
@@ -1467,7 +1469,7 @@ class PhaseCore:
 
 
 @contextmanager
-def _guard_native_original_intents(read_binding, *, history_bindings=None):
+def _guard_native_original_intents(read_binding, *, history_bindings=None, _recovery_selection=None):
     """Unselected refusal barrier over existing Core evidence, not authority.
 
     A future trusted native entrypoint must acquire this BEFORE EvidenceStore
@@ -1506,6 +1508,13 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
     bindings=((read_binding,) if history_bindings is None else
         _validate_native_history_bindings(read_binding,history_bindings))
     static=tuple((row,parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2)) for row in bindings)
+    if _recovery_selection is not None:
+        from .mutation.ntfs.bundle_recovery_original import _NativeRecoverySelection
+        _require(type(_recovery_selection) is _NativeRecoverySelection
+            and _recovery_selection.binding is read_binding
+            and manifest['native_read_installation_version']=='1.9',
+            'recovery.selected_original_mismatch')
+
 
     per_run=any(row.experimental_admission is not None for row in bindings) and history_bindings is not None
 
@@ -1695,6 +1704,22 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None):
         with os.scandir(runs) as entries:
             for entry in entries:
                 run=runs/entry.name;safe_info(run,directory=True)
+                if _recovery_selection is not None and entry.name==_recovery_selection.run_id:
+                    # Exact fully verified original, re-read UNDER this common
+                    # lock. Every other run keeps the original refusal barrier.
+                    _recovery_selection.check(run)
+                    continue
+                if (run/'recovery').exists():
+                    from .mutation.ntfs.bundle_recovery_original import verify_original
+                    from .mutation.ntfs.bundle_recovery import verify_saved_recovery
+                    recovered_intent,_=control(run/'intent.json')
+                    native=recovered_intent.get('native_binding',{})
+                    selected=historical_binding(recovered_intent.get('contract'),recovered_intent.get('core'),
+                        native.get('installation'),run_id=entry.name)
+                    verified=verify_original(selected,entry.name,recovered_intent['idempotency']['key'],
+                        profile_digest('intent',recovered_intent))
+                    verify_saved_recovery(selected,verified)
+                    continue
                 names,attachments=inventory(run)
                 abandoned=re.fullmatch(r'\.abandoned-(.+)-([0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15})',entry.name)
                 if abandoned:

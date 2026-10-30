@@ -105,7 +105,7 @@ class _CoreBundleCheckpoint:
         _require(exact in _BUNDLE2_CONTRACTS and plan['contract'] == exact, 'ntfs.bundle2_projection_required')
         manifest = parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
         _require(((manifest['native_read_installation_version']=='1.7' and exact==_BUNDLE2_CONTRACT)
-            or (manifest['native_read_installation_version']=='1.8' and exact==_BUNDLE2_CONTRACT_V2))
+            or (manifest['native_read_installation_version'] in {'1.8','1.9'} and exact==_BUNDLE2_CONTRACT_V2))
             and intent_path == Path(manifest['evidence_root'])/'.phase'/'runs'/plan['run_id']/'intent.json'
             and store.run_root == intent_path.parent and store.evidence_root == Path(manifest['evidence_root'])
             and type(operation_nonce) is str and _CHANNEL.fullmatch(operation_nonce) is not None,

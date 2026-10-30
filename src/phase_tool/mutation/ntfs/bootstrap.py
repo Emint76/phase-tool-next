@@ -203,6 +203,24 @@ def _original_query_request(launch,action,digest):
     return query
 
 
+def _is_bundle_recovery_launch(launch):
+    """Select only the code-owned successor context before reading its manifest.
+
+    Nonmatching historical launches retain their existing validation order.
+    Matching context with a foreign generation/contract is an error, not a
+    fallback to a different registry or authority.
+    """
+    from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+    if (type(launch) is not _NativeAcceptedLaunch or
+            type(getattr(launch,'_experimental_admission_context',None)) is not _ExperimentalBundle2AdmissionV3):
+        return False
+    from .bundle_execution import _BUNDLE2_CONTRACT_V2
+    manifest=launch.manifest
+    _require(type(manifest) is dict and manifest.get('native_read_installation_version')=='1.9'
+        and manifest.get('contract')==_BUNDLE2_CONTRACT_V2,'ntfs.experimental_admission_required')
+    return True
+
+
 class _NativeAcceptedLaunch:
     """One invocation from the fixed trusted launcher, never from operation JSON.
 

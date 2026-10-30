@@ -149,6 +149,61 @@ def _native_terminal_stdout_write(relative: str,tree: ast.AST,node: ast.Call) ->
     return type(node.args[0].value) is int and node.args[0].value==1
 
 
+def _native_terminal_pipe_write(relative: str,tree: ast.AST,node: ast.Call) -> bool:
+    """One terminal-only owned-pipe site; no module or caller-fd exemption.
+
+    This inventories reviewed source structure, not arbitrary Python data flow
+    or Windows quiescence. Runtime pipe/frame fault models are separate.
+    """
+    if relative!='mutation/ntfs/bundle_recovery_terminal.py':return False
+    if ast.unparse(node)!="os.write(descriptor(1), framed[progress['wire_bytes']:progress['wire_bytes'] + 65536])":return False
+    owners=[f for f in tree.body if isinstance(f,ast.FunctionDef)
+        and f.name=='_frame_io' and node in ast.walk(f)]
+    if len(owners)!=1:return False
+    function=owners[0];args=function.args
+    if ([a.arg for a in args.args]!=['owner'] or args.posonlyargs or args.defaults
+            or args.vararg or args.kwarg or [a.arg for a in args.kwonlyargs]!=
+            ['sending','raw','deadline_ns','maximum_bytes','windows']
+            or any(value is not None for value in args.kw_defaults)):return False
+    nested=[n for n in ast.walk(function) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda))
+        and n is not function]
+    if (len(nested)!=3 or any(not isinstance(n,ast.FunctionDef)for n in nested)
+            or {n.name for n in nested}!={'descriptor','remaining','read_exact'}):return False
+    descriptor=next(n for n in nested if n.name=='descriptor')
+    expected=ast.parse('''def descriptor(side):
+    _require(owner._owner == (os.getpid(), threading.get_ident()) and not owner._sealed,
+             'ntfs.terminal_owner_changed')
+    if windows:
+        value = owner._pipe(side)
+        _require(value == owner._identities[side], 'ntfs.pipe_identity_changed')
+        return value[0]
+    _require(owner._pipe(side) == owner._pipes[side], 'ntfs.channel_descriptor_changed')
+    return side
+''').body[0]
+    if ast.dump(descriptor)!=ast.dump(expected):return False
+    if any(isinstance(n,ast.Name) and n.id=='descriptor' and not isinstance(n.ctx,ast.Load)
+        for n in ast.walk(function)):return False
+    if any(isinstance(n,ast.arg) and n.arg=='descriptor' for n in ast.walk(function)):return False
+    writes=[n for n in ast.walk(function) if isinstance(n,ast.Call) and _call_name(n)=='os.write']
+    if len(writes)!=1 or writes[0] is not node or any(node in ast.walk(n)for n in nested):return False
+    parents={id(child):n for n in ast.walk(tree)for child in ast.iter_child_nodes(n)}
+    references=[n for n in ast.walk(tree)if isinstance(n,ast.Name)and n.id=='_frame_io']
+    calls=[n for n in ast.walk(tree)if isinstance(n,ast.Call)and _call_name(n)=='_frame_io']
+    if len(calls)!=2 or len(references)!=2 or any(parents.get(id(n)) not in calls for n in references):return False
+    expected_calls={
+        "_frame_io(pipe, sending=sending, raw=raw, deadline_ns=deadline_ns, maximum_bytes=maximum_bytes, windows=True)":
+            ('windows_terminal',"_require(type(pipe) is WindowsPipeFrames, 'ntfs.windows_worker_pipe_required')"),
+        "_frame_io(channel, sending=False, raw=None, deadline_ns=deadline_ns, maximum_bytes=maximum_bytes, windows=False)":
+            ('linux_terminal',"_require(type(channel) is LinuxNativeBundleRecoveryChannel and channel._gate.locked(), 'ntfs.closed_terminal_exchange_required')")}
+    if {ast.unparse(n)for n in calls}!=set(expected_calls):return False
+    for call in calls:
+        name,guard=expected_calls[ast.unparse(call)]
+        wrappers=[n for n in tree.body if isinstance(n,ast.FunctionDef)and n.name==name and call in ast.walk(n)]
+        if len(wrappers)!=1 or not any(isinstance(n,ast.Call)and ast.unparse(n)==guard
+            for n in ast.walk(wrappers[0])):return False
+    return True
+
+
 def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     """Closed trusted-launcher spawn/inspect shapes, no whole-module exemption.
 
@@ -175,7 +230,12 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
         found=[n for n in owner.body if isinstance(n,ast.FunctionDef) and n.name==name]
         if len(found)!=1:return False
         f=found[0]
-        if [n.arg for n in f.args.args]!=args or f.args.vararg or f.args.kwarg or f.args.kwonlyargs:return False
+        if ([n.arg for n in f.args.args]!=args or f.args.posonlyargs or f.args.defaults
+                or f.args.vararg or f.args.kwarg):return False
+        if f.args.kwonlyargs:
+            if (name!='_query_original' or [n.arg for n in f.args.kwonlyargs]!=['_original_nonce']
+                    or len(f.args.kw_defaults)!=1 or not isinstance(f.args.kw_defaults[0],ast.Constant)
+                    or f.args.kw_defaults[0].value is not None):return False
         if any(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda))
             for n in ast.walk(f) if n is not f):return False
         methods[name]=f
@@ -333,7 +393,9 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                     and node.args[0].args[0].value == 1
                 )
                 windows_pipe_write = _windows_control_pipe_write(relative, tree, node)
-                if relative not in allowed_write_modules and not stdout_channel_write and not windows_pipe_write and not _native_terminal_stdout_write(relative,tree,node):
+                if (relative not in allowed_write_modules and not stdout_channel_write and not windows_pipe_write
+                        and not _native_terminal_stdout_write(relative,tree,node)
+                        and not _native_terminal_pipe_write(relative,tree,node)):
                     hits.append((relative, node.lineno, name))
             if terminal == "open" and relative not in allowed_write_modules:
                 modes = [arg.value for arg in node.args[1:2] if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
@@ -558,6 +620,7 @@ def test_native_process_inventory_rejects_changed_spawn_shape(old,new):
     # Normalize ONLY synthetic mutation input; keep historical parameter IDs.
     # No source is executed and the inventory still evaluates the mutated AST.
     source=ast.unparse(ast.parse((PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')))
+    assert _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source))
     assert old in source
     assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,new)))
 
@@ -568,6 +631,54 @@ def test_native_process_inventory_accepts_only_fixed_module():
     assert not _native_launch_process_inventory('mutation/ntfs/other.py',tree)
 
 
+@pytest.mark.parametrize('replacement',[
+    '*, foreign_nonce=None','*, _original_nonce=True',
+    '*, _original_nonce=None, caller_command=None','*, _original_nonce=None, **kwargs',
+])
+def test_native_process_inventory_rejects_nonclosed_original_query_keywords(replacement):
+    source=ast.unparse(ast.parse((PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')))
+    assert _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source))
+    old='*, _original_nonce=None'
+    assert source.count(old)==1
+    assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,replacement)))
+
+
+@pytest.mark.parametrize('old,new',[
+    ('os.write(descriptor(1),', 'os.write(descriptor(0),'),
+    ('return value[0]', 'return 99'),
+    ('return side', 'return caller_fd'),
+    ('*, sending, raw, deadline_ns, maximum_bytes, windows):',
+        '*, sending, raw, deadline_ns, maximum_bytes, windows, caller_fd=None):'),
+    ('count = os.write(descriptor(1),', 'descriptor = replacement\n                    count = os.write(descriptor(1),'),
+    ('count = os.write(descriptor(1), framed[progress[\'wire_bytes\']:progress[\'wire_bytes\']+65536])',
+        'count = (lambda: os.write(descriptor(1), framed[progress[\'wire_bytes\']:progress[\'wire_bytes\']+65536]))()'),
+    ('count = os.write(descriptor(1), framed[progress[\'wire_bytes\']:progress[\'wire_bytes\']+65536])',
+        'count = os.write(descriptor(1), framed[progress[\'wire_bytes\']:progress[\'wire_bytes\']+65536])\n'
+        '                    count = os.write(descriptor(1), framed[progress[\'wire_bytes\']:progress[\'wire_bytes\']+65536])'),
+    ('windows=True)', 'windows=False)'),
+])
+def test_native_terminal_pipe_inventory_rejects_descriptor_or_owner_escape(old,new):
+    relative='mutation/ntfs/bundle_recovery_terminal.py'
+    source=(PACKAGE/relative).read_text('utf-8');tree=ast.parse(source)
+    writes=[n for n in ast.walk(tree)if isinstance(n,ast.Call)and _call_name(n)=='os.write']
+    assert len(writes)==1 and _native_terminal_pipe_write(relative,tree,writes[0])
+    assert not _native_terminal_pipe_write('mutation/ntfs/other.py',tree,writes[0])
+    assert source.count(old)==1
+    changed=ast.parse(source.replace(old,new))
+    writes=[n for n in ast.walk(changed)if isinstance(n,ast.Call)and _call_name(n)=='os.write']
+    assert writes and all(not _native_terminal_pipe_write(relative,changed,n)for n in writes)
+
+
+def test_native_terminal_pipe_inventory_refuses_an_extra_frame_caller():
+    relative='mutation/ntfs/bundle_recovery_terminal.py'
+    source=(PACKAGE/relative).read_text('utf-8');tree=ast.parse(source)
+    write=next(n for n in ast.walk(tree)if isinstance(n,ast.Call)and _call_name(n)=='os.write')
+    assert _native_terminal_pipe_write(relative,tree,write)
+    changed=ast.parse(source+'\ndef unrelated(owner):\n return _frame_io(owner, sending=True, raw=b"x", deadline_ns=1, maximum_bytes=1, windows=True)\n')
+    write=next(n for n in ast.walk(changed)if isinstance(n,ast.Call)and _call_name(n)=='os.write')
+    assert not _native_terminal_pipe_write(relative,changed,write)
+
+
 @pytest.mark.parametrize('old,new',[
  ("        from .windows_pipe import WindowsPipeFrames\n", "        from .windows_pipe import WindowsPipeFrames\n        alias = subprocess.Popen\n"),
  ("            handle=process._handle\n", "            handle=process._handle\n            alias = subprocess.Handle\n"),
@@ -575,6 +686,7 @@ def test_native_process_inventory_accepts_only_fixed_module():
 ])
 def test_native_process_inventory_rejects_inner_alias_and_sensitive_projection(old,new):
     source=(PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')
+    assert _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source))
     assert old in source
     assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,new)))
 
@@ -598,6 +710,7 @@ def test_bootstrap_subprocess_exception_never_exempts_runpy(tmp_path, monkeypatc
 ])
 def test_native_inspection_spawn_inventory_rejects_nonliteral_or_wrong_role(replacement):
     source=(PACKAGE/'mutation/ntfs/bootstrap.py').read_text('utf-8')
+    assert _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source))
     old="self._spawn(self._linux_command('inspect'))"
     assert source.count(old)==1
     assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,replacement)))

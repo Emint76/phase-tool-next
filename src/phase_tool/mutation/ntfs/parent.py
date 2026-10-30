@@ -11,7 +11,7 @@ import re
 import threading
 import time
 
-from ...canonical import canonical_bytes, parse_json_bytes
+from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
 from ...paths import safe_relative_locator
 from .native import NativeIdentity, _require
@@ -30,6 +30,43 @@ def _deadline():
     return time.perf_counter_ns()+30_000_000_000
 
 
+class _FailFirstPreparedAck:
+    """One code-owned test fault, selected only by a pinned test launcher.
+
+    This is neither a request option nor a Core fault/qualification grant. The
+    accepted installation still owns code identity, admission and all effects.
+    It can only withhold the original worker ACK after Core's validated reply.
+    """
+    __slots__=('_launch','_consumed')
+
+    def __init__(self,launch):
+        self._launch=launch
+        self._consumed=False
+        self.check_launch(launch)
+
+    def check_launch(self,launch):
+        from .bootstrap import _is_bundle_recovery_launch
+        _require(type(self) is _FailFirstPreparedAck and _is_bundle_recovery_launch(launch)
+            and launch is self._launch,'ntfs.prepared_ack_test_role_required')
+        request=launch.invocation['request']
+        _require(launch._inspection_only is False and launch._bundle is True
+            and type(request) is dict and request.get('operation')=='execute',
+            'ntfs.prepared_ack_test_role_required')
+        launch.check_runtime()
+
+    def fail(self,launch,message,ack_raw):
+        self.check_launch(launch)
+        _require(not self._consumed,'ntfs.prepared_ack_test_consumed')
+        self._consumed=True  # Sticky BEFORE constructing/raising the deliberate error.
+        raise PhaseError('ntfs.test_prepared_ack_delivery_failed',details={
+            'test_fault_version':'1.0','fault':'fail_first_prepared_ack',
+            'context':parse_json_bytes(canonical_bytes(message['context'])),
+            'channel_id':message['channel_id'],
+            'prepared_message_digest':digest_bytes(canonical_bytes(message)),
+            'ack_digest':digest_bytes(ack_raw),'bytes_sent':0,
+            'ack_send_attempted':False,'fault_consumed':True})
+
+
 class _NativeWindowsParent:
     """Transient owner of one Core ingress and at most one physical worker.
 
@@ -38,13 +75,18 @@ class _NativeWindowsParent:
     endpoint obtains the original tuple from existing Core evidence and parser.
     Separate native RO calls are performed by this owner, never by the worker.
     """
-    def __init__(self, launch, core_pipe):
+    def __init__(self, launch, core_pipe, *, _prepared_ack_test=None):
         from .bootstrap import _NativeAcceptedLaunch
         _require(not getattr(self,'_initialization_attempted',False),
             'ntfs.parent_initialization_consumed')
         self._initialization_attempted=True
         _require(os.name=='nt' and type(launch) is _NativeAcceptedLaunch
             and type(core_pipe) is WindowsPipeFrames,'ntfs.fixed_native_parent_required')
+        if _prepared_ack_test is not None:
+            _require(type(_prepared_ack_test) is _FailFirstPreparedAck,
+                'ntfs.prepared_ack_test_role_required')
+            _prepared_ack_test.check_launch(launch)
+        self._prepared_ack_test=_prepared_ack_test
         self._owner=os.getpid(),threading.get_ident()
         self._launch,self._pipe=launch,core_pipe
         self._sequence=0
@@ -164,7 +206,8 @@ class _NativeWindowsParent:
         return {key:value[key] for key in _COMMON},answer
 
     def _execute(self,intent_digest,*,_common=None):
-        if self._launch.manifest['native_read_installation_version']=='1.9':
+        from .bootstrap import _is_bundle_recovery_launch
+        if _is_bundle_recovery_launch(self._launch):
             from .bundle_recovery_capture import execute_original_with_capture
             return execute_original_with_capture(self,intent_digest,common=_common)
         _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
@@ -356,6 +399,7 @@ class _NativeWindowsParent:
     def _transfer_bundle(self,pipe,parsed,deadline,common):
         from .bundle_stream import _BundleTwoPassReceiver,_bundle_token
         from .bundle_execution import _bundle_projection_value,_bundle_wire_header,validate_bundle_worker_ready
+        from .bootstrap import _is_bundle_recovery_launch
         from ...bundle import parse_manifest
         _require(type(deadline) is int and type(common) is dict,'ntfs.bundle_owned_deadline_required')
         value=_bundle_projection_value(parsed);context=value['context'];manifest=parse_manifest(parsed.manifest_bytes)
@@ -387,7 +431,7 @@ class _NativeWindowsParent:
             receiver.feed(raw);pipe.send_frame(raw,deadline)
         receiver.finish()
         if context['worker_version']=='1.5':
-            from .bundle_prepared import validate_prepared_message,validate_prepared_ack
+            from .bundle_prepared import validate_prepared_message
             raw,_=pipe.receive_frame(deadline,maximum_bytes=512*1024)
             candidate=parse_json_bytes(raw,maximum_bytes=512*1024)
             if type(candidate) is dict and 'worker_completion_version' in candidate:
@@ -397,13 +441,21 @@ class _NativeWindowsParent:
             _require(canonical_bytes(candidate)==raw,'ntfs.bundle_prepared_binding_mismatch')
             message=validate_prepared_message(candidate,projection=parsed,
                 channel_id=self._launch.channel_id,expected_pid=self._worker.pid)
-            if self._launch.manifest['native_read_installation_version']=='1.9':
+            if _is_bundle_recovery_launch(self._launch):
                 self._bundle_ack_relay_entered=True
             self._pipe.send_frame(canonical_bytes(common|{'ok':True,'value':{
                 'bundle_stage':'prepared','prepared':message},'error':None}),deadline)
             ack_raw,_=self._pipe.receive_frame(deadline,maximum_bytes=32768)
-            validate_prepared_ack(ack_raw,message=message)
-            pipe.send_frame(ack_raw,deadline)
+            self._relay_prepared_ack(pipe,message,ack_raw,deadline)
+
+    def _relay_prepared_ack(self,pipe,message,ack_raw,deadline):
+        from .bundle_prepared import validate_prepared_ack
+        validate_prepared_ack(ack_raw,message=message)
+        test=getattr(self,'_prepared_ack_test',None)
+        if test is not None:
+            _require(type(test) is _FailFirstPreparedAck,'ntfs.prepared_ack_test_role_required')
+            test.fail(self._launch,message,ack_raw)
+        pipe.send_frame(ack_raw,deadline)
 
     def serve(self):
         """Core requests and its final serialized response share owned framing.
@@ -412,6 +464,7 @@ class _NativeWindowsParent:
         Core's final response is delivery, not a second canonical receipt. The
         bootstrap keeps all accepted code immutable until these processes exit.
         """
+        from .bootstrap import _is_bundle_recovery_launch
         try:
             while True:
                 _require(self._owner==(os.getpid(),threading.get_ident()) and not self._finished,
@@ -427,7 +480,7 @@ class _NativeWindowsParent:
                     self._consumed=True
                     from .parent_result import _native_file_result_mode, validate_native_file_result_delivery
                     if value.get('version')=='1.2':
-                        _require(self._launch.manifest['native_read_installation_version']=='1.9'
+                        _require(_is_bundle_recovery_launch(self._launch)
                             and not self._inspection_only,'recovery.closed_native_role_required')
                         from .bundle_recovery_entrypoint import validate_delivery
                         validate_delivery(value,self._launch)
@@ -513,7 +566,7 @@ class _NativeWindowsParent:
                     response=common|{'ok':True,'value':answer,'error':None}
                 response_deadline=(self._file2_exchange_deadline if (self._file2 or self._bundle)
                     and value.get('kind') in {'execute_file2','execute_bundle'} else _deadline())
-                if (self._launch.manifest['native_read_installation_version']=='1.9'
+                if (_is_bundle_recovery_launch(self._launch)
                         and value.get('kind') in {'execute_bundle','recover_bundle'} and hasattr(self,'_terminal_reply_deadline')):
                     from .bundle_recovery_terminal import windows_terminal
                     terminal_reply_deadline=self._terminal_reply_deadline

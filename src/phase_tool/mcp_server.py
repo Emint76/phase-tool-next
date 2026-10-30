@@ -9,7 +9,7 @@ from pydantic import StrictInt
 from .application import PhaseApplication
 from .publish_file import PublishFileResult
 from .publish_bundle import PublishBundleResult
-from .recovery import RecoveryResult, NativeRecoveryResult
+from .recovery import RecoveryResult
 from .publication_status import PublicationStatus
 
 _SERVER = FastMCP(
@@ -175,12 +175,11 @@ def phase_publication_status(evidence_root: str, run_id: str, wait_seconds: Stri
 @_SERVER.tool(name="phase_recover_publication")
 def phase_recover_publication(evidence_root: str, run_id: str, target_root: str,
                               request_id: str, expected_intent_digest: str,
-                              mode: Literal["observe", "commit_prepared"] = "observe") -> RecoveryResult | NativeRecoveryResult:
+                              mode: Literal["observe", "commit_prepared"] = "observe") -> RecoveryResult:
     """Observe completion by default; explicit commit_prepared resumes bundle v2 only."""
     response = _application().recover_publication(evidence_root=Path(evidence_root),run_id=run_id,
         target_root=Path(target_root),request_id=request_id,expected_intent_digest=expected_intent_digest,mode=mode)
-    model=NativeRecoveryResult if response.payload.get('recovery_result_version')=='1.2' else RecoveryResult
-    return model.model_validate(response.payload)
+    return RecoveryResult.model_validate(response.payload)
 
 
 def _seal_tool_argument_models() -> None:

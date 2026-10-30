@@ -124,7 +124,8 @@ def _deliver_linux_frame(value,identities,*,_deadline=None):
 
 
 def run_native_core(launch):
-    if (launch.manifest['native_read_installation_version']=='1.9'
+    from .bootstrap import _is_bundle_recovery_launch
+    if (_is_bundle_recovery_launch(launch)
             and launch.invocation['request'].get('operation')=='recover_publication'):
         from .bundle_recovery_entrypoint import run_recovery_core
         return run_recovery_core(launch)
@@ -419,9 +420,13 @@ def run_native_original(launch):
     return 0
 
 
-def run_native_parent(launch):
-    from .parent import _NativeWindowsParent
+def run_native_parent(launch, *, _prepared_ack_test=None):
+    from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
+    if _prepared_ack_test is not None:
+        _require(type(_prepared_ack_test) is _FailFirstPreparedAck,
+            'ntfs.prepared_ack_test_role_required')
+        _prepared_ack_test.check_launch(launch)
     launch.check_runtime()
     process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())
     witness=pipe=None
@@ -431,7 +436,9 @@ def run_native_parent(launch):
         witness=WindowsProcessWitness(process)
         pipe=launch._pipe(process)
         pipe.send_frame(launch._invocation_bytes,time.perf_counter_ns()+30_000_000_000)
-        response=_NativeWindowsParent(launch,pipe).serve()
+        owner=(_NativeWindowsParent(launch,pipe) if _prepared_ack_test is None else
+            _NativeWindowsParent(launch,pipe,_prepared_ack_test=_prepared_ack_test))
+        response=owner.serve()
     except BaseException as error:primary=error
     finally:
         try:
@@ -509,7 +516,9 @@ def _run_file2_worker_transfer(launch,original,pipe,deadline):
 def _run_bundle_worker_transfer(launch,original,pipe,deadline):
     """Metadata initial frame; fixed worker verifies first-pass bytes before native I/O."""
     from .bundle_execution import _bundle_projection_from_value,run_bundle_worker
-    if launch.manifest['native_read_installation_version']=='1.9' and original.get('native_worker_original_version')=='4.0':
+    from .bootstrap import _is_bundle_recovery_launch
+    recovery_launch=_is_bundle_recovery_launch(launch)
+    if recovery_launch and type(original) is dict and original.get('native_worker_original_version')=='4.0':
         from .bundle_recovery_worker import run_recovery_worker
         primary=None
         try:run_recovery_worker(launch,original,pipe,deadline)
@@ -529,7 +538,7 @@ def _run_bundle_worker_transfer(launch,original,pipe,deadline):
     primary=None
     try:
         launch.check_runtime()
-        if launch.manifest['native_read_installation_version']=='1.9':
+        if recovery_launch:
             from .bundle_recovery_capture import run_bundle_worker_capture
             run_bundle_worker_capture(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline)
         else:

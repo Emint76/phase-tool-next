@@ -145,6 +145,7 @@ class _InspectionMCPCallOwner:
 
     def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_retain_launch=False):
         from .parent_result import _native_file_result_mode
+        from .bootstrap import _is_bundle_recovery_launch
         _require(type(_include_canonical_result) is bool
             and _include_canonical_result is _native_file_result_mode(request)
             and (not _include_canonical_result or inspection_only is True),
@@ -168,7 +169,7 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
-            if launch.manifest['native_read_installation_version']=='1.9':
+            if _is_bundle_recovery_launch(launch):
                 from ...installation import _native_registry_for_launch
                 registry=_native_registry_for_launch(launch)
                 if request.get('operation')=='recover_publication':

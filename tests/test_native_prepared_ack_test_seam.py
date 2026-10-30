@@ -32,7 +32,6 @@ def launch_shell():
     launch._invocation_bytes=canonical_bytes({'run_id':context['run_id'],'channel_id':CHANNEL,
         'operation_nonce':context['operation_nonce'],'request':{'operation':'execute'}})
     launch._inspection_only=False
-    launch._bundle=True
     launch._experimental_admission_context=_ExperimentalBundle2AdmissionV3(b'{}')
     launch.check_runtime=Mock()  # Modeled code-identity boundary; no native/host I/O.
     launch.spawn_core=Mock(side_effect=AssertionError('portable test must not spawn Core'))
@@ -120,10 +119,16 @@ class PreparedAckTestSeamComponentTests(unittest.TestCase):
                 else:manifest['contract']=dict(_BUNDLE2_CONTRACT_V2,version='1.2.0')
                 launch._manifest_bytes=canonical_bytes(manifest)
             elif kind=='ordinary_admission':launch._experimental_admission_context=None
-            else:launch._bundle=False
+            else:
+                # A real nonbundle manifest is rejected by the exact generation
+                # selector before the later bundle-role predicate is reachable.
+                manifest=launch.manifest
+                manifest['contract']=dict(_BUNDLE2_CONTRACT_V2,id='file_create.v2')
+                launch._manifest_bytes=canonical_bytes(manifest)
+                self.assertIs(launch._bundle,False)
             with self.subTest(role=kind),self.assertRaises(PhaseError) as caught:
                 _FailFirstPreparedAck(launch)
-            expected=('ntfs.experimental_admission_required' if kind in {'old_generation','foreign_contract'}
+            expected=('ntfs.experimental_admission_required' if kind in {'old_generation','foreign_contract','nonbundle'}
                 else 'ntfs.prepared_ack_test_role_required')
             self.assertEqual(caught.exception.code,expected)
             launch.spawn_core.assert_not_called();launch.spawn_inspection.assert_not_called()

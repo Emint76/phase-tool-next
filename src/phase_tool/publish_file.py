@@ -27,6 +27,8 @@ TARGET_ROOT_BINDING = "phase_result_root"
 MAX_BYTES = min(_MAX_CONTENT_BYTES, _MATERIALIZED_TARGET_LIMITS["mechanism.exclusive_create_v1"])
 
 
+_PUBLICATION_EVIDENCE_FIELDS = ("run_id", "terminal_status", "execution_disposition", "mutation_attempted", "receipt_digest", "intent_digest", "effect_plan_digest")
+
 class PublishFileResult(BaseModel):
     """New closed result schema; historical command/receipt schemas are unchanged."""
 
@@ -53,6 +55,62 @@ class PublishFileResult(BaseModel):
     exit_code: int = 10
 
 
+def _native_file_publication_ack(result: dict, ack: dict) -> bool:
+    """Project a validated ACK into the existing result; no I/O or authority.
+
+    The caller first retains the original ACK in its same finite owner.
+    In particular, nullable mutation/intent/plan facts are never inferred away.
+    True permits one fresh inspect, not success or retry.
+    """
+    for field in ("receipt_digest", "intent_digest", "effect_plan_digest",
+            "execution_disposition", "mutation_attempted"):
+        result[field] = ack[field]
+    if (ack.get("stage3_command_result_version") == "1.2"
+            or ack.get("inspection_required") is True or ack["exit_code"] == 40
+            or ack["mutation_attempted"] is None):
+        result.update(status="indeterminate", exit_code=40, inspection_required=True,
+            error=ack["error"] or "publish_file.execution_unknown")
+        return False
+    if ack["success"] is not True:
+        uncertain = ack["mutation_attempted"] is not False
+        code = ack["error"] or "publish_file.execution_failed"
+        result.update(status="indeterminate" if uncertain else "rejected_before_write",
+            exit_code=40 if uncertain else 10,
+            inspection_required=uncertain or code.startswith("idempotency."), error=code)
+        return False
+    # Preserve a possible/known commit before any later correlation can fail.
+    result.update(status="committed_unverified", exit_code=30, inspection_required=True)
+    if not (ack["command"] == "execute" and ack["run_id"] == result["run_id"]
+            and ack["exit_code"] == 0 and ack["error"] is None and ack["blockers"] == []
+            and ack["terminal_status"] == "succeeded_verified" and ack["receipt_digest"]
+            and ack["execution_disposition"] in {"executed", "reused_existing"}):
+        raise PhaseError("publish_file.evidence_mismatch")
+    # Raw execute target_verified=None is normal; only fresh inspect verifies it.
+    return True
+
+
+def _native_file_publication_inspected(result: dict, ack: dict, inspected: dict,
+        reference: dict | None) -> None:
+    """Reuse the Host adapter's seven-field correlation after native validation.
+
+    Parent/MCP already validate the closed frame and CURRENT reference against
+    the fixed manifest/schema. This function does not read or walk evidence,
+    authenticate history, qualify storage, create a receipt or reread source.
+    It leaves success false until the same caller finishes serialization/gate.
+    """
+    if inspected["success"] is not True:
+        raise PhaseError(inspected["error"] or "publish_file.inspection_failed")
+    if any(ack[field] != inspected[field] for field in _PUBLICATION_EVIDENCE_FIELDS):
+        raise PhaseError("publish_file.evidence_mismatch")
+    if not (inspected["exit_code"] == 0 and inspected["error"] is None
+            and inspected["blockers"] == [] and inspected["target_verified"] is True
+            and inspected["terminal_status"] == "succeeded_verified"
+            and inspected["receipt_digest"] and type(reference) is dict):
+        raise PhaseError("publish_file.not_verified")
+    state = reference["state"]
+    result.update(content_digest=state["digest"], content_length=state["length"])
+
+
 def _root(path: Path, *, existing: bool) -> Path:
     path = Path(path).absolute()
     _reject_existing_links(path)
@@ -60,6 +118,44 @@ def _root(path: Path, *, existing: bool) -> Path:
     if (existing or resolved.exists()) and not resolved.is_dir():
         raise PhaseError("publish_file.invalid_root")
     return resolved
+
+
+def _file_publication_candidate(request_id: str, target_locator: str):
+    """Pure request construction; caller retains validation and authority gates."""
+    candidate = {
+        "operation_id": request_id, "idempotency_key": request_id,
+        "input_binding": "payload", "target_locator": target_locator,
+    }
+    candidate_bytes = encode_structured_input(candidate)
+    if len(candidate_bytes) > 1_048_576:
+        raise PhaseError("candidate.too_large")
+    return candidate, candidate_bytes
+
+
+def _require_file_publication_evidence(*, intent, plan, binding, candidate,
+        intent_digest, effect_plan_digest, content_digest, content_length, target_locator, request_id):
+    """Pure literal correlation AFTER trusted inspect/schema verification.
+
+    This reuses the Host adapter's exact checks; it does not authenticate input
+    facts, qualify a profile, inspect a target or authorize a native operation.
+    """
+    if (
+        profile_digest("intent", intent) != intent_digest
+        or profile_digest("effect-plan", plan) != effect_plan_digest
+        or intent["candidate"]["storage"]["value"] != candidate
+        or intent["contract"] != binding
+        or intent["idempotency"]["key"] != request_id
+        or len(plan["effects"]) != 1
+    ):
+        raise PhaseError("publish_file.evidence_mismatch")
+    effect = plan["effects"][0]
+    if (
+        effect["target"] != {"root_binding": TARGET_ROOT_BINDING, "relative_locator": target_locator}
+        or effect["content_digest"] != content_digest
+        or effect["content_length"] != content_length
+        or effect["kind"] != "exclusive_create"
+    ):
+        raise PhaseError("publish_file.evidence_mismatch")
 
 
 def publish_file(
@@ -102,6 +198,11 @@ def publish_file(
         capture = copy_and_hash_stream if publication_version == "2.0" else copy_and_hash
         maximum_bytes = FILE_LIMIT if publication_version == "2.0" else MAX_BYTES
         result.contract_binding = contract_binding
+        # Host adapters resolve/lock POSIX targets and own scratch cleanup.
+        # Native publication needs prepared Core input and a fresh read-only inspector.
+        from .installation import _NativeFileCreateInstallation
+        if type(getattr(application, 'installation', None)) is _NativeFileCreateInstallation:
+            raise PhaseError('ntfs.high_level_publication_unavailable')
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:
             raise PhaseError("publish_file.invalid_request_id")
@@ -137,13 +238,7 @@ def publish_file(
             raise PhaseError("publish_file.target_exists_inspection_required")
         binding = application._binding(contract_binding)
         result.contract_digest = binding["package_digest"]
-        candidate = {
-            "operation_id": request_id, "idempotency_key": request_id,
-            "input_binding": "payload", "target_locator": target_locator,
-        }
-        candidate_bytes = encode_structured_input(candidate)
-        if len(candidate_bytes) > 1_048_576:
-            raise PhaseError("candidate.too_large")
+        candidate, candidate_bytes = _file_publication_candidate(request_id, target_locator)
         # Explicit isolated scratch: callers supply roots, never candidates/blobs.
         with TemporaryDirectory(prefix="phase-publish-", dir=preparation_root) as scratch:
             frozen = capture(
@@ -167,6 +262,7 @@ def publish_file(
                 evidence_root=evidence_root, run_id=run_id,
                 input_paths={"payload": frozen.blob_path},
                 expected_inputs={"payload": (frozen.digest, frozen.length)},
+                _expected_candidate_bytes=candidate_bytes,
                 root_bindings={TARGET_ROOT_BINDING: target_root},
             )
             # Preserve the returned execution evidence before fallible cleanup.
@@ -201,7 +297,7 @@ def publish_file(
         ).payload
         if not inspected["success"]:
             raise PhaseError(inspected["error"] or "publish_file.inspection_failed")
-        compared = ("run_id", "terminal_status", "execution_disposition", "mutation_attempted", "receipt_digest", "intent_digest", "effect_plan_digest")
+        compared = _PUBLICATION_EVIDENCE_FIELDS
         if any(payload[key] != inspected[key] for key in compared):
             raise PhaseError("publish_file.evidence_mismatch")
         if inspected["target_verified"] is not True or not result.receipt_digest or payload["terminal_status"] != "succeeded_verified":
@@ -209,23 +305,12 @@ def publish_file(
         run_root = evidence_root / ".phase" / "runs" / run_id
         intent = parse_json_bytes(read_evidence_bytes(run_root / "intent.json"))
         plan = parse_json_bytes(read_evidence_bytes(run_root / "attachments" / "effect-plan.json"))
-        if (
-            profile_digest("intent", intent) != result.intent_digest
-            or profile_digest("effect-plan", plan) != result.effect_plan_digest
-            or intent["candidate"]["storage"]["value"] != candidate
-            or intent["contract"] != binding
-            or intent["idempotency"]["key"] != request_id
-            or len(plan["effects"]) != 1
-        ):
-            raise PhaseError("publish_file.evidence_mismatch")
-        effect = plan["effects"][0]
-        if (
-            effect["target"] != {"root_binding": TARGET_ROOT_BINDING, "relative_locator": target_locator}
-            or effect["content_digest"] != result.content_digest
-            or effect["content_length"] != result.content_length
-            or effect["kind"] != "exclusive_create"
-        ):
-            raise PhaseError("publish_file.evidence_mismatch")
+        _require_file_publication_evidence(
+            intent=intent, plan=plan, binding=binding, candidate=candidate,
+            intent_digest=result.intent_digest, effect_plan_digest=result.effect_plan_digest,
+            content_digest=result.content_digest, content_length=result.content_length,
+            target_locator=target_locator, request_id=request_id,
+        )
         result.success = True
         result.status = "verified"
         result.target_verified = True

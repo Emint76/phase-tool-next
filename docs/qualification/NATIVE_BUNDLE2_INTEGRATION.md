@@ -1,0 +1,175 @@
+# Experimental native bundle2 through the existing Core
+
+Status: experimental candidate. A later admitted Windows bundle2 invocation
+committed the physical create, but independent inspect failed; full end-to-end
+verification and native prepared recovery remain open. A05,
+applicable G01 and supported MIX/FULL qualification remain NOT_VERIFIED.
+Ordinary admission/production guard, production installations and Hermes are
+unchanged. This checkpoint is not a supported NTFS release.
+
+## Reused lifecycle
+
+The exact native bundle_create.v2 bindings use the existing Core intent,
+frozen inputs, EffectBroker, EvidenceStore, receipt and independent inspect.
+PreparedStage1.0 and PreparationBinding1.0 retain their formats and original
+run ownership. There is no second journal, operation queue, history store or Core.
+
+After fully checking and flushing the synthetic stage, the same Windows worker
+sends a bounded PREPARED frame while retaining its original mutex, stage HANDLE
+and execution deadline. The existing Core saves both original ext4 checkpoint
+records through its original EvidenceStore and checks their exact readback before
+returning ACK on that same exchange. Only then may the worker perform the single
+directory NOREPLACE commit. The prepared attachment joins the original receipt's
+attachment set. This exchange is necessary to preserve the v2 prepared-before-
+commit semantics across the platform boundary; it is not another durable log.
+
+The checkpoint binds the verified READY PID, exact installed original projection,
+nonce, contract, plan, intent and full stage identity. ACK binds the exact message
+and both durable record hashes. Worker termination, handles, pipes, mutex and
+session finalization remain separate requirements of the existing proof.
+Fresh inspect checks original bundle ownership and plan for both native bindings;
+reused-existing operations retain the original creator's identity.
+
+The initial immutable experimental 1.2.0 bindings remain available:
+
+- Contract package: sha256:26926c1b6ae7fa02f98d7946943cbb5fee10b57adaf2c8c1d118aa15c9754421.
+- Mechanism package: sha256:3443af779f138251c5a1e175398e37cb5988f37e06b5d7e8d6774d68ac9c55f8.
+- Registry: sha256:375e726b0af776caeb235b9c7cf68f296fb848fa861ae75561a2d50b387ea584.
+
+Only the fixed closed experimental bundle2 composition selects generation1.7,
+channel1.6 and worker1.5. All 156 prior registry entries and trust roots are
+retained; the candidate profile declares no provided guarantees or conformance.
+The default registry/guard rejects that experimental generation.
+
+## Actual admission refusal and corrected source
+
+The accepted initial build passed its Linux CI, including all portable bundle2
+models. Its single isolated Windows invocation nevertheless returned exit10,
+`ntfs.experimental_requirements_mismatch`, `not_executed`, before intent or worker
+dispatch. Separate inspect returned `inspection.run_unavailable`. Independent
+restoration and a fresh RO census found only the eight initialization/input
+files; the synthetic target was absent. No receipt was created for this early
+admission rejection. This is a contract/admission defect, not evidence of an
+incompatible physical rename primitive. The failure remains retained.
+
+The 1.2.0 contract carried an empty requirement mapping inherited from the Host
+contract, while the experimental admission requires the five native obligations.
+The corrected immutable contract **bundle_create.v2@1.2.1** supplies all five:
+exclusive create, readback verification, cross-process serialization, bound
+namespace mutation and namespace metadata flush attempted. The strict admission
+and qualification guard remain unchanged. The physical mechanism1.2.0 is reused.
+
+- Corrected contract package: sha256:f3d5ff90a36a41b2021ba59179eff3cdbbac47cd07da47f38305029893720052.
+- New registry: sha256:dc6dddae1e655b0c114b7dd556c55e4499b97aee97185b33f40b8883663be2d5.
+- New profile descriptor1.0.1: sha256:6cfb5c5d60a7ee539053168c8b0e62f688c30b6ee3b9f586db1f9f00b257b3d4.
+
+The closed manifest1.8 selects a separate provider artifact and admission type.
+The new snapshot appends only the contract and profile to all159 existing rows;
+the old snapshots, descriptors, provider and contract remain unchanged. Channel1.6,
+worker1.5, prepared-record formats, Core, receipts and version semantics are reused.
+Provided guarantees and conformance stay empty; ordinary startup continues to
+refuse this experimental composition. At that source checkpoint, its own
+exact-build CI and physical experiment were pending; their actual outcomes and
+the subsequent inspection correction are recorded below.
+
+Review also found two integration gaps: the new launcher must decode the bundle
+worker's projection context for the exact new generation, and the Core inventory
+must recognize the exact new preparation binding on subsequent invocations.
+Focused decoder/inventory regressions accompany those corrections. Their model
+scope does not certify worker execution or terminal closure.
+
+The original canary recorder rejected a valid early-error envelope with null
+nested run_id, and its positive-only oracle then raised a secondary missing-field
+error. Complete raw frames and original file bytes survived; neither failure was
+converted to a successful result. A corrected recorder must retain early refusal
+envelopes while keeping the successful lifecycle oracle strict.
+
+## Historical portable checkpoint and retained negative
+
+The first isolated Windows model runner failed during collection before test
+bodies. A separate collection-only diagnostic captured three missing-pydantic
+tracebacks: the Windows codec had eagerly imported the Core prepared-binding
+models. The correction removes that dependency from the codec, keeps the exact
+immutable binding literal and checks its equality to the Core constant in the
+Linux-only regression. No dependency was installed on the Windows host.
+
+The corrected exact-source run collected 26 methods: 25 PASS, no failures or
+errors, and one explicit Windows NOT_VERIFIED skip for the Linux channel model
+requiring fcntl. The five portable B2 methods and 20 existing bundle methods ran.
+These are models, not physical NTFS results. The remaining method must execute
+on the Linux CI lane; a green historical HEAD is not acceptance of this candidate.
+
+Corrected runner SHA-256:
+05962da83cbe6e90dc4347b47c8c6a0dbf585272a4d3f15a9e6933fe22106b6d.
+Result SHA-256:
+c60595d7649751af0407126463dd95502b1b5c1d8ace725de73481a48bf222c5.
+Log SHA-256:
+1f27eeee4cd50b8088d7d6ed742a7d149a0ecc9f7e9f43db5955bfbc42c25b4c.
+
+Source202 preserves the correction, original failed collection, actual diagnostic,
+source catalogue and runner through the unchanged official Phase1.1/ext4 route:
+raw SHA-256 28235b1d44a332a0ef3e5eecced5f12304bf93b7143dac73c3870b93ffaaad6e;
+receipt sha256:8a524ef58d9081475ebfd18ba00fbac32bba5070721d075439d8bf1d81318a5f.
+Both separate agent reviewers restored it and performed fresh official inspect/
+readback. They share the host/toolchain; this is not external human approval.
+Full private evidence stays outside GitHub. Portable results require their next
+canonical checkpoint before Git delivery.
+
+## Open acceptance
+
+Next for the inspection correction is an exact-HEAD CI/build and a separately
+identified Windows case covering create, worker completion, receipt, separate
+inspect and full original-byte collection. The earlier partial case stays unchanged.
+The existing explicit prepared recovery still needs native dispatch before Host
+root/stat/locking checks, original mutator quiescence, native stage identity and
+the sole remaining commit. It is currently unimplemented; no full v2 lifecycle
+claim is made. Unknown original worker state must refuse continuation.
+
+Conflicts, replay, interruptions/recovery, historical compatibility, final-artifact
+CLI/MCP/install and native runtime rollback remain required. The earlier five
+physical routes remain scoped to their recorded builds. The existing 1024-member,
+2-GiB/member, 4-GiB/total, depth32 and 1-MiB manifest bounds are unchanged; this
+model run does not verify their physical Windows range or the fixed experimental
+deadline. Bundle proof now streams blobs at the existing member bound instead of
+an accidental 1-MiB read cap; full-range native verification remains NOT_VERIFIED.
+No scientific procedure, broad environment certification or standards compliance
+is claimed.
+
+## First admitted Windows execution and inspection correction
+
+Exact commit `ad2b16422c53947af4eb4cee677f4dfd4908e6c4` passed its three CI
+jobs in run40881853905. Both Python lanes recorded1938 passes and one historical
+skip. The selected wheel SHA-256 was
+`047197ca637b8220bd9465c1645c364a35ddf32949e138facc78002705e0436b`.
+These Linux results do not qualify Windows storage.
+
+One fresh synthetic Windows case then completed the actual Core -> worker ->
+NTFS bundle create and produced receipt
+`sha256:2784c261129eeeb203219637cd518706870eeec176cfc3744057c124340663fc`.
+Separate observers confirmed all five member bytes and the original worker's
+retained creation-handle exit witness. However, fresh Phase inspect returned
+`inspection.attachment_set_mismatch` and collection remained accepted=false.
+This is a retained partial result, not a passed end-to-end scenario. No physical
+retry of that case is permitted.
+
+The receipt and native proof agree on seven attachments. Generic inspection
+reconstructed only six, omitting the already verified PreparedStage attachment.
+The minimal correction adds only that digest for exact native B2 contract
+bindings, requiring the preparation binding in the same verified projection.
+Final strict set equality remains; unknown attachments, Host and other contracts
+receive no exemption. No contract, registry, proof format or guard changes.
+
+Five Linux/ext4 component regressions exercise the actual generic inventory
+path with an explicitly synthetic lower-proof projection. The positive case
+must reach a later blob-verification sentinel and never returns inspected
+success. Extra attachments, incomplete binding projection, B1 and Host remain
+negative cases. Source review is complete; execution on the corrected exact
+build remains pending.
+
+The original case reader is bound to its original writer wheel. Substituting a
+new wheel or rewriting that binding is not an allowed verification method.
+The corrected build needs a separately identified physical case. A trusted
+read-only historical-reader entrypoint remains a separate integration gap;
+original bytes and failed inspection are preserved without reinterpretation.
+Native prepared recovery, fault coverage, native MCP/runtime rollback and all
+unverified environment obligations remain open.

@@ -10,16 +10,20 @@ from tempfile import TemporaryDirectory
 import time
 
 from phase_tool.application import PhaseApplication
+from rc01_resources import checked_work_root, resource_preflight
 
 
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--work-root",type=Path,required=True,help="Explicit supported Host fixture parent; no fallback")
     args=parser.parse_args()
-    with TemporaryDirectory(prefix="phase-bundle-resource-") as temporary:
+    work_root=checked_work_root(args.work_root)
+    with TemporaryDirectory(prefix="phase-bundle-resource-",dir=work_root) as temporary:
         root=Path(temporary)
         for name in ("source","target","prep","evidence"):
             (root/name).mkdir()
+        resource_preflight(root,args.output.with_name(args.output.stem+"-preflight.json"))
         expected={}
         for index in range(256):
             name=f"member-{index:04d}.bin"
@@ -49,7 +53,7 @@ def main():
         elapsed=time.perf_counter()-started
         after=counters()
         files=[path for path in root.rglob("*") if path.is_file()]
-        summary={"pass":True,"member_count":len(expected),"total_bytes":256*1048576,
+        summary={"pass":True,"work_root":str(work_root),"member_count":len(expected),"total_bytes":256*1048576,
             "seconds":elapsed,"peak_rss_bytes":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,
             "io_delta":{k:after[k]-before[k] for k in before},
             "retained_logical_bytes":sum(p.stat().st_size for p in files),

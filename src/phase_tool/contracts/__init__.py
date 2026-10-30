@@ -41,9 +41,19 @@ _CONTRACT_HOOK_FACTORIES = {
 }
 
 
-def load_contract_hook(contract: Any) -> Any | None:
+def load_contract_hook(contract: Any, *, _native_authority: object | None = None,
+                       _native_expected_targets: bytes | None = None) -> Any | None:
+    if _native_authority is not None:
+        from ..mutation.ntfs.experimental_file1 import _is_native_authority
+        if not _is_native_authority(_native_authority):
+            raise PhaseError("ntfs.closed_native_installation_required")
+        _native_authority.require_contract(contract)
+    elif _native_expected_targets is not None:
+        raise PhaseError("ntfs.native_hook_context_required")
     descriptor = getattr(contract, "contract_hook", None)
     if descriptor is None:
+        if _native_expected_targets is not None:
+            raise PhaseError("ntfs.native_hook_contract_mismatch")
         return None
     if not isinstance(descriptor, dict):
         raise PhaseError("contract.hook_invalid")
@@ -55,6 +65,14 @@ def load_contract_hook(contract: Any) -> Any | None:
     factory = _CONTRACT_HOOK_FACTORIES.get(implementation_id)
     if factory is None:
         raise PhaseError("contract.hook_unavailable", implementation_id)
+    if _native_authority is not None and implementation_id == "builtin.publish_new_version_v1":
+        from .native_publish_new_version_v1 import _NativeVersion1Hook
+        return _NativeVersion1Hook(_native_authority,contract,expected_targets=_native_expected_targets)
+    if _native_authority is not None and implementation_id == "builtin.publish_new_version_v2":
+        from .native_publish_new_version_v2 import _NativeVersion2Hook
+        return _NativeVersion2Hook(_native_authority,contract,expected_targets=_native_expected_targets)
+    if _native_expected_targets is not None:
+        raise PhaseError("ntfs.native_hook_contract_mismatch")
     return factory()
 
 

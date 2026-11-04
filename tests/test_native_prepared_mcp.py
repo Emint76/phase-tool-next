@@ -670,6 +670,115 @@ class NativeFileInspectionHostTests(unittest.TestCase):
             self.assertEqual(factory.call_count,2)
 
 
+class NativeBundle2PreparedMCPRouteTests(unittest.TestCase):
+    """Modeled startup/process only; genuine B2 selector and result validation.
+
+    These component tests do not construct an accepted installation, run Core,
+    create a native process or demonstrate NTFS/qualification properties.
+    """
+    def setup_route(self):
+        from .test_native_prepared_ack_test_seam import launch_shell
+        launch,_=launch_shell()
+        admission=launch._experimental_admission_context
+        startup=dict(config_bytes=b'',expected_config_digest=None,
+            manifest_bytes=launch._manifest_bytes,expected_manifest_digest=None,
+            _experimental_admission_context=admission)
+        owner=inspection_mcp._InspectionMCPCallOwner(**startup)
+        run=launch.invocation['run_id']
+        args=NativePreparedMCPTests().args(run)
+        value={'stage3_command_result_version':'1.0','command':'execute','success':True,
+            'run_id':run,'terminal_status':'succeeded_verified','execution_disposition':'executed',
+            'mutation_attempted':True,'effect_plan_digest':'sha256:'+'a'*64,
+            'intent_digest':'sha256:'+'b'*64,'receipt_digest':'sha256:'+'c'*64,
+            'blockers':[],'error':None,'exit_code':0,'target_verified':True}
+        response={'protocol':'phase.native.command','version':'1.0','channel_id':launch.channel_id,
+            'run_id':run,'result':value,'exit_code':0}
+        registry=installation._native_experimental_bundle2_registry_v3()
+        return owner,launch,args,response,registry,startup
+
+    def test_exact_b2_execute_retains_original_result_and_checked_receipt(self):
+        owner,launch,args,response,registry,_=self.setup_route()
+        original=canonical_bytes(response)
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch',return_value=launch)as factory,
+                patch.object(inspection_mcp,'run_native_parent',return_value=response)as parent,
+                patch.object(installation,'_native_registry_for_launch',return_value=registry)as selection):
+            self.assertIs(owner.execute_prepared(**args),response['result'])
+            self.assertEqual(canonical_bytes(response),original)
+            self.assertIs(factory.call_args.kwargs['_experimental_admission_context'],
+                launch._experimental_admission_context)
+            self.assertIs(factory.call_args.kwargs['_inspection_only'],False)
+            parent.assert_called_once_with(launch);selection.assert_called_once_with(launch)
+        self.assertFalse(owner._unavailable);self.assertIsNone(owner._held_launch)
+
+    def test_exact_b2_uncertain_execute_is_unchanged_and_keeps_actual_launch(self):
+        owner,launch,args,response,registry,_=self.setup_route()
+        response['result']=NativePreparedMCPTests().unknown(args['run_id'])
+        response['result']['run_id']=None
+        response['exit_code']=response['result']['exit_code']
+        original=canonical_bytes(response['result'])
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch',return_value=launch)as factory,
+                patch.object(inspection_mcp,'run_native_parent',return_value=response),
+                patch.object(installation,'_native_registry_for_launch',return_value=registry)):
+            result=owner.execute_prepared(**args)
+            self.assertEqual(canonical_bytes(result),original)
+            self.assertIsNone(result['receipt_digest']);self.assertFalse(result['retry_authorized'])
+            self.assertTrue(owner._unavailable);self.assertIs(owner._held_launch,launch)
+            with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_unavailable'):
+                owner.execute_prepared(**args)
+            factory.assert_called_once()
+
+    def test_b2_foreign_command_run_channel_or_exit_poison_without_retry(self):
+        changes=[{'result':{'command':'inspect'}},{'result':{'run_id':'synthetic-foreign'}},
+            {'channel_id':'f'*32},{'run_id':'synthetic-foreign'},{'exit_code':True},
+            {'exit_code':10},{'result':{'receipt_digest':'not-a-digest'}},{'extra':'field'}]
+        for change in changes:
+            owner,launch,args,response,registry,_=self.setup_route()
+            if 'result'in change:response['result'].update(change['result'])
+            else:response.update(change)
+            with (self.subTest(change=change),
+                    patch.object(inspection_mcp,'_NativeAcceptedLaunch',return_value=launch)as factory,
+                    patch.object(inspection_mcp,'run_native_parent',return_value=response),
+                    patch.object(installation,'_native_registry_for_launch',return_value=registry)):
+                with self.assertRaises(Exception):owner.execute_prepared(**args)
+                self.assertTrue(owner._unavailable);self.assertIs(owner._held_launch,launch)
+                with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_unavailable'):
+                    owner.inspect(args['run_id'])
+                factory.assert_called_once()
+
+    def test_b2_prepared_server_has_only_prepared_execute_and_unary_inspect(self):
+        _,_,_,_,_,startup=self.setup_route()
+        with patch.object(inspection_mcp,'_NativeAcceptedLaunch')as factory:
+            server=inspection_mcp._prepared_server(**startup)
+            tools=server._tool_manager.list_tools()
+            self.assertEqual([t.name for t in tools],['phase_execute_prepared','phase_inspect'])
+            self.assertEqual(set(tools[1].parameters['properties']),{'run_id'})
+            self.assertTrue(all(t.parameters['additionalProperties']is False for t in tools))
+            self.assertNotIn('_experimental_admission_context',tools[0].parameters['properties'])
+            factory.assert_not_called()
+
+    def test_prepared_server_foreign_admission_fails_before_server_or_launch(self):
+        from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+        class ForeignAdmission(_ExperimentalBundle2AdmissionV3):pass
+        _,_,_,_,_,startup=self.setup_route()
+        with (patch.object(inspection_mcp,'_NativeAcceptedLaunch')as factory,
+                patch.object(inspection_mcp,'FastMCP')as server):
+            for admission in (object(),{},ForeignAdmission(b'{}')):
+                with self.subTest(admission=type(admission).__name__),self.assertRaisesRegex(
+                        PhaseError,'ntfs.experimental_admission_required'):
+                    inspection_mcp._prepared_server(**(startup|{'_experimental_admission_context':admission}))
+            factory.assert_not_called();server.assert_not_called()
+
+    def test_native_prepared_entrypoint_forwards_only_explicit_fixed_admission(self):
+        _,_,_,_,_,startup=self.setup_route()
+        for experimental in (False,True):
+            with self.subTest(experimental=experimental),patch.object(inspection_mcp,'_prepared_server')as factory:
+                supplied=startup if experimental else {k:v for k,v in startup.items()
+                    if k!='_experimental_admission_context'}
+                self.assertEqual(inspection_mcp.run_native_prepared_mcp(**supplied),0)
+                factory.assert_called_once_with(**supplied)
+                factory.return_value.run.assert_called_once_with(transport='stdio')
+
+
 # Test-client projection only: the public server's bare-dict ABI is unchanged.
 def _component_native_inspect_projection(result,tool,*,run_id,intent_digest,effect_plan_digest,proof_digest):
     from jsonschema import Draft202012Validator

@@ -231,3 +231,34 @@ change. Native observe-mode/replay/conflict/interruption coverage, native runtim
 rollback, A05/G01, supported MIX/FULL qualification and full physical size/deadline
 range remain bounded by their own evidence and NOT_VERIFIED where unestablished.
 Full private originals stay outside GitHub; no new Core, journal or queue is added.
+# Ordinary prepared MCP execution — source-only successor
+
+Source220 was independently restored through official Phase inspect/readback and
+delivered in commit `f43cecb9b1817a4b0c48d58c4480fdf4ed548486`. Its recorded
+native SDK recovery and fresh inspect are completed functional results; the
+intentional original create failure remains negative. Historical statements
+below retain the status of their own checkpoints.
+
+The next minimal adapter correction lets the exact existing Bundle v2 admission
+context reach the existing prepared MCP server. Its response validator now
+correlates execute as well as inspect with the same request, run, channel,
+schema and exit status. An unresolved execute retains its actual launch and
+blocks further calls. The explicit Bundle v2 server exposes only prepared
+execute and unary inspect; the historical default tool set is unchanged.
+Core, contract bindings, EvidenceStore, prepared ACK, receipts, version semantics
+and qualification admission are unchanged.
+
+The new `native_phase_mcp_prepared_sdk_test_launcher_v3.py.in` is a separate
+test installation artifact. It enables the fixed execute role without the old
+ACK fault and reuses the accepted isolated SDK through a fixed sibling path.
+The historical SDK, launcher, manifests and native cases are not overwritten.
+Requests cannot select a launcher, SDK, provider, registry or admission context.
+Its exact launcher/config/wheel/dependency graph must still be accepted by the
+existing startup checks before any native dispatch.
+
+The new API regressions explicitly model startup and process boundaries. They
+are not physical Windows evidence. At this source checkpoint the successor is
+unexecuted: CI, a new isolated ordinary MCP create, original receipt and separate
+inspect remain required. No supported NTFS route or broader qualification is
+claimed. A05/G01 and qualified MIX/FULL remain NOT_VERIFIED.
+

@@ -182,8 +182,11 @@ class _InspectionMCPCallOwner:
                         and response['channel_id']==launch.channel_id and response['run_id']==run_id
                         and type(response['exit_code']) is int and type(result['exit_code']) is int
                         and result['exit_code']==response['exit_code']
-                        and result['command']=='inspect' and result['run_id']==run_id,
+                        and request['operation'] in {'execute','inspect'}
+                        and result['command']==request['operation']
+                        and (request['operation']!='inspect' or result['run_id']==run_id),
                         'ntfs.parent_command_binding_mismatch')
+                    _require_command_run_binding(result,run_id)
                 if result.get('inspection_required') is True or result['exit_code']!=0:
                     self._unavailable=True
                 else:self._held_launch=None
@@ -407,19 +410,28 @@ def _inspection_server(*,config_bytes,expected_config_digest,manifest_bytes,expe
     return _closed_arguments(server)
 
 
-def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest):
-    owner=_InspectionMCPCallOwner(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
+def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest,
+        _experimental_admission_context=None):
+    startup=dict(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
         manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest)
+    if _experimental_admission_context is not None:
+        startup['_experimental_admission_context']=_experimental_admission_context
+    owner=_InspectionMCPCallOwner(**startup)
     server=FastMCP('Phase native prepared candidate',
         instructions='Fixed installation, prepared Core execution; qualification required. '
             'After uncertainty use a fresh independent read-only inspection process; do not retry.',
         json_response=True)
     server.tool(name='phase_execute_prepared')(owner.execute_prepared)
-    server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
-    server.tool(name='phase_publish_file')(owner.publish_file)
-    server.tool(name='phase_execute_version1_publication')(owner.execute_version1_publication)
-    server.tool(name='phase_inspect_version1_publication')(owner.inspect_version1_publication)
-    server.tool(name='phase_inspect')(owner.inspect_prepared)
+    if _experimental_admission_context is None:
+        server.tool(name='phase_execute_file_publication')(owner.execute_file_publication)
+        server.tool(name='phase_publish_file')(owner.publish_file)
+        server.tool(name='phase_execute_version1_publication')(owner.execute_version1_publication)
+        server.tool(name='phase_inspect_version1_publication')(owner.inspect_version1_publication)
+        server.tool(name='phase_inspect')(owner.inspect_prepared)
+    else:
+        # Exact B2 capability is validated by the same owner/accepted launch.
+        # No request field can select it or expose unrelated file/version tools.
+        server.tool(name='phase_inspect')(owner.inspect)
     return _closed_arguments(server)
 
 
@@ -430,8 +442,12 @@ def run_native_inspection_mcp(*,config_bytes,expected_config_digest,manifest_byt
     return 0
 
 
-def run_native_prepared_mcp(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest):
-    server=_prepared_server(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
+def run_native_prepared_mcp(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest,
+        _experimental_admission_context=None):
+    startup=dict(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
         manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest)
+    if _experimental_admission_context is not None:
+        startup['_experimental_admission_context']=_experimental_admission_context
+    server=_prepared_server(**startup)
     server.run(transport='stdio')
     return 0

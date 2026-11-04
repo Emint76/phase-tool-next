@@ -107,8 +107,19 @@ class _InspectionMCPCallOwner:
         self._startup=dict(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
             manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest)
         if _experimental_admission_context is not None:
+            from .experimental_file1 import _ExperimentalFile1Admission
+            from .experimental_file2 import _ExperimentalFile2Admission
+            from .experimental_version1 import _ExperimentalVersion1Admission
+            from .experimental_version2 import _ExperimentalVersion2Admission
+            from .experimental_bundle1 import _ExperimentalBundle1Admission
             from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
-            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV3,
+            from .experimental_history import (_ExperimentalHistoryFile1Admission,
+                _ExperimentalHistoryVersion1Admission)
+            _require(type(_experimental_admission_context) in (
+                _ExperimentalFile1Admission,_ExperimentalFile2Admission,
+                _ExperimentalVersion1Admission,_ExperimentalVersion2Admission,
+                _ExperimentalBundle1Admission,_ExperimentalBundle2AdmissionV3,
+                _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission),
                 'ntfs.experimental_admission_required')
             self._startup['_experimental_admission_context']=_experimental_admission_context
         self._gate=threading.Lock()
@@ -191,8 +202,12 @@ class _InspectionMCPCallOwner:
                     self._unavailable=True
                 else:self._held_launch=None
                 return result
-            registry=_native_registry_for_manifest(self._startup['manifest_bytes'],
-                self._startup['expected_manifest_digest'])
+            if self._startup.get('_experimental_admission_context') is not None:
+                from ...installation import _native_registry_for_launch
+                registry=_native_registry_for_launch(launch)
+            else:
+                registry=_native_registry_for_manifest(self._startup['manifest_bytes'],
+                    self._startup['expected_manifest_digest'])
             validate_command_result(result,registry)
             _require(result['command']==request['operation']
                 and result['exit_code']==response['exit_code'],
@@ -400,10 +415,14 @@ def _closed_arguments(server):
     return server
 
 
-def _inspection_server(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest):
+def _inspection_server(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest,
+        _experimental_admission_context=None):
     """Only the fixed accepted launcher supplies these installation bytes."""
-    owner=_InspectionMCPCallOwner(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
+    startup=dict(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
         manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest)
+    if _experimental_admission_context is not None:
+        startup['_experimental_admission_context']=_experimental_admission_context
+    owner=_InspectionMCPCallOwner(**startup)
     server=FastMCP('Phase native inspection candidate',
         instructions='Fixed installation, read-only inspection; qualification required.',json_response=True)
     server.tool(name='phase_inspect')(owner.inspect)
@@ -429,15 +448,19 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
         server.tool(name='phase_inspect_version1_publication')(owner.inspect_version1_publication)
         server.tool(name='phase_inspect')(owner.inspect_prepared)
     else:
-        # Exact B2 capability is validated by the same owner/accepted launch.
+        # Exact installed capability is validated by the same owner/accepted launch.
         # No request field can select it or expose unrelated file/version tools.
         server.tool(name='phase_inspect')(owner.inspect)
     return _closed_arguments(server)
 
 
-def run_native_inspection_mcp(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest):
-    server=_inspection_server(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
+def run_native_inspection_mcp(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest,
+        _experimental_admission_context=None):
+    startup=dict(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
         manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest)
+    if _experimental_admission_context is not None:
+        startup['_experimental_admission_context']=_experimental_admission_context
+    server=_inspection_server(**startup)
     server.run(transport='stdio')
     return 0
 

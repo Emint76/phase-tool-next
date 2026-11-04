@@ -1,5 +1,18 @@
 # Experimental native bundle2 through the existing Core
 
+Current status: experimental, qualification NOT_VERIFIED. Both independent
+observations of the controlled native MCP case are complete; canonical Source220
+preservation is pending. The ten new portable test methods are unexecuted. This
+source checkpoint is LOCAL_PENDING220 and makes no supported NTFS release claim.
+Production/default admission guards and published launcher bindings are unchanged.
+
+The retained narrative below describes historical checkpoint207, including its
+then-open acceptance gaps and exact immutable bindings. It is preserved as history;
+the appended Source220 observations state the later scope without rewriting any
+failed case or its original writer/reader evidence.
+
+## Historical checkpoint207 — original status
+
 Status: experimental candidate. A later admitted Windows bundle2 invocation
 committed the physical create, but independent inspect failed; full end-to-end
 verification and native prepared recovery remain open. A05,
@@ -7,7 +20,7 @@ applicable G01 and supported MIX/FULL qualification remain NOT_VERIFIED.
 Ordinary admission/production guard, production installations and Hermes are
 unchanged. This checkpoint is not a supported NTFS release.
 
-## Reused lifecycle
+## Historical checkpoint207 — Reused lifecycle
 
 The exact native bundle_create.v2 bindings use the existing Core intent,
 frozen inputs, EffectBroker, EvidenceStore, receipt and independent inspect.
@@ -41,7 +54,7 @@ channel1.6 and worker1.5. All 156 prior registry entries and trust roots are
 retained; the candidate profile declares no provided guarantees or conformance.
 The default registry/guard rejects that experimental generation.
 
-## Actual admission refusal and corrected source
+## Historical checkpoint207 — Actual admission refusal and corrected source
 
 The accepted initial build passed its Linux CI, including all portable bundle2
 models. Its single isolated Windows invocation nevertheless returned exit10,
@@ -84,7 +97,7 @@ error. Complete raw frames and original file bytes survived; neither failure was
 converted to a successful result. A corrected recorder must retain early refusal
 envelopes while keeping the successful lifecycle oracle strict.
 
-## Historical portable checkpoint and retained negative
+## Historical checkpoint207 — Historical portable checkpoint and retained negative
 
 The first isolated Windows model runner failed during collection before test
 bodies. A separate collection-only diagnostic captured three missing-pydantic
@@ -115,7 +128,7 @@ readback. They share the host/toolchain; this is not external human approval.
 Full private evidence stays outside GitHub. Portable results require their next
 canonical checkpoint before Git delivery.
 
-## Open acceptance
+## Historical checkpoint207 — Open acceptance
 
 Next for the inspection correction is an exact-HEAD CI/build and a separately
 identified Windows case covering create, worker completion, receipt, separate
@@ -135,7 +148,7 @@ an accidental 1-MiB read cap; full-range native verification remains NOT_VERIFIE
 No scientific procedure, broad environment certification or standards compliance
 is claimed.
 
-## First admitted Windows execution and inspection correction
+## Historical checkpoint207 — First admitted Windows execution and inspection correction
 
 Exact commit `ad2b16422c53947af4eb4cee677f4dfd4908e6c4` passed its three CI
 jobs in run40881853905. Both Python lanes recorded1938 passes and one historical
@@ -173,3 +186,48 @@ read-only historical-reader entrypoint remains a separate integration gap;
 original bytes and failed inspection are preserved without reinterpretation.
 Native prepared recovery, fault coverage, native MCP/runtime rollback and all
 unverified environment obligations remain open.
+
+
+## Source220 — later scoped observations, canonical save pending
+
+A separately identified owned case subsequently completed native bundle2 create,
+original receipt/proof closure and fresh independent inspect. Another synthetic
+case deliberately withheld the first validated prepared ACK: original execute
+stayed negative, with no original receipt. Existing Core commit_prepared recovery
+then completed the remaining commit and a fresh independent CLI inspect verified
+it. These recorded CLI results did not retry or reinterpret the earlier partial
+case; PreparedStage, PreparationBinding, ContinuationIntent and original outcome
+ownership remained with the existing Core.
+
+The latest owned Windows MCP case used the same Core through the fixed experimental
+recovery-mcp role. Original execute exit40 remained negative. One genuine SDK MCP
+commit_prepared recovery and fresh MCP inspect completed; both actual observations
+are complete. Their canonical Source220 save remains pending, so these facts are
+provisional for delivery. SDK/server context closure is distinct from the original
+worker's retained creation-HANDLE witness. No production/qualification or supported
+native route is asserted.
+
+The separately pinned test launcher retains ordinary fixed startup/admission and
+uses only process-local pinned SDK roots/DLL loading. It does not process .pth,
+change global PATH, waive module-origin checks, or enable execute-mcp/inspect-mcp.
+The two existing MCP tools and product return annotations are unchanged. The exact
+SDK inspect ABI is one JSON TextContent with outputSchema/structuredContent None;
+the test client applies strict JSON and native inspection1.3 schema/lineage checks.
+Typed native recovery1.2 remains flat structuredContent. A Phase business-negative
+result is distinct from SDK isError. The earlier incorrect cold-schema assertion
+remains a failed non-effectful result, separate from the corrected cold attempt.
+
+The exact SDK test fixture, two existing portable test modules and precise sdist
+fixture includes are LOCAL_PENDING220. Ten added methods have not run; the 43 old
+methods are unchanged. DLL/OS boundaries are explicitly modeled and real SDK
+stdio tests use a synthetic owner with native/Core/store sentinels. No schemas,
+profiles/providers, published launchers, dependency ranges or admission guards
+are changed by this fixture/test/documentation delta.
+
+Accepted ordinary Host/ext4 old-new-old rollback remains Python3.11 CI scope;
+Python3.12 absence is not another rollback pass. It does not establish native
+Windows/SDK rollback, and completed cases need no replay solely for this source
+change. Native observe-mode/replay/conflict/interruption coverage, native runtime
+rollback, A05/G01, supported MIX/FULL qualification and full physical size/deadline
+range remain bounded by their own evidence and NOT_VERIFIED where unestablished.
+Full private originals stay outside GitHub; no new Core, journal or queue is added.

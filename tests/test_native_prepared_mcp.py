@@ -668,3 +668,175 @@ class NativeFileInspectionHostTests(unittest.TestCase):
             self.assertTrue(old._unavailable);self.assertIs(old._held_launch,held)
             with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_unavailable'):old.inspect(outcome.run_id)
             self.assertEqual(factory.call_count,2)
+
+
+# Test-client projection only: the public server's bare-dict ABI is unchanged.
+def _component_native_inspect_projection(result,tool,*,run_id,intent_digest,effect_plan_digest,proof_digest):
+    from jsonschema import Draft202012Validator
+    def require(ok,message):
+        if not ok:raise ValueError(message)
+    require(type(result)is dict and result['isError']is False and result['structuredContent']is None
+        and tool['name']=='phase_inspect'and tool['outputSchema']is None,'exact unstructured inspect ABI')
+    content=result['content']
+    require(type(content)is list and len(content)==1 and content[0]['type']=='text'
+        and type(content[0]['text'])is str,'one complete JSON TextContent')
+    payload=parse_json_bytes(content[0]['text'].encode('utf-8'),maximum_bytes=2*1024**2)
+    schema=json.loads(resources.files('phase_tool').joinpath('data/schemas/stage3-command-result-1.3.schema.json').read_bytes())
+    Draft202012Validator(schema).validate(payload)
+    require(payload['run_id']==run_id and payload['intent_digest']==intent_digest
+        and payload['effect_plan_digest']==effect_plan_digest and payload['recovery']['proof_digest']==proof_digest,
+        'exact component original/recovery bindings')
+    require(payload['success']is True and payload['exit_code']==0 and payload['target_verified']is True
+        and all(payload[k]is None for k in('receipt_digest','terminal_status','execution_disposition','mutation_attempted'))
+        and payload['recovery']['original_receipt_preserved']is True,'positive inspection preserves missing original receipt/facts')
+    return payload
+
+
+class NativeRecoveryMCPABIComponentTests(unittest.TestCase):
+    """Actual SDK conversion, synthetic owner; no Windows/Core/qualification claim."""
+    RUN='synthetic-native-mcp-component'
+    INTENT='sha256:'+'a'*64
+    PLAN='sha256:'+'b'*64
+    PROOF='sha256:'+'c'*64
+
+    def inspect_payload(self):
+        return {'stage3_command_result_version':'1.3','command':'inspect','success':True,
+            'run_id':self.RUN,'terminal_status':None,'execution_disposition':None,'mutation_attempted':None,
+            'effect_plan_digest':self.PLAN,'intent_digest':self.INTENT,'receipt_digest':None,
+            'blockers':[],'error':None,'exit_code':0,'target_verified':True,
+            'recovery':{'native_bundle_recovery_proof_version':'1.0','operation':'commit_prepared',
+                'proof_digest':self.PROOF,'original_receipt_preserved':True}}
+
+    def inspect_result(self,payload=None):
+        return {'isError':False,'structuredContent':None,
+            'content':[{'type':'text','text':json.dumps(self.inspect_payload()if payload is None else payload,indent=2)}]}
+
+    def project(self,result,tool=None):
+        return _component_native_inspect_projection(result,
+            {'name':'phase_inspect','outputSchema':None}if tool is None else tool,
+            run_id=self.RUN,intent_digest=self.INTENT,effect_plan_digest=self.PLAN,proof_digest=self.PROOF)
+
+    def recovery_payload(self,*,observe=False):
+        from phase_tool.recovery import NativeRecoveryResult
+        values={'run_id':self.RUN,'request_id':self.RUN,'intent_digest':self.INTENT,
+            'effect_plan_digest':self.PLAN,'original_receipt_digest':None,'original_terminal_status':None,
+            'recovery_mode':'observe'if observe else'commit_prepared'}
+        if not observe:values.update(status='verified_existing',success=True,target_verified=True,
+            recovery_mutation_attempted=True,recovery_effect_state='committed',
+            lock_finalization={'unlock':'succeeded','close':'succeeded'},inspection_required=False,
+            observation_digest='sha256:'+'d'*64,observation_path='recovery/observations/'+'d'*64+'.json',
+            commit_finalization_verified=True,exit_code=0)
+        return NativeRecoveryResult(**values).model_dump(mode='json')
+
+    def test_strict_text_projection_accepts_pretty_json_without_fabricated_structured_content(self):
+        result=self.inspect_result();before=deepcopy(result)
+        self.assertEqual(self.project(result),self.inspect_payload())
+        self.assertEqual(result,before);self.assertIsNone(result['structuredContent'])
+
+    def test_inspect_error_structured_wrapper_or_multiple_blocks_are_never_a_fallback(self):
+        variants=[]
+        for change in ({'isError':True},{'structuredContent':self.inspect_payload()},
+                {'structuredContent':{'result':self.inspect_payload()}},
+                {'content':[{'type':'image','text':'not text'}]},
+                {'content':self.inspect_result()['content']*2}):
+            variants.append(self.inspect_result()|change)
+        for result in variants:
+            with self.subTest(result=result),self.assertRaises(ValueError):self.project(result)
+        with self.assertRaises(ValueError):
+            self.project(self.inspect_result(),{'name':'phase_inspect','outputSchema':{'type':'object'}})
+
+    def test_duplicate_float_nonfinite_or_nonobject_json_refuse_before_positive_projection(self):
+        from jsonschema.exceptions import ValidationError
+        texts=['{"run_id":"a","run_id":"b"}','{"exit_code":0.0}',
+            '{"exit_code":NaN}','{"exit_code":Infinity}','[]','not json']
+        for text in texts:
+            result=self.inspect_result();result['content'][0]['text']=text
+            with self.subTest(text=text),self.assertRaises((PhaseError,ValidationError)):self.project(result)
+
+    def test_foreign_native_schema_lineage_or_original_receipt_is_rejected(self):
+        from jsonschema.exceptions import ValidationError
+        cases=[]
+        for key,value in [('run_id','synthetic-foreign'),('intent_digest','sha256:'+'1'*64),
+                ('effect_plan_digest','sha256:'+'2'*64),('receipt_digest','sha256:'+'3'*64),
+                ('stage3_command_result_version','1.0'),('unexpected','field')]:
+            cases.append(self.inspect_payload()|{key:value})
+        wrong=self.inspect_payload();wrong['recovery']['proof_digest']='sha256:'+'4'*64;cases.append(wrong)
+        for payload in cases:
+            with self.subTest(payload=payload),self.assertRaises((ValueError,ValidationError)):
+                self.project(self.inspect_result(payload))
+
+    def test_real_sdk_keeps_unstructured_inspect_and_flat_typed_recovery_distinct(self):
+        async def exchange():
+            from mcp import ClientSession,StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from jsonschema import Draft202012Validator
+            from phase_tool.recovery import NativeRecoveryResult
+            import phase_tool
+            root=Path(phase_tool.__file__).resolve(strict=True).parent.parent
+            # A process-local component owner supplies explicit synthetic results.
+            # Real tool decorators/closed arguments/SDK framing and conversion run;
+            # no accepted startup, Core, native I/O or physical proof is simulated.
+            code=("from unittest.mock import patch\n"
+                "from phase_tool.application import PhaseApplication\n"
+                "from phase_tool.evidence import EvidenceStore\n"
+                "from phase_tool.mutation.ntfs import bundle_recovery_mcp as adapter,inspection_mcp\n"
+                "from phase_tool.errors import PhaseError\n"
+                'RUN='+repr(self.RUN)+'\nINSPECT='+repr(self.inspect_payload())+'\n'
+                'RECOVER='+repr(self.recovery_payload())+'\nOBSERVE='+repr(self.recovery_payload(observe=True))+'\n'+
+                "class ComponentOwner:\n"
+                " def __init__(self,**unused):pass\n"
+                " def inspect(self,run_id):\n"
+                "  if run_id=='synthetic-sdk-error':raise PhaseError('synthetic.mcp_component_failure')\n"
+                "  if run_id!=RUN:raise AssertionError('COMPONENT_OWNER_REACHED_INVALID')\n"
+                "  return INSPECT\n"
+                " def _call(self,run_id,request,*,inspection_only):\n"
+                "  if run_id!=RUN or inspection_only:raise AssertionError('COMPONENT_OWNER_REACHED_INVALID')\n"
+                "  return OBSERVE if request['mode']=='observe' else RECOVER\n"
+                "adapter._InspectionMCPCallOwner=ComponentOwner\n"
+                "with (patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=AssertionError('REAL_NATIVE_BOUNDARY_FORBIDDEN')),\n"
+                " patch.object(inspection_mcp,'run_native_parent',side_effect=AssertionError('REAL_NATIVE_BOUNDARY_FORBIDDEN')),\n"
+                " patch.object(PhaseApplication,'recover_publication',side_effect=AssertionError('REAL_CORE_BOUNDARY_FORBIDDEN')),\n"
+                " patch.object(EvidenceStore,'__init__',side_effect=AssertionError('REAL_STORE_BOUNDARY_FORBIDDEN'))):\n"
+                " adapter.run_native_recovery_mcp()\n")
+            env=os.environ.copy();env.update(PYTHONPATH=str(root),PYTHONDONTWRITEBYTECODE='1')
+            async with stdio_client(StdioServerParameters(command=sys.executable,args=['-B','-c',code],env=env))as(reader,writer):
+                async with ClientSession(reader,writer)as session:
+                    initialized=await session.initialize();self.assertTrue(initialized.protocolVersion)
+                    listed=await session.list_tools();tools={t.name:t for t in listed.tools}
+                    self.assertEqual(len(listed.tools),2)
+                    self.assertEqual(set(tools),{'phase_recover_publication','phase_inspect'})
+                    self.assertIsNone(tools['phase_inspect'].outputSchema)
+                    self.assertEqual(set(tools['phase_inspect'].inputSchema['properties']),{'run_id'})
+                    self.assertIsInstance(tools['phase_recover_publication'].outputSchema,dict)
+                    self.assertEqual(set(tools['phase_recover_publication'].inputSchema['properties']),
+                        {'run_id','request_id','expected_intent_digest','mode'})
+                    self.assertTrue(all(t.inputSchema['additionalProperties']is False for t in tools.values()))
+                    rejected=await session.call_tool('phase_inspect',{'run_id':self.RUN,'provider':'forbidden'})
+                    self.assertTrue(rejected.isError)
+                    rejected=await session.call_tool('phase_inspect',{'run_id':True})
+                    self.assertTrue(rejected.isError)
+                    self.assertNotIn('COMPONENT_OWNER_REACHED_INVALID',' '.join(getattr(c,'text','')for c in rejected.content))
+                    recovered=await session.call_tool('phase_recover_publication',{'run_id':self.RUN,'request_id':self.RUN,
+                        'expected_intent_digest':self.INTENT,'mode':'commit_prepared'})
+                    actual=recovered.model_dump(mode='json',by_alias=True)
+                    self.assertFalse(actual['isError']);self.assertEqual(actual['structuredContent'],self.recovery_payload())
+                    self.assertNotIn('result',actual['structuredContent'])
+                    self.assertEqual(len(actual['content']),1)
+                    self.assertEqual(json.loads(actual['content'][0]['text']),actual['structuredContent'])
+                    NativeRecoveryResult.model_validate(actual['structuredContent'])
+                    schema=json.loads(resources.files('phase_tool').joinpath('data/schemas/recovery-result-1.2.schema.json').read_bytes())
+                    Draft202012Validator(schema).validate(actual['structuredContent'])
+                    inspected=await session.call_tool('phase_inspect',{'run_id':self.RUN})
+                    # Retain the actual SDK model before any projection/validation.
+                    original=inspected.model_dump(mode='json',by_alias=True)
+                    self.assertEqual(self.project(original,tools['phase_inspect'].model_dump(mode='json',by_alias=True)),self.inspect_payload())
+                    self.assertIsNone(original['structuredContent'])
+                    negative=await session.call_tool('phase_recover_publication',{'run_id':self.RUN,'request_id':self.RUN,
+                        'expected_intent_digest':self.INTENT,'mode':'observe'})
+                    self.assertFalse(negative.isError) # Business-negative result, not SDK error.
+                    self.assertEqual(negative.structuredContent,self.recovery_payload(observe=True))
+                    self.assertFalse(negative.structuredContent['success']);self.assertEqual(negative.structuredContent['exit_code'],40)
+                    sdk_error=await session.call_tool('phase_inspect',{'run_id':'synthetic-sdk-error'})
+                    self.assertTrue(sdk_error.isError);self.assertIsNone(sdk_error.structuredContent)
+                    with self.assertRaises(ValueError):self.project(sdk_error.model_dump(mode='json',by_alias=True))
+        asyncio.run(asyncio.wait_for(exchange(),timeout=30))

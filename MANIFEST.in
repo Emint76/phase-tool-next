@@ -6,3 +6,5 @@ recursive-include src/phase_tool/data/native *.py.in
 recursive-include tests *.py
 include scripts/host_rollback_smoke.py
 include ROLLBACK.md
+include tests/fixtures/native_phase_prepared_ack_test_launcher_v1.py.in
+include tests/fixtures/native_phase_mcp_sdk_test_launcher_v2.py.in

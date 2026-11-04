@@ -242,4 +242,114 @@ class NativeRecoveryDispatchSelectionComponentTests(unittest.TestCase):
         self.assertEqual(native_fn.returns.id,'NativeRecoveryResult')
 
 
+
+
+class NativeMCPSDKLauncherComponentTests(unittest.TestCase):
+    """Real fixture code; DLL/loader/OS boundaries are explicit portable models."""
+    def _model(self):
+        import ctypes
+        import hashlib
+        import importlib.machinery
+        import importlib.util
+        import sys
+        import tempfile
+        from contextlib import contextmanager
+        from types import ModuleType,SimpleNamespace
+        from unittest.mock import patch
+        @contextmanager
+        def model():
+            fixture=Path(__file__).resolve().parent/'fixtures/native_phase_mcp_sdk_test_launcher_v2.py.in'
+            tree=ast.parse(fixture.read_bytes())
+            function=next(n for n in tree.body if isinstance(n,ast.FunctionDef)and n.name=='fixed_windows_mcp_sdk_bootstrap')
+            with tempfile.TemporaryDirectory(prefix='phase-sdk-bootstrap-component-')as directory:
+                root=Path(directory)/'ntfs-bundle2-mcp218';sdk=root/'windows-sdk/site-packages'
+                launcher=root/'artifacts/windows/launcher.py';launcher.parent.mkdir(parents=True)
+                launcher.write_bytes(fixture.read_bytes())
+                bodies={'win32/_win32sysloader.pyd':b'component-loader-not-a-native-binary',
+                    'pywin32_system32/pywintypes312.dll':b'component-dll-not-a-native-binary'}
+                files={}
+                for name,body in bodies.items():
+                    path=sdk/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(body)
+                    files[name]={'bytes':len(body),'sha256':digest_bytes(body)}
+                manifest={'root':str(sdk),'platform':'win_amd64','python_version':'3.12.10',
+                    'versions':{'pywin32':'312'},'files':files}
+                manifest_raw=canonical_bytes(manifest);(root/'WINDOWS_SDK_MANIFEST_v1.json').write_bytes(manifest_raw)
+                config={'dependency_file_digests':{str(sdk/name):row['sha256']for name,row in files.items()},
+                    'artifact_graph':{'windows':{'runtime_manifest_digest':digest_bytes(manifest_raw)}}}
+                config_raw=canonical_bytes(config);roots=[str(sdk),str(sdk/'win32'),str(sdk/'win32/lib')]
+                outer={'config_digest':digest_bytes(config_raw),'dependency_roots':roots}
+                cookie=object();library=object();add_directory=Mock(return_value=cookie)
+                native_library=Mock(return_value=library)
+                loader=ModuleType('_win32sysloader');loader.__spec__=SimpleNamespace(origin=str(sdk/'win32/_win32sysloader.pyd'))
+                loader.GetModuleFilename=Mock(side_effect=[None,str(sdk/'pywin32_system32/pywintypes312.dll')])
+                spec=importlib.util.spec_from_file_location('_win32sysloader',sdk/'win32/_win32sysloader.pyd',
+                    loader=importlib.machinery.ExtensionFileLoader('_win32sysloader',str(sdk/'win32/_win32sysloader.pyd')))
+                def need(ok):
+                    if not ok:raise RuntimeError('component SDK bootstrap refusal')
+                modeled_sys=SimpleNamespace(version_info=(3,12,10),path=roots,
+                    meta_path=[importlib.machinery.BuiltinImporter,importlib.machinery.FrozenImporter,importlib.machinery.PathFinder],modules={})
+                namespace={'__file__':str(launcher),'Path':Path,'need':need,'json':__import__('json'),
+                    'hashlib':hashlib,'os':SimpleNamespace(name='nt',add_dll_directory=add_directory),'sys':modeled_sys}
+                exec(compile(ast.Module(body=[function],type_ignores=[]),str(fixture),'exec'),namespace)
+                # Even a guard regression reaches only these sentinels, never a DLL.
+                with (patch.dict(sys.modules,{'_win32sysloader':loader}),
+                        patch.object(importlib.util,'find_spec',return_value=spec),
+                        patch.object(ctypes,'WinDLL',native_library,create=True)):
+                    yield SimpleNamespace(call=lambda:namespace['fixed_windows_mcp_sdk_bootstrap'](outer,config_raw),
+                        sdk=sdk,outer=outer,sys=modeled_sys,loader=loader,add_directory=add_directory,
+                        native_library=native_library,cookie=cookie,library=library,namespace=namespace)
+        return model()
+
+    def test_exact_sdk_fixture_preserves_startup_roles_and_single_ack_fault(self):
+        root=Path(__file__).resolve().parent/'fixtures'
+        before=ast.parse((root/'native_phase_prepared_ack_test_launcher_v1.py.in').read_bytes())
+        after=ast.parse((root/'native_phase_mcp_sdk_test_launcher_v2.py.in').read_bytes())
+        old={n.name:n for n in before.body if isinstance(n,ast.FunctionDef)}
+        new={n.name:n for n in after.body if isinstance(n,ast.FunctionDef)}
+        self.assertEqual(set(new),set(old)|{'fixed_windows_mcp_sdk_bootstrap'})
+        for name in old.keys()-{'main'}:self.assertEqual(ast.dump(old[name]),ast.dump(new[name]),name)
+        main=new['main'];branch=next(n for n in main.body if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Compare)and isinstance(n.test.left,ast.Name)
+            and n.test.left.id=='role'and isinstance(n.test.comparators[0],ast.Constant)
+            and n.test.comparators[0].value=='recovery-mcp')
+        bootstrap=branch.body[0]
+        self.assertIsInstance(bootstrap,ast.Assign)
+        self.assertEqual(bootstrap.value.func.id,'fixed_windows_mcp_sdk_bootstrap')
+        self.assertIsInstance(branch.body[1],ast.ImportFrom)
+        self.assertEqual(branch.body[1].module,'phase_tool.mutation.ntfs.bundle_recovery_mcp')
+        branch.body.pop(0)
+        self.assertEqual(ast.dump(old['main']),ast.dump(main))
+
+    def test_pinned_dll_bootstrap_retains_exact_process_local_owners(self):
+        with self._model()as model:
+            self.assertEqual(model.call(),(model.cookie,model.library))
+            model.add_directory.assert_called_once_with(str(model.sdk/'pywin32_system32'))
+            model.native_library.assert_called_once_with(str(model.sdk/'pywin32_system32/pywintypes312.dll'),
+                winmode=0x00000100|0x00000200|0x00000800)
+            self.assertEqual(model.namespace['_MCP_SDK_DLL_OWNERS'],[model.cookie,model.library])
+            self.assertNotIn('pywin32_system32',model.sys.modules)
+            self.assertNotIn('pywin32_bootstrap',model.sys.modules)
+
+    def test_modified_sdk_leaf_refuses_before_any_dll_or_directory_registration(self):
+        with self._model()as model:
+            (model.sdk/'pywin32_system32/pywintypes312.dll').write_bytes(b'foreign')
+            with self.assertRaises(RuntimeError):model.call()
+            model.add_directory.assert_not_called();model.native_library.assert_not_called()
+
+    def test_foreign_already_loaded_dll_refuses_before_loading_or_registration(self):
+        with self._model()as model:
+            model.loader.GetModuleFilename.side_effect=None
+            model.loader.GetModuleFilename.return_value=str(model.sdk/'foreign/pywintypes312.dll')
+            with self.assertRaises(RuntimeError):model.call()
+            model.add_directory.assert_not_called();model.native_library.assert_not_called()
+
+    def test_namespace_preload_or_foreign_roots_never_become_an_origin_waiver(self):
+        for name in ('pywin32_system32','pywin32_bootstrap','foreign_roots'):
+            with self.subTest(name=name),self._model()as model:
+                if name=='foreign_roots':model.outer['dependency_roots']=[str(model.sdk/'outside')]
+                else:model.sys.modules[name]=object()
+                with self.assertRaises(RuntimeError):model.call()
+                model.add_directory.assert_not_called();model.native_library.assert_not_called()
+
+
 if __name__=='__main__':unittest.main()

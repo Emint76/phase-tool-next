@@ -168,6 +168,130 @@ class TerminalCaptureComponentTests(unittest.TestCase):
         self.assertEqual(pipe._last_frame_failure,origin)
 
 
+    def _original_capture_model(self,*,ack_fault,partial=False,worker_exit=0):
+        """Real parent/framer/validator; modeled OS/launch/witness, no native proof.
+
+        The complete error frame has physical_evidence=None. It models terminal
+        delivery only, and deliberately promises no valid recoverable original.
+        """
+        from phase_tool.mutation.ntfs import bundle_recovery_capture as capture
+        from phase_tool.mutation.ntfs.windows_pipe import WindowsPipeFrames
+        project,_,_=recovery_fixture();context=parse_json_bytes(project.context_bytes)
+        grant=parse_json_bytes(project.grant_bytes);effect=parse_json_bytes(project.effect_bytes)
+        raw=canonical_bytes({'worker_completion_version':'1.5','context':context,'pid':123,
+            'effect_receipt':None,'physical_evidence':None,'worker_exit_established':False,
+            'error':{'type':'PhaseError','code':'model.worker','message':'modeled negative completion',
+                'details':{'model_terminal_padding':'x'*20000}}})
+        framed=f'{len(raw):08x}\n'.encode()+raw+b'\n'
+        # Parent effect clock started earlier. Worker finishes after its local
+        # ACK wait at36s, beyond old parent30s+5s but inside existing70s report.
+        now=[10_000_000_000];arrival=36_000_000_000 if ack_fault else 20_000_000_000
+        cursor=[0];events=[];prefix=framed[:26]
+        pipe=object.__new__(WindowsPipeFrames)
+        pipe._owner=(os.getpid(),threading.get_ident());pipe._sealed=False;pipe._failed=False
+        pipe._gate=threading.Lock();pipe._identities=[(0,1,2),(1,1,2)]
+        pipe._pipe=lambda side:pipe._identities[side]  # Modeled descriptor identity boundary.
+        def read(fd,count):
+            self.assertEqual(fd,0)
+            if now[0]<arrival:
+                now[0]=arrival
+                raise BlockingIOError(11,'modeled would-block')
+            if partial and cursor[0]>=len(prefix):
+                events.append('read_failure');raise OSError(5,'modeled terminal read failure')
+            limit=len(prefix)if partial else len(framed)
+            chunk=framed[cursor[0]:min(cursor[0]+count,cursor[0]+4096,limit)]
+            self.assertTrue(chunk);cursor[0]+=len(chunk)
+            if cursor[0]==len(framed):events.append('frame_complete')
+            return chunk
+        def sleep(seconds):now[0]+=int(seconds*1_000_000_000)
+        process=SimpleNamespace(pid=123);fact=deepcopy(witness_parent()['process_witness'])
+        fact['exit_code']=worker_exit
+        def wait(milliseconds):
+            events.append('wait');self.assertGreaterEqual(milliseconds,0);return deepcopy(fact)
+        witness=SimpleNamespace(wait_for_exit=Mock(side_effect=wait))
+        launch=SimpleNamespace(manifest={'native_read_installation_version':'1.9'},
+            run_id=context['run_id'],operation_nonce=context['operation_nonce'],
+            installation_digest=context['installation_digest'],root_grant=grant,
+            read_original=Mock(return_value=project),spawn_worker=Mock(return_value=process),
+            worker_pipe=Mock(return_value=pipe),send_worker_original=Mock(),
+            finalize_worker=Mock(side_effect=lambda *args:events.append('finalize')),
+            check_runtime=Mock())
+        parent=SimpleNamespace(_launch=launch,_bundle=True,_inspection_only=False,_consumed=True,
+            _spawn_attempted=False,_file2_exchange_deadline=30_000_000_000,
+            _completion_wire=None,_ready_wire=None,_go_attempted=False,_worker_finalized=False)
+        def transfer(worker_pipe,parsed,deadline,common):
+            self.assertIs(worker_pipe,pipe);self.assertIs(parsed,project)
+            self.assertEqual(deadline,30_000_000_000);parent._go_attempted=True
+            if ack_fault:
+                parent._bundle_ack_relay_entered=True
+                raise PhaseError('ntfs.test_prepared_ack_delivery_failed')
+            return None
+        parent._transfer_bundle=Mock(side_effect=transfer)
+        observation={'bundle_observation_version':'1.0','state':{'known':True,'exists':False,
+            'digest':None,'length':None,'head_token':None},'native':{'exists':False,'native_identity':None},
+            'grant':grant,'locator':effect['target']['relative_locator'],'handles_finalized':True}
+        value=error=None
+        with patch.object(terminal.time,'perf_counter_ns',side_effect=lambda:now[0]), \
+                patch.object(terminal.time,'sleep',side_effect=sleep), \
+                patch.object(terminal.os,'read',side_effect=read), \
+                patch.object(terminal,'_frame_io',wraps=terminal._frame_io)as frame, \
+                patch('phase_tool.mutation.ntfs.process_witness.WindowsProcessWitness',return_value=witness), \
+                patch('phase_tool.mutation.ntfs.bundle_observation.observe_bundle',return_value=observation)as observe:
+            try:value=capture.execute_original_with_capture(parent,context['intent_digest'],common={})
+            except PhaseError as caught:error=caught
+        launch.spawn_worker.assert_called_once();parent._transfer_bundle.assert_called_once()
+        launch.send_worker_original.assert_called_once_with(pipe,project,_handshake_deadline_ns=30_000_000_000)
+        witness.wait_for_exit.assert_called_once();launch.finalize_worker.assert_called_once_with(process,pipe)
+        self.assertEqual(frame.call_count,1);self.assertTrue(pipe._terminal_read_attempted)
+        self.assertEqual(parent._file2_exchange_deadline,30_000_000_000)
+        return SimpleNamespace(value=value,error=error,parent=parent,raw=raw,prefix=prefix,
+            events=events,pipe=pipe,observe=observe,deadline=frame.call_args.kwargs['deadline_ns'])
+
+    def test_ack_fault_drains_late_full_completion_before_wait_with_existing_report_budget(self):
+        model=self._original_capture_model(ack_fault=True)
+        self.assertEqual(model.deadline,80_000_000_000)
+        self.assertEqual(model.error.code,'ntfs.parent_execution_unresolved')
+        details=model.error.details
+        self.assertEqual(details['operation_primary']['code'],'ntfs.test_prepared_ack_delivery_failed')
+        self.assertTrue(details['terminal_drain_attempted']);self.assertIsNone(details['terminal_failure'])
+        self.assertEqual(details['resource_closure_errors'],[])
+        self.assertEqual(_wire(details['worker_completion_wire']),model.raw)
+        partial=details['parent_partial'];self.assertEqual(canonical_bytes(partial['completion']),model.raw)
+        verify_quiescence(partial,partial['completion'])
+        self.assertLess(model.events.index('frame_complete'),model.events.index('wait'))
+        self.assertLess(model.events.index('wait'),model.events.index('finalize'))
+        model.observe.assert_not_called()  # Reporting never resumes an effect/observation path.
+
+    def test_terminal_partial_or_nonzero_exit_cannot_be_healed_by_wait_and_close(self):
+        for partial,exit_code in ((True,0),(False,50)):
+            with self.subTest(partial=partial,exit_code=exit_code):
+                model=self._original_capture_model(ack_fault=True,partial=partial,worker_exit=exit_code)
+                self.assertEqual(model.error.code,'ntfs.parent_execution_unresolved');details=model.error.details
+                self.assertTrue(details['terminal_drain_attempted']);model.observe.assert_not_called()
+                if partial:
+                    failure=details['terminal_failure'];self.assertFalse(failure['progress']['complete'])
+                    self.assertEqual(failure['progress']['wire_bytes'],len(model.prefix))
+                    self.assertEqual(base64.b64decode(failure['wire_prefix_base64']),model.prefix)
+                    self.assertIsNone(details['parent_partial']['completion']);self.assertTrue(model.pipe._failed)
+                    with self.assertRaises(PhaseError):_wire(details['worker_completion_wire'])
+                    self.assertLess(model.events.index('read_failure'),model.events.index('wait'))
+                else:
+                    self.assertEqual(_wire(details['worker_completion_wire']),model.raw)
+                    self.assertEqual(details['parent_partial']['process_witness']['exit_code'],50)
+                    self.assertEqual([e['code']for e in details['resource_closure_errors']],['ntfs.worker_exit_not_established'])
+                    with self.assertRaises(PhaseError):
+                        verify_quiescence(details['parent_partial'],details['parent_partial']['completion'])
+
+    def test_healthy_original_transport_keeps_original_completion_deadline(self):
+        model=self._original_capture_model(ack_fault=False)
+        self.assertIsNone(model.error);self.assertEqual(model.deadline,35_000_000_000)
+        self.assertEqual(canonical_bytes(model.value['completion']),model.raw)
+        verify_quiescence(model.value,model.value['completion'])
+        self.assertTrue(model.value['post_observation']['handles_finalized']);model.observe.assert_called_once()
+        self.assertLess(model.events.index('frame_complete'),model.events.index('wait'))
+        self.assertLess(model.events.index('wait'),model.events.index('finalize'))
+
+
 class RemainingEffectComponentTests(unittest.TestCase):
     def model(self,*,existing=False,wrong_identity=False,flush_error=False,rename_post_error=False):
         project,prepared,context=recovery_fixture();native=native_stage(project)

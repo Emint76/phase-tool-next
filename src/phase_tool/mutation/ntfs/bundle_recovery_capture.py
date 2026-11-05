@@ -149,8 +149,11 @@ def execute_original_with_capture(parent, intent_digest, *, common):
             try:
                 from .bundle_recovery_terminal import windows_terminal
                 terminal_read_attempted = True
+                # Worker startup owns a later local ACK deadline. Only terminal
+                # reporting remains here; the parent's earlier effect clock must
+                # not cut off the existing bounded reporting allocation.
                 raw, _ = windows_terminal(pipe, sending=False,
-                    deadline_ns=min(completion_wait_deadline(parent._file2_exchange_deadline), terminal_budget))
+                    deadline_ns=terminal_budget)
                 parent._completion_wire = raw
                 completion = validate_bundle_worker_completion(raw, context=context, grant_data=grant,
                     effect=effect, expected_pid=parent._worker.pid)

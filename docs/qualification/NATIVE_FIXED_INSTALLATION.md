@@ -2,7 +2,7 @@
 
 These candidate resources connect ordinary scripts and agents to the existing native `_NativeAcceptedLaunch` and Core. They reuse the current contracts, evidence, versions, inspection and recovery rules.
 
-Current admission remains experimental: approved synthetic roots, fixed installation bindings and already prepared per-run inputs. Filling in a request does not admit an arbitrary root, contract, executable or run. Production routes are unchanged. This guide does not establish a successful installed deployment; the new artifact, installed callers and runtime return still require recorded checks. A05/G01 remain NOT_VERIFIED, and release remains an owner decision.
+Current admission remains experimental: approved synthetic roots, fixed installation bindings and already prepared per-run inputs. Filling in a request does not admit an arbitrary root, contract, executable or run. Production routes are unchanged. See the [installed functional results](NATIVE_INSTALLED_FUNCTIONAL_RESULTS.md) for the specific artifacts, callers, recovery and runtime return that were exercised. Apply those results only to the documented bindings. File and Bundle selectors may require separate result grants and evidence roots; do not split evidence for the same grant or reuse an incompatible binding. A05/G01 remain NOT_VERIFIED, and release remains an owner decision.
 
 ## Prepare one fixed installation
 

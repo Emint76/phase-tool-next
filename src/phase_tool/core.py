@@ -1356,6 +1356,12 @@ class PhaseCore:
         except (PhaseError, OSError) as exc:
             if native_ctx is not None and native_ctx.preparation_attempted:
                 raise
+            if native_ctx is not None and intent is None:
+                from .mutation.ntfs.channel import NativeChannelError
+                if type(exc) is NativeChannelError:
+                    # The poisoned channel cannot confirm no dispatch at seal.
+                    # Preserve its first failure for the unresolved diagnostic.
+                    raise
             if (native_ctx is not None and native_ctx.broker_interruption is not None
                 and native_authority is not None and native_authority._failure_bytes is not None):
                 try:

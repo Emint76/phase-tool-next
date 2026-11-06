@@ -144,6 +144,36 @@ class NativeTerminalCoreExt4Tests(unittest.TestCase):
         self.assertIsNone(outcome.intent); self.assertFalse((self.target/'result.bin').exists())
         self.no_receipt(context)
 
+    def test_pre_intent_native_channel_error_survives_without_rejection_draft(self):
+        from phase_tool.mutation.ntfs.channel import NativeChannelError
+
+        failure = NativeChannelError(
+            "ntfs.channel_exchange_unknown", possible_dispatch=False,
+            details={"sequence": 1, "primary": {"code": "ntfs.channel_remote_failure"}},
+        )
+        context = _NativeRunContext()
+        with patch("phase_tool.core.ValidatorRunner.run", side_effect=failure):
+            with self.assertRaises(NativeChannelError) as caught:
+                self.deferred(context)
+
+        self.assertIs(caught.exception, failure)
+        self.assertIsNone(context.prepared)
+        self.assertFalse(context.intent_recording_started)
+        self.assertFalse(context.broker_entered)
+        self.assertFalse((context.store.run_root / "intent.json").exists())
+        self.assertFalse((context.store.attachment_root / "effect-plan.json").exists())
+        self.assertFalse((self.target / "result.bin").exists())
+        self.no_receipt(context)
+
+    def test_pre_intent_phase_error_still_prepares_ordinary_rejection(self):
+        with patch("phase_tool.core.ValidatorRunner.run", side_effect=PhaseError("validation.synthetic")):
+            context, outcome = self.deferred()
+
+        self.assertEqual(outcome.receipt["terminal_status"], "rejected")
+        self.assertIn("validation.synthetic", outcome.receipt["blockers"])
+        self.assertFalse(context.intent_recording_started)
+        self.no_receipt(context)
+
     def test_per_key_exit_fault_keeps_executed_draft_and_original_primary(self):
         primary = OSError(errno.EIO, 'synthetic per-key exit fault AFTER actual cleanup')
         real = _OperationalFileLock.__exit__

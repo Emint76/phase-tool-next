@@ -32,8 +32,9 @@ If an essential primitive fails, dependent mutation stops and remaining cases
 stay NOT_VERIFIED. The original counterexample must be retained.
 
 This small stage allocates under 256 MiB with a 4 GiB reserve checked on the host
-and relevant ext4/NTFS roots. It changes no large-workload threshold: 64 GiB host
-and VM reserves are still mandatory before large cases. A short first-failure
+and relevant ext4/NTFS roots. The 64 GiB host and VM reserves remain mandatory
+for other large cases. The separately approved B08 floors are listed below.
+A short first-failure
 run retains requested/completed counts and is never treated as ten passing
 repeats. The image is an offline directory-only derivative of the available
 v1.1.0 image, without package installs, pulls or image exports.
@@ -51,6 +52,31 @@ boundaries, expected outcomes and false-positive risks, including the setup
 commands and ownership map. A fresh campaign UUID and ownership manifest are
 mandatory. No container/volume is accepted by name alone; labels, IDs and mounts
 must match. No cleanup is currently implemented: retain owned resources.
+
+## B08 resource addendum (2026-11-06)
+
+This addendum supersedes the original 64 GiB rule for B08 alone. Use
+[b08_resources.py](b08_resources.py) for admission and monitoring.
+
+| B08 lane | C: free | Docker ext4 free | S: free |
+| --- | ---: | ---: | ---: |
+| Linux REF | 14 GiB | 13 GiB | 9 GiB |
+| NTFS MIX | 14 GiB | 11 GiB | 11 GiB |
+
+Inventory prior owned host files, volumes, writable layers and retained evidence.
+Require retained plus the next peak to stay below 32 GiB. Count both boundary
+fixtures, preparation, frozen data, open snapshots, outputs and control
+artifacts. Additional archive or restore copies require their own peak review.
+The table assumes originals on S: and Docker data VHDX on C:. Verify that
+placement and check guest free space and host free space separately.
+
+Run one large case at a time. During source generation, publication and
+independent verification check the 4 GiB remaining reserve on each store,
+the actual free-space draw and VHDX growth. Stop the owned run on a failed
+observation or budget breach and retain the observed state before any retry.
+Use a separate read-only verifier and keep native receipts and resource samples.
+File v1 remains capped at 1 MiB and File v2 at 2 GiB. A passing MIX resource
+check does not grant an NTFS profile or admission.
 
 ## Initial acceptance matrix
 

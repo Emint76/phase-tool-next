@@ -225,7 +225,9 @@ does not automatically qualify this configuration. Use at most two private
 nonroot constrained containers, own ext4 preparation/evidence and a separate
 read-only verifier. No production mounts, secrets or Docker socket.
 
-The 32 GiB campaign budget and reviewed free-space/peak gates remain. Boundary
+The 32 GiB campaign budget and reviewed free-space/peak gates remain.
+B08 alone uses the [per-lane resource addendum](../../qualification/README.md#b08-resource-addendum-2026-11-06).
+Boundary
 workloads run sequentially after their dedicated gate, not under a small-case
 allowance. Real ENOSPC requires a separately authorized bounded test filesystem;
 error injection proves only the exercised propagation model. Filling shared S:

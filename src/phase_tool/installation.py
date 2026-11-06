@@ -795,7 +795,7 @@ def _require_native_mixed_roots_disjoint(evidence, preparation):
     _require(table == Path('/proc/self/mountinfo').read_bytes(), 'ntfs.native_mount_topology_changed')
 
 
-def _native_qualified_profile(registry, exact):
+def _native_qualified_profile(registry, exact, *, _file2=False):
     """ONE pure native admission check shared by factory, role and inspector."""
     from .mutation.ntfs.native import _require
     current = registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
@@ -807,7 +807,8 @@ def _native_qualified_profile(registry, exact):
         and bool(descriptor['provided_guarantees']) and bool(descriptor['conformance']),
         'ntfs.native_profile_not_qualified')
     implementation = descriptor['implementation']
-    _require(implementation['artifact'] == 'phase_tool/mutation/ntfs/authority.py',
+    artifact = 'file2_authority.py' if _file2 else 'authority.py'
+    _require(implementation['artifact'] == 'phase_tool/mutation/ntfs/' + artifact,
         'guarantee.profile_implementation_mismatch')
     return GuaranteeProfileBinding(exact['id'],exact['version'],exact['descriptor_digest'],
         implementation['id'],implementation['version'],implementation['artifact_digest'])
@@ -970,26 +971,49 @@ def _native_file2_registry():
     return registry
 
 
+def _require_qualified_native_file2_manifest(manifest_bytes, expected_manifest_digest):
+    """Validate an ordinary fixed File v2 installation before starting a caller."""
+    registry = _native_registry_for_manifest(manifest_bytes, expected_manifest_digest)
+    return _qualified_native_file2_binding(registry, manifest_bytes, expected_manifest_digest)
+
+
+def _qualified_native_file2_binding(registry, manifest_bytes, expected_manifest_digest):
+    from .canonical import parse_json_bytes
+    from .mutation.guarantees import verify_guarantee_coverage
+    from .mutation.ntfs.native import _require
+
+    exact = registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
+    profile = _native_qualified_profile(registry, exact, _file2=True)
+    read_binding = _resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
+        expected_manifest_digest=expected_manifest_digest, registry=registry)
+    manifest = parse_json_bytes(read_binding.manifest_bytes, maximum_bytes=2 * 1024**2)
+    binding = registry.contract_bindings().get('file_create.v2@1.0.0')
+    _require(binding is not None and manifest['native_read_installation_version'] == '1.3'
+             and manifest['contract'] == binding, 'ntfs.directory_file2_manifest_required')
+    provider = {'id': profile.implementation_id, 'version': profile.implementation_version,
+                'artifact_digest': profile.implementation_artifact_digest}
+    _require(manifest['authority'] == {'usage': 'provider_backed', 'profile': profile.as_dict(),
+             'provider': provider}, 'ntfs.original_implementation_mismatch')
+    contract = registry.resolve_contract(binding['id'], binding['version'], binding['package_digest'],
+                                         core_version=manifest['core']['version'])
+    operation = contract.document['operation']
+    verify_guarantee_coverage(operation['required_guarantees'], [operation['mechanism']], profile, registry)
+    return read_binding, profile
+
+
 def _native_file2_installation(*,manifest_bytes,expected_manifest_digest,
     run_id,operation_nonce,channel_id,_inspection_only=False):
     """Fixed1.3 create2 only; no cross-contract history or qualification grant."""
     from .canonical import canonical_bytes,parse_json_bytes
     from .mutation.ntfs.native import _require
-    from .mutation.ntfs.authority import _NativeFileCreateAuthority
+    from .mutation.ntfs.file2_authority import _QualifiedFile2Authority
     from .mutation.ntfs.channel_v4 import LinuxNativeChannelV4
     _require(type(_inspection_only) is bool,'ntfs.fixed_role_required')
     registry=_native_file2_registry()
-    exact=registry.guarantee_profile_bindings().get('phase.native.ntfs.authority.v1@1.0.0')
-    _require(exact is not None,'ntfs.native_profile_not_qualified')
-    profile=_native_qualified_profile(registry,exact)
-    binding=_resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
-        expected_manifest_digest=expected_manifest_digest,registry=registry)
+    binding,profile=_qualified_native_file2_binding(registry,manifest_bytes,expected_manifest_digest)
     manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
-    _require(manifest['native_read_installation_version']=='1.3'
-        and manifest['contract']['id']=='file_create.v2'
-        and manifest['authority']['profile']==profile.as_dict(),'ntfs.original_implementation_mismatch')
     channel=LinuxNativeChannelV4(channel_id=channel_id,_inspection_only=_inspection_only)
-    authority=_NativeFileCreateAuthority(binding,profile,canonical_bytes(manifest['root_projections']),channel,
+    authority=_QualifiedFile2Authority(binding,profile,canonical_bytes(manifest['root_projections']),channel,
         run_id=run_id,operation_nonce=operation_nonce,_inspection_only=_inspection_only)
     return registry,_NativeFileCreateInstallation(binding,authority)
 
@@ -1052,6 +1076,11 @@ def _native_read_binding_for_launch(launch):
     admission = getattr(launch, '_experimental_admission_context', None)
     if admission is None:
         registry = _native_registry_for_manifest(launch._manifest_bytes, launch.installation_digest)
+        from .canonical import parse_json_bytes
+        if parse_json_bytes(launch._manifest_bytes, maximum_bytes=2*1024**2)['native_read_installation_version']=='1.3':
+            binding, _ = _qualified_native_file2_binding(
+                registry, launch._manifest_bytes, launch.installation_digest)
+            return binding
         _native_qualified_profile(registry, registry.guarantee_profile_bindings().get(
             'phase.native.ntfs.authority.v1@1.0.0'))
     else:

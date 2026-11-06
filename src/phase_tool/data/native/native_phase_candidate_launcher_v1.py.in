@@ -20,6 +20,16 @@ def need(value):
     if not value:raise RuntimeError('Native accepted startup unavailable')
 
 
+def fixed_startup_version(outer):
+    common={'native_fixed_startup_version','config_base64','config_digest','manifest_base64',
+        'manifest_digest','dependency_roots'}
+    need(type(outer) is dict)
+    version=outer.get('native_fixed_startup_version')
+    need((version=='1.1' and set(outer)==common|{'experimental_admission_base64'})
+        or (version=='1.2' and set(outer)==common))
+    return version
+
+
 def fixed_startup():
     need(sys.flags.isolated and sys.flags.no_site and not sys.flags.optimize
         and sys.dont_write_bytecode and sys.implementation.name=='cpython')
@@ -28,9 +38,7 @@ def fixed_startup():
     path=Path(__file__).absolute().parent/'native-phase.json'
     need(path.is_file() and not path.is_symlink() and path.stat().st_size<=2*1024**2)
     outer=json.loads(path.read_bytes())
-    need(type(outer) is dict and set(outer)=={'native_fixed_startup_version','config_base64',
-        'config_digest','manifest_base64','manifest_digest','dependency_roots','experimental_admission_base64'}
-        and outer['native_fixed_startup_version']=='1.1')
+    version=fixed_startup_version(outer)
     config_raw=base64.b64decode(outer['config_base64'],validate=True)
     manifest_raw=base64.b64decode(outer['manifest_base64'],validate=True)
     need('sha256:'+hashlib.sha256(config_raw).hexdigest()==outer['config_digest']
@@ -64,9 +72,15 @@ def fixed_startup():
     from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
     need(canonical_bytes(parse_json_bytes(config_raw,maximum_bytes=2*1024**2))==config_raw)
     need(canonical_bytes(parse_json_bytes(manifest_raw,maximum_bytes=2*1024**2))==manifest_raw)
-    admission_raw=base64.b64decode(outer['experimental_admission_base64'],validate=True)
-    need(len(admission_raw)<=32768)
-    admission=fixed_admission(config,json.loads(manifest_raw),admission_raw)
+    if version=='1.2':
+        from phase_tool.installation import _require_qualified_native_file2_manifest
+        need(config.get('native_launch_version')=='1.0')
+        _require_qualified_native_file2_manifest(manifest_raw,outer['manifest_digest'])
+        admission=None
+    else:
+        admission_raw=base64.b64decode(outer['experimental_admission_base64'],validate=True)
+        need(len(admission_raw)<=32768)
+        admission=fixed_admission(config,json.loads(manifest_raw),admission_raw)
     return outer,config_raw,manifest_raw,_NativeAcceptedLaunch,admission
 
 

@@ -212,6 +212,7 @@ def _is_native_authority(value):
     if not sys.platform.startswith('linux'):
         return False
     from .authority import _NativeFileCreateAuthority
+    from .file2_authority import _QualifiedFile2Authority
     from .experimental_authority import _ExperimentalFile1Authority
     from .experimental_bundle1_authority import _ExperimentalBundle1Authority
     from .experimental_bundle1 import _ExperimentalBundle1Admission
@@ -228,6 +229,8 @@ def _is_native_authority(value):
     from .experimental_history_authority import _ExperimentalHistoryAuthority
     if type(value) is _NativeFileCreateAuthority:
         return getattr(getattr(value, 'read_binding', None), 'experimental_admission', None) is None
+    if type(value) is _QualifiedFile2Authority:
+        return value._file2 is True and value.read_binding.experimental_admission is None
     from .experimental_file2 import _ExperimentalFile2Admission
     from .experimental_version1 import _ExperimentalVersion1Admission
     from .experimental_version2 import _ExperimentalVersion2Admission

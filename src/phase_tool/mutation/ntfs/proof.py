@@ -300,7 +300,10 @@ def _check(binding, receipt, proof):
     from .experimental_file1 import _experimental_admission
     admission = _experimental_admission(binding)
     if admission is None:
-        profile = _native_qualified_profile(binding.registry,manifest['authority']['profile'])
+        if manifest['native_read_installation_version']=='1.3' and contract_binding['id']=='file_create.v2':
+            profile = _native_qualified_profile(binding.registry, manifest['authority']['profile'], _file2=True)
+        else:
+            profile = _native_qualified_profile(binding.registry,manifest['authority']['profile'])
         verify_guarantee_coverage(contract.document['operation']['required_guarantees'],
             [manifest['mechanism']],profile,binding.registry)
     else:

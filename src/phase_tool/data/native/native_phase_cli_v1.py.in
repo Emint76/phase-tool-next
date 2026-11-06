@@ -53,7 +53,7 @@ def bindings():
     need(os.name=='nt'and sys.version_info[:3]==(3,12,10)and sys.flags.isolated
         and sys.flags.no_site and not sys.flags.optimize and sys.dont_write_bytecode,'fixed isolated Windows CPython3.12.10 required')
     outer=strict(ordinary(HERE/'native-phase.json',2*1024**2))
-    need(outer['native_fixed_startup_version']=='1.1','fixed startup version')
+    need(outer['native_fixed_startup_version'] in {'1.1','1.2'},'fixed startup version')
     raw=base64.b64decode(outer['config_base64'],validate=True)
     manifest=base64.b64decode(outer['manifest_base64'],validate=True)
     need(sha(raw)==outer['config_digest']and sha(manifest)==outer['manifest_digest'],'fixed config/manifest bytes')

@@ -28,6 +28,18 @@ The fixed configuration binds the exact wheel, launcher, accepted Python/Docker/
 
 The common launcher selects only the existing fixed admission families: File1, File2, Version1, Version2, Bundle1, corrected Bundle2, and the two existing history contexts. The manifest and trusted configuration determine the family. The request cannot select it. Use a newly accepted wheel containing the current adapter and both resources; historical results retain their original wheel and reader bindings.
 
+## Prepare authorized File v2 and Bundle v1 requests
+
+Select the contract from the operation. Resolve the directory separately from an explicit task grant or approved Hermes rules. An approved installation supplies the exact ordinary NTFS directory and its native identity, the qualified ext4 evidence and preparation identities, and the fixed Windows and Linux runtime settings. Only trusted preparation supplies these facts. A request supplies a scope name and operation data. If authority is missing or ambiguous, ask for that authority. If it is clear and the binding is admitted, prepare and continue.
+
+Run the repository's `integrations/hermes/skills/phase-mutation-preparation/scripts/prepare_native_phase_mutation.py` using the accepted Phase package and dependencies. Supply the task's deployment-owned subset of approved scopes and an ordered intents JSON as the two arguments. Prepare one fixed deployment per batch and use a distinct startup location per run. The adapter returns candidate, startup, execute and inspect values for each selected scope. It only composes JSON.
+
+An approved scope names the exact `contract`, `windows_root`, `root_grant`, `evidence_root`, `evidence_identity`, `preparation_root`, `preparation_identity` and `launch`. Each of `launch.windows` and `launch.linux` contains the existing `config` and `dependency_roots`. The intent fields are `scope`, `contract`, `run_id`, `target_locator`, `payload_digest`, `payload_length` and `members`. Use a canonical relative target and a stable run ID. For File v2, use the exact payload digest and byte length and set `members` to null. For Bundle v1, both the digest and byte length describe the canonical bundle manifest. Supply the exact member locators from that manifest.
+
+Use the installation's existing preparation channel to stage the payload at the returned input path and the canonical candidate bytes at the returned candidate path. Materialize each returned startup value as `native-phase.json` beside the matching fixed launcher. Keep these writes exclusive and outside the result grant. For MCP, pass the prepared execute arguments to `phase_execute_prepared` as described below. Preserve the original result and use its own compatible reader for inspection.
+
+The current standalone File v2 and Bundle v1 installations each bind one original run. For a sequence of these two operations, choose separately authorized, nonoverlapping NTFS grants with disjoint ext4 evidence and preparation. Keep each run's original binding available for later inspection. The shared-history manifests for File v1 and Version v1 remain separate. The current experimental admission still requires `S:\\Phase-NTFS-Qualification\\<uuid>\\results` and the existing accepted runtime.
+
 ## Call from an ordinary Windows script
 
 Use the accepted Windows CPython 3.12.10 executable and flags. In PowerShell:

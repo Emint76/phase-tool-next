@@ -75,3 +75,23 @@ New qualification profile/immutable registry activation remains gated. MIX is
 NOT_VERIFIED. No merge, release, production switch, Hermes or scientific-data
 change is included. The preserved originals remain local pending the next
 approved Phase Evidence/Raw checkpoint; their storage is not claimed complete.
+
+
+## Follow-up: verified attempt attachment accounting
+
+Core records the actual owner attempt before intent/dispatch. Independent
+inspect must include its verified digest in the complete attachment set.
+The original component reproducer failed for all six roles with
+`inspection.attachment_set_mismatch` (18 passed, six failed, one Linux-only
+skip). The correction consumes only the immutable digest set returned by
+the existing bounded byte verifier. Exact equality with the complete claimed
+set remains mandatory; no claimed hash becomes authority.
+
+The corrected portable run recorded 24 passes and one Linux-only skip.
+The affected Linux/ext4 run recorded 202 passes without skips, including
+the unpatched default verifier. A separate all-RO reader recovered all
+868 source files and the complete XML. Source ZIP SHA-256:
+`77e91a3dd76ae21edfab8c69098959dbae617257c8d570188760feab2d493444`.
+Readback report SHA-256: `174842c6291484f376020030e96bd3a7a32b80d59cbffb93d9e790e6b88d39eb`.
+Original failures remain preserved. This correction still does not claim
+an actual six-role owner-directory Native execution or completed MIX.

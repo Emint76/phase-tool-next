@@ -470,7 +470,7 @@ def verify_fixture_attachments(admission,binding,run_id,receipt=None,*,_io=None)
     try:info=info_at(run/'intent.json')
     except FileNotFoundError:
         try:info_at(run/'attachments'/_ATTEMPT_NAME)
-        except FileNotFoundError:return
+        except FileNotFoundError:return frozenset({digest_bytes(static)})
         raise PhaseError('ntfs.owner_fixture_orphan_attempt_unresolved')
     original=control(run/'intent.json',2*1024**2)
     plan_bytes=control(run/'attachments'/'effect-plan.json',2*1024**2)
@@ -482,6 +482,7 @@ def verify_fixture_attachments(admission,binding,run_id,receipt=None,*,_io=None)
         attempt_bytes=attempt_bytes,intent=intent,plan=plan)
     if receipt is not None:
         _need(digest_bytes(attempt_bytes) in receipt['evidence']['attachment_digests'],'ntfs.owner_fixture_evidence_mismatch')
+    return frozenset({digest_bytes(static),digest_bytes(attempt_bytes)})
 
 
 def select_original_tuple(bindings,*,contract,core,installation,registry_snapshot_digest):

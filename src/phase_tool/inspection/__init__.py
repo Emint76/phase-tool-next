@@ -566,8 +566,13 @@ def inspect_run(
             from ..mutation.ntfs.experimental_file1 import _experimental_admission
             admission = _experimental_admission(_native_authority.read_binding)
             if admission is not None:
-                admission.verify_attachment(_native_authority.read_binding, run_id, receipt)
-                attachment_digests.add(admission.digest)
+                verified_admission_digests=admission.verify_attachment(_native_authority.read_binding, run_id, receipt)
+                if admission.document().get('experimental_admission_version')in {'2.0','3.0'}:
+                    if type(verified_admission_digests)is not frozenset or admission.digest not in verified_admission_digests:
+                        raise PhaseError('inspection.attachment_set_mismatch')
+                    attachment_digests.update(verified_admission_digests)
+                else:
+                    attachment_digests.add(admission.digest)
         effect_receipts = receipt["effect_receipts"]
         unknown_dispatch_without_receipts = (
             not effect_receipts

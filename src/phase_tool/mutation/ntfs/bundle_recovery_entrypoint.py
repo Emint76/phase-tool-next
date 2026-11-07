@@ -71,9 +71,11 @@ def run_recovery_core(launch):
         and not launch._inspection_only,'recovery.closed_native_role_required')
     request=validate_request(launch.invocation['request']);launch.check_runtime()
     identity=_linux_stdio_identity()
+    history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))
     registry,installation=_native_installation_for_manifest(manifest_bytes=launch._manifest_bytes,
         expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
         operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
+        history_manifest_set_bytes=history_bytes,history_manifest_set_digest=history_digest,
         _experimental_admission_context=launch._experimental_admission_context)
     app=PhaseApplication(registry=registry,installation=installation)
     response=app.recover_publication(evidence_root=Path(launch.manifest['evidence_root']),run_id=launch.run_id,

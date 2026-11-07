@@ -157,7 +157,7 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest):
     if version=='1.0':
         _require(set(config)==fields,'ntfs.accepted_launch_shape')
         return None,None
-    _require(version in {'1.1','1.2'} and set(config)==fields|{
+    _require(version in {'1.1','1.2','1.3'} and set(config)==fields|{
         'history_manifest_set_base64','history_manifest_set_digest'}
         and type(config['history_manifest_set_base64']) is str,
         'ntfs.accepted_launch_shape')
@@ -167,8 +167,9 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest):
     _require(base64.b64encode(raw).decode('ascii')==config['history_manifest_set_base64'],
         'ntfs.accepted_history_shape')
     digest=config['history_manifest_set_digest']
-    parser=(_native_experimental_history_buffers if version=='1.2' else
-        _native_history_manifest_buffers)
+    from .experimental_history_set import mixed_history_buffers
+    parser=(mixed_history_buffers if version=='1.3' else
+        _native_experimental_history_buffers if version=='1.2' else _native_history_manifest_buffers)
     parser(raw,digest,active_bytes=manifest_bytes,active_digest=manifest_digest)
     return raw,digest
 
@@ -249,8 +250,12 @@ class _NativeAcceptedLaunch:
         invocation=parse_json_bytes(invocation_bytes,maximum_bytes=2*1024**2)
         _require(type(config) is dict and canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
             and canonical_bytes(invocation)==invocation_bytes,'ntfs.accepted_launch_shape')
-        _require(config.get('native_launch_version')!='1.2'
+        _require(config.get('native_launch_version') not in {'1.2','1.3'}
             or _experimental_admission_context is not None,'ntfs.experimental_admission_required')
+        if config.get('native_launch_version') == '1.3':
+            from .experimental_history_set import _mixed_history_contexts
+            _require(type(_experimental_admission_context) in _mixed_history_contexts(),
+                'ntfs.experimental_admission_required')
         if _experimental_admission_context is not None:
             from .experimental_history import (_ExperimentalHistoryFile1Admission,
                 _ExperimentalHistoryVersion1Admission)
@@ -306,6 +311,7 @@ class _NativeAcceptedLaunch:
         self._manifest_digest=expected_manifest_digest
         self._spawn_attempted=False
         self._worker=None
+        self._worker_job=None
         self._core_spawn_attempted=False
         self._original_query_attempted=False
         self._pipe_created=set()
@@ -486,6 +492,8 @@ class _NativeAcceptedLaunch:
     def _windows_required(self):
         self.check_runtime()
         _require(os.name=='nt','ntfs.fixed_windows_parent_required')
+        from .process_witness import _require_direct_windows_interpreter
+        _require_direct_windows_interpreter()
 
     def _pipe(self,process):
         from .windows_pipe import WindowsPipeFrames
@@ -544,6 +552,12 @@ class _NativeAcceptedLaunch:
 
     def worker_pipe(self,process):
         _require(process is self._worker,'ntfs.owned_creation_process_required')
+        _require(self._worker_job is None,'ntfs.worker_job_initialization_consumed')
+        from .worker_job import WindowsWorkerJob
+        # Parent already owns the returned creation process and its witness.
+        # Retain BEFORE fallible setup, still before pipe/original/READY/GO.
+        self._worker_job=WindowsWorkerJob.__new__(WindowsWorkerJob)
+        self._worker_job.__init__(process)
         return self._pipe(process)
 
     def send_worker_original(self,pipe,parsed,*,_handshake_deadline_ns=None):
@@ -599,6 +613,12 @@ class _NativeAcceptedLaunch:
                 _require(type(stream) is io.FileIO and not stream.closed,'ntfs.process_stream_owner_changed')
                 stream.close()
                 _require(stream.closed,'ntfs.worker_finalization_unknown')
+            except BaseException as error:errors.append(error)
+        if process is getattr(self,'_worker',None):
+            try:
+                from .worker_job import WindowsWorkerJob
+                _require(type(self._worker_job) is WindowsWorkerJob,'ntfs.worker_job_unavailable')
+                self._worker_job.close_after_exit(process)
             except BaseException as error:errors.append(error)
         try:
             handle=process._handle

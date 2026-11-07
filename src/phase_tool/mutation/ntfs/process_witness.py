@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes as C
 from multiprocessing.context import SpawnProcess
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -21,6 +22,38 @@ import time
 from ...canonical import canonical_bytes, parse_json_bytes
 from ...errors import PhaseError
 from .native import _require
+
+
+def _require_direct_windows_interpreter():
+    """Reject a redirector before spawning any worker or contour process.
+
+    A Windows venv executable may create a different process for the Python
+    body. Its Popen HANDLE cannot witness that body's exit or contain it in the
+    worker-only job. Compare this process's actual image with what we spawn.
+    This consistency check does not resist privileged runtime replacement.
+    """
+    _require(os.name == 'nt' and sys.platform == 'win32'
+        and sys.implementation.name == 'cpython' and sys.version_info[:3] == (3, 12, 10),
+        'ntfs.windows_cpython31210_process_required')
+    try:
+        kernel = C.WinDLL('kernel32', use_last_error=True)
+        kernel.GetModuleFileNameW.argtypes = [C.c_void_p, C.POINTER(C.c_wchar), C.c_uint32]
+        kernel.GetModuleFileNameW.restype = C.c_uint32
+        capacity = 32768
+        buffer = C.create_unicode_buffer(capacity)
+        C.set_last_error(0)
+        length = kernel.GetModuleFileNameW(None, buffer, capacity)
+        error = C.get_last_error()
+        if not (type(length) is int and 0 < length < capacity and buffer[length] == '\0'):
+            raise PhaseError('ntfs.worker_interpreter_image_unavailable', details={
+                'api': 'GetModuleFileNameW', 'returned_characters': length, 'winerror': error})
+        image = Path(buffer.value)
+        _require(image.is_absolute() and Path(sys.executable).is_absolute(),
+            'ntfs.worker_interpreter_image_unavailable')
+        _require(Path(sys.executable).samefile(image), 'ntfs.worker_interpreter_redirector_forbidden')
+    except OSError as error:
+        raise PhaseError('ntfs.worker_interpreter_image_unavailable', details={
+            'winerror': getattr(error, 'winerror', None), 'errno': error.errno}) from error
 
 
 class _FileTime(C.Structure):

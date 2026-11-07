@@ -176,7 +176,13 @@ def recover_native(application,authority,*,evidence_root,run_id,target_root,requ
             'recovery.closed_native_role_required')
         selection=select_original(binding,run_id,request_id,expected_intent_digest)
         after=parent=observation=context=None;previous=None
-        with _guard_native_original_intents(binding,_recovery_selection=selection):
+        from ...installation import _NativeFileCreateInstallation
+        installed = application.installation
+        _require(type(installed) is _NativeFileCreateInstallation
+            and installed.authority is authority and installed.read_binding is binding,
+            'recovery.closed_native_role_required')
+        with _guard_native_original_intents(binding, history_bindings=installed.history_bindings,
+                _recovery_selection=selection):
             original=selection.check(Path(evidence_root)/'.phase/runs'/run_id)
             intent=original['intent'];value=_bundle_projection_value(original['projection'])
             result.intent_digest=expected_intent_digest;result.effect_plan_digest=intent['effect_plan_digest']

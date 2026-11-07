@@ -497,6 +497,10 @@ def _validate_native_history_bindings(active, bindings):
         and all(type(row) is _NativeFileCreateReadBinding for row in bindings),
         'ntfs.original_history_binding_mismatch')
     if active.experimental_admission is not None:
+        from .mutation.ntfs.experimental_history_set import (_mixed_history_contexts,
+            validate_mixed_history_bindings)
+        if type(active.experimental_admission) in _mixed_history_contexts():
+            return validate_mixed_history_bindings(active, bindings)
         return _validate_native_experimental_history_bindings(active,bindings)
     active_manifest = parse_json_bytes(active.manifest_bytes,maximum_bytes=2*1024**2)
     generation = active_manifest['native_read_installation_version']
@@ -543,6 +547,14 @@ def _resolve_native_history_bindings(active, raw, expected_digest):
         return None
     _require(raw is not None and expected_digest is not None,'ntfs.accepted_history_binding_mismatch')
     if active.experimental_admission is not None:
+        from .mutation.ntfs.experimental_history_set import _mixed_history_contexts, mixed_history_buffers
+        if type(active.experimental_admission) in _mixed_history_contexts():
+            buffers = mixed_history_buffers(raw, expected_digest,
+                active_bytes=active.manifest_bytes, active_digest=active.manifest_digest)
+            bindings = tuple(_native_experimental_read_binding(manifest_bytes=leaf,
+                expected_manifest_digest=sha, admission=kind(cap))
+                for leaf, sha, cap, kind in buffers)
+            return _validate_native_history_bindings(active, bindings)
         from .mutation.ntfs.bootstrap import _native_experimental_history_buffers
         from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
             _ExperimentalHistoryVersion1Admission)
@@ -608,10 +620,14 @@ def _native_experimental_history_binding_for_run(bindings,run_id):
     from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
         _ExperimentalHistoryVersion1Admission)
     from .mutation.ntfs.native import _require
-    _require(type(bindings) is tuple and len(bindings)==3
+    from .mutation.ntfs.experimental_history_set import _mixed_history_contexts
+    kinds = (_ExperimentalHistoryFile1Admission, _ExperimentalHistoryVersion1Admission)
+    _require(type(bindings) is tuple and bool(bindings), 'ntfs.original_history_binding_mismatch')
+    mixed = type(bindings[0].experimental_admission) in _mixed_history_contexts() if type(bindings[0]) is _NativeFileCreateReadBinding else False
+    _require((len(bindings) >= 2 if mixed else len(bindings) == 3)
         and all(type(row) is _NativeFileCreateReadBinding and type(row.experimental_admission)
-            in (_ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
-            for row in bindings),'ntfs.original_history_binding_mismatch')
+            in (_mixed_history_contexts() if mixed else kinds)
+            for row in bindings), 'ntfs.original_history_binding_mismatch')
     rows=[row for row in bindings if row.experimental_admission.document()['run_id']==run_id]
     _require(len(rows)==1,'ntfs.original_history_binding_mismatch')
     return rows[0]
@@ -919,7 +935,9 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
                 _inspection_only=_inspection_only,admission=_experimental_admission_context,
                 history_manifest_set_bytes=history_manifest_set_bytes,
                 history_manifest_set_digest=history_manifest_set_digest)
-        _require(history_manifest_set_bytes is None and history_manifest_set_digest is None,
+        from .mutation.ntfs.experimental_history_set import _mixed_history_contexts
+        history_supplied = history_manifest_set_bytes is not None or history_manifest_set_digest is not None
+        _require(not history_supplied or type(_experimental_admission_context) in _mixed_history_contexts(),
             "ntfs.experimental_admission_scope")
         factories = {_ExperimentalFile1Admission: _native_experimental_file1_installation,
             _ExperimentalBundle1Admission: _native_experimental_bundle1_installation,
@@ -935,7 +953,9 @@ def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_diges
         return factory(manifest_bytes=manifest_bytes,
             expected_manifest_digest=expected_manifest_digest, run_id=run_id,
             operation_nonce=operation_nonce, channel_id=channel_id,
-            _inspection_only=_inspection_only, admission=_experimental_admission_context)
+            _inspection_only=_inspection_only, admission=_experimental_admission_context,
+            **({"history_manifest_set_bytes": history_manifest_set_bytes,
+                "history_manifest_set_digest": history_manifest_set_digest} if history_supplied else {}))
     # Fixed composition generations only; no public/request implementation selector.
     _native_registry_for_manifest(manifest_bytes,expected_manifest_digest)
     from .canonical import parse_json_bytes
@@ -1154,7 +1174,8 @@ def _native_registry_for_launch(launch):
 
 
 def _native_experimental_file1_installation(*, manifest_bytes, expected_manifest_digest,
-    run_id, operation_nonce, channel_id, _inspection_only=False, admission):
+    run_id, operation_nonce, channel_id, _inspection_only=False, admission,
+    history_manifest_set_bytes=None, history_manifest_set_digest=None):
     from dataclasses import replace
     from .canonical import canonical_bytes, parse_json_bytes
     from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
@@ -1169,11 +1190,12 @@ def _native_experimental_file1_installation(*, manifest_bytes, expected_manifest
     _require(admission.check_binding(binding)['run_id'] == run_id, 'ntfs.experimental_run_mismatch')
     profile = admission.profile(binding)
     manifest = parse_json_bytes(manifest_bytes, maximum_bytes=2*1024**2)
+    history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
     channel = LinuxNativeChannelV2(channel_id=channel_id, _inspection_only=_inspection_only)
     authority = _ExperimentalFile1Authority(binding, profile,
         canonical_bytes(manifest['root_projections']), channel,
         run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
-    return registry, _NativeFileCreateInstallation(binding, authority)
+    return registry, _NativeFileCreateInstallation(binding, authority, history_bindings=history)
 
 def _native_experimental_file2_registry():
     """Literal new file2 generation; no request-based profile selection."""
@@ -1188,7 +1210,8 @@ def _native_experimental_file2_registry():
 
 
 def _native_experimental_file2_installation(*, manifest_bytes, expected_manifest_digest,
-    run_id, operation_nonce, channel_id, _inspection_only=False, admission):
+    run_id, operation_nonce, channel_id, _inspection_only=False, admission,
+    history_manifest_set_bytes=None, history_manifest_set_digest=None):
     from dataclasses import replace
     from .canonical import canonical_bytes
     from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
@@ -1204,11 +1227,12 @@ def _native_experimental_file2_installation(*, manifest_bytes, expected_manifest
     profile = admission.profile(binding)
     from .canonical import parse_json_bytes
     configured = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
     channel = LinuxNativeChannelV4(channel_id=channel_id, _inspection_only=_inspection_only)
     authority = _ExperimentalFile2Authority(binding, profile,
         canonical_bytes(configured['root_projections']), channel,
         run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
-    return registry, _NativeFileCreateInstallation(binding, authority)
+    return registry, _NativeFileCreateInstallation(binding, authority, history_bindings=history)
 
 
 def _native_experimental_version1_registry():
@@ -1224,7 +1248,8 @@ def _native_experimental_version1_registry():
 
 
 def _native_experimental_version1_installation(*, manifest_bytes, expected_manifest_digest,
-    run_id, operation_nonce, channel_id, _inspection_only=False, admission):
+    run_id, operation_nonce, channel_id, _inspection_only=False, admission,
+    history_manifest_set_bytes=None, history_manifest_set_digest=None):
     from dataclasses import replace
     from .canonical import canonical_bytes, parse_json_bytes
     from .mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
@@ -1239,12 +1264,13 @@ def _native_experimental_version1_installation(*, manifest_bytes, expected_manif
     _require(admission.check_binding(binding)['run_id'] == run_id, 'ntfs.experimental_run_mismatch')
     profile = admission.profile(binding)
     configured = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
     channel = LinuxNativeChannelV3(channel_id=channel_id, _inspection_only=_inspection_only,
         _version1=True)
     authority = _ExperimentalVersion1Authority(binding, profile,
         canonical_bytes(configured['root_projections']), channel,
         run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)
-    return registry, _NativeFileCreateInstallation(binding, authority)
+    return registry, _NativeFileCreateInstallation(binding, authority, history_bindings=history)
 
 
 def _native_experimental_version2_registry():
@@ -1260,7 +1286,8 @@ def _native_experimental_version2_registry():
 
 
 def _native_experimental_version2_installation(*,manifest_bytes,expected_manifest_digest,
-    run_id,operation_nonce,channel_id,_inspection_only=False,admission):
+    run_id,operation_nonce,channel_id,_inspection_only=False,admission,
+    history_manifest_set_bytes=None, history_manifest_set_digest=None):
     from .canonical import canonical_bytes,parse_json_bytes
     from .mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
     from .mutation.ntfs.experimental_version2_authority_v2 import _ExperimentalVersion2AuthorityV2
@@ -1272,11 +1299,12 @@ def _native_experimental_version2_installation(*,manifest_bytes,expected_manifes
         expected_manifest_digest=expected_manifest_digest,admission=admission)
     _require(admission.check_binding(binding)['run_id']==run_id,'ntfs.experimental_run_mismatch')
     manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
+    history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
     channel=LinuxNativeChannelV5(channel_id=channel_id,_inspection_only=_inspection_only)
     authority=_ExperimentalVersion2AuthorityV2(binding,admission.profile(binding),
         canonical_bytes(manifest['root_projections']),channel,run_id=run_id,
         operation_nonce=operation_nonce,_inspection_only=_inspection_only)
-    return binding.registry,_NativeFileCreateInstallation(binding,authority)
+    return binding.registry,_NativeFileCreateInstallation(binding,authority,history_bindings=history)
 
 
 def _native_experimental_history_registry():
@@ -1331,7 +1359,8 @@ def _native_experimental_bundle1_registry():
 
 
 def _native_experimental_bundle1_installation(*,manifest_bytes,expected_manifest_digest,
-    run_id,operation_nonce,channel_id,_inspection_only=False,admission):
+    run_id,operation_nonce,channel_id,_inspection_only=False,admission,
+    history_manifest_set_bytes=None, history_manifest_set_digest=None):
     from dataclasses import replace
     from .canonical import canonical_bytes,parse_json_bytes
     from .mutation.ntfs.experimental_bundle1 import _ExperimentalBundle1Admission
@@ -1345,10 +1374,11 @@ def _native_experimental_bundle1_installation(*,manifest_bytes,expected_manifest
         expected_manifest_digest=expected_manifest_digest,registry=registry),experimental_admission=admission)
     _require(admission.check_binding(binding)['run_id']==run_id,'ntfs.experimental_run_mismatch')
     profile=admission.profile(binding);manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
+    history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
     channel=LinuxNativeBundleChannel(channel_id,_inspection_only=_inspection_only)
     authority=_ExperimentalBundle1Authority(binding,profile,canonical_bytes(manifest['root_projections']),channel,
         run_id=run_id,operation_nonce=operation_nonce,_inspection_only=_inspection_only)
-    return registry,_NativeFileCreateInstallation(binding,authority)
+    return registry,_NativeFileCreateInstallation(binding,authority,history_bindings=history)
 
 
 def _native_experimental_bundle2_registry():
@@ -1431,7 +1461,8 @@ def _native_experimental_bundle2_registry_v3():
 
 
 def _native_experimental_bundle2_installation_v3(*,manifest_bytes,expected_manifest_digest,
-    run_id,operation_nonce,channel_id,_inspection_only=False,admission):
+    run_id,operation_nonce,channel_id,_inspection_only=False,admission,
+    history_manifest_set_bytes=None, history_manifest_set_digest=None):
     from dataclasses import replace
     from .canonical import canonical_bytes,parse_json_bytes
     from .mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
@@ -1445,7 +1476,8 @@ def _native_experimental_bundle2_installation_v3(*,manifest_bytes,expected_manif
         expected_manifest_digest=expected_manifest_digest,registry=registry),experimental_admission=admission)
     _require(admission.check_binding(binding)['run_id']==run_id,'ntfs.experimental_run_mismatch')
     profile=admission.profile(binding);manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
+    history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
     channel=LinuxNativeBundleRecoveryChannel(channel_id,_inspection_only=_inspection_only)
     authority=_ExperimentalBundle2AuthorityV3(binding,profile,canonical_bytes(manifest['root_projections']),channel,
         run_id=run_id,operation_nonce=operation_nonce,_inspection_only=_inspection_only)
-    return registry,_NativeFileCreateInstallation(binding,authority)
+    return registry,_NativeFileCreateInstallation(binding,authority,history_bindings=history)

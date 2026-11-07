@@ -1,6 +1,9 @@
 """Closed Version1 experiment data; the existing parser and worker own semantics.
 
+
+
 No certificate, dynamic profile selection or independent history is introduced.
+
 """
 from __future__ import annotations
 
@@ -36,6 +39,9 @@ class _ExperimentalVersion1Admission(_ExperimentalFile1Admission):
         # deterministic archive. Real before/after identities are observed by
         # the existing hook and worker, never asserted by this capability.
         doc = self.document()
+        if doc['experimental_admission_version']=='2.0':
+            from .owner_directory_fixture import original_binding_view
+            doc=original_binding_view(self,intent,plan)
         value = intent['candidate']['storage']['value']
         inputs, effects = intent['inputs'], plan['effects']
         _require(intent['run_id'] == plan['run_id'] == doc['run_id']

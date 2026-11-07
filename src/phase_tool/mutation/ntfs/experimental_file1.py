@@ -1,13 +1,21 @@
 """Closed, explicitly selected file1 experiment; no production qualification.
 
+
+
 Reuses the existing native authority, Core, EvidenceStore, worker and proof.
+
 The fixed experimental launcher supplies this context outside operation JSON.
+
 An exact context is correlation inside that installation, not authentication
+
 against an administrator replacing the installation. Default startup refuses it.
+
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import os
+import threading
 from pathlib import Path, PureWindowsPath
 from typing import ClassVar
 import re
@@ -29,6 +37,8 @@ _NAME = 'experimental-admission.json'
 @dataclass(frozen=True)
 class _ExperimentalFile1Admission:
     raw: bytes
+    _owner_fixture_owner: tuple[int,int] = field(default_factory=lambda:(os.getpid(),threading.get_ident()),init=False,repr=False,compare=False)
+    _owner_fixture_capture: object | None = field(default=None,init=False,repr=False,compare=False)
     _contract: ClassVar[dict] = _CONTRACT
     _profile: ClassVar[str] = _PROFILE
     _manifest_version: ClassVar[str] = '1.1'
@@ -42,6 +52,9 @@ class _ExperimentalFile1Admission:
         _require(type(self.raw) is bytes and len(self.raw) <= 32768,
             'ntfs.experimental_admission_required')
         doc = parse_json_bytes(self.raw, maximum_bytes=32768)
+        if type(doc) is dict and doc.get('experimental_admission_version')=='2.0':
+            from .owner_directory_fixture import fixture_document
+            return fixture_document(self.raw)
         _require(type(doc) is dict and canonical_bytes(doc) == self.raw
             and set(doc) == {'experimental_admission_version', 'authorization_digest',
                 'contract', 'run_id', 'request_id', 'target_locator', 'candidate_digest',
@@ -91,6 +104,9 @@ class _ExperimentalFile1Admission:
             and binding.experimental_admission is self, 'ntfs.experimental_admission_required')
         doc = self.document()
         manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+        if doc['experimental_admission_version']=='2.0':
+            from .owner_directory_fixture import check_manifest,captured_binding_view
+            return captured_binding_view(self,check_manifest(type(self),self.raw,manifest,binding.manifest_digest))
         _require(manifest['native_read_installation_version'] == self._manifest_version
             and manifest['installation_id'] == self._installation_prefix + self.digest[7:]
             and manifest['contract'] == doc['contract']
@@ -141,6 +157,9 @@ class _ExperimentalFile1Admission:
 
     def verify_attachment(self, binding, run_id, receipt=None):
         doc = self.check_binding(binding)
+        if doc['experimental_admission_version']=='2.0':
+            from .owner_directory_fixture import verify_fixture_attachments
+            return verify_fixture_attachments(self,binding,run_id,receipt)
         _require(run_id == doc['run_id'], 'ntfs.experimental_run_mismatch')
         from ...streaming import read_bounded_file
         root = binding.check_evidence_root()
@@ -158,11 +177,19 @@ class _ExperimentalFile1Admission:
     def check_original(self, intent, plan):
         """Additional literal binding AFTER the existing complete original parser.
 
+
+
         That parser verifies actual frozen bytes and all ordinary schema/digest
+
         relations. These checks bind those same facts to the admitted experiment.
+
         They do not replace parsing with assertions from the admission document.
+
         """
         doc = self.document()
+        if doc['experimental_admission_version']=='2.0':
+            from .owner_directory_fixture import original_binding_view
+            doc=original_binding_view(self,intent,plan)
         value = intent['candidate']['storage']['value']
         inputs = intent['inputs']
         effects = plan['effects']

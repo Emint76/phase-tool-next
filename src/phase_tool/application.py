@@ -284,6 +284,31 @@ class PhaseApplication:
         return response
 
     def _inspect_with_result(
+        self, *, evidence_root: Path, run_id: str, root_bindings: Mapping[str, Path],
+        _expected_candidate_digest: str | None = None,
+        _expected_frozen_input: tuple[str, str] | None = None,
+        _include_canonical_result: bool = False,
+    ) -> tuple[ApplicationResponse, dict | None]:
+        response, reference, _manifest = self._inspect_with_projections(
+            evidence_root=evidence_root, run_id=run_id, root_bindings=root_bindings,
+            _expected_candidate_digest=_expected_candidate_digest,
+            _expected_frozen_input=_expected_frozen_input,
+            _include_canonical_result=_include_canonical_result)
+        return response, reference
+
+    def _inspect_bundle_with_result(
+        self, *, evidence_root: Path, run_id: str, root_bindings: Mapping[str, Path],
+        _expected_candidate_digest: str,
+    ) -> tuple[ApplicationResponse, dict | None, dict | None]:
+        """One ordinary inspect, with detached already-verified Host Bundle facts."""
+        if type(_expected_candidate_digest) is not str:
+            return self._failure("inspect", PhaseError("inspection.invalid_capture_expectation")), None, None
+        return self._inspect_with_projections(
+            evidence_root=evidence_root, run_id=run_id, root_bindings=root_bindings,
+            _expected_candidate_digest=_expected_candidate_digest,
+            _include_canonical_result=True, _include_bundle_manifest=True)
+
+    def _inspect_with_projections(
         self,
         *,
         evidence_root: Path,
@@ -292,9 +317,10 @@ class PhaseApplication:
         _expected_candidate_digest: str | None = None,
         _expected_frozen_input: tuple[str, str] | None = None,
         _include_canonical_result: bool = False,
-    ) -> tuple[ApplicationResponse, dict | None]:
+        _include_bundle_manifest: bool = False,
+    ) -> tuple[ApplicationResponse, dict | None, dict | None]:
         try:
-            if type(_include_canonical_result) is not bool:
+            if type(_include_canonical_result) is not bool or type(_include_bundle_manifest) is not bool:
                 raise PhaseError("inspection.invalid_result_projection")
             from .installation import _NativeFileCreateInstallation
             native = (self.installation.authority
@@ -305,7 +331,8 @@ class PhaseApplication:
                     "_expected_candidate_digest": _expected_candidate_digest,
                     "_expected_frozen_input": _expected_frozen_input,
                 }),
-                **({"_include_canonical_result": True} if _include_canonical_result else {}))
+                **({"_include_canonical_result": True} if _include_canonical_result else {}),
+                **({"_include_bundle_manifest": True} if _include_bundle_manifest else {}))
             payload = self._command_payload(
                 "inspect",
                 success=True,
@@ -338,9 +365,10 @@ class PhaseApplication:
             from .command_result import validate_command_result
             validate_command_result(payload, self.registry)
             return (ApplicationResponse(payload, payload["exit_code"]),
-                inspected.get("canonical_result") if _include_canonical_result else None)
+                inspected.get("canonical_result") if _include_canonical_result else None,
+                inspected.get("bundle_manifest") if _include_bundle_manifest else None)
         except (PhaseError, OSError, ValueError) as exc:
-            return self._failure("inspect", exc), None
+            return self._failure("inspect", exc), None, None
 
     @staticmethod
     def _command_payload(

@@ -17,6 +17,7 @@ from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_
 from ...evidence import validate_intent
 from ...paths import safe_relative_locator
 from ...planning import _validate_logical_plan
+from ...planning.request_identity import request_identity_digest
 from ...preconditions import verify_saved_precondition_results
 from ...registry import RegistrySnapshot
 from .native import _require
@@ -204,8 +205,10 @@ def _original_control_suffix(*, intent: dict, plan: dict, contract,
     id_scope={'contract':binding,'result_locator':value['target_locator'],'root_identity_digest':root_digest,'operation_intent':operation}
     _require(intent['idempotency']['root_identity_digest']==root_digest
         and intent['idempotency']['scope_digest']==profile_digest('idempotency-scope',id_scope)
-        and intent['idempotency']['request_digest']==profile_digest('request',{'scope':id_scope,
-            'candidate_digest':candidate['digest'],'inputs':inputs}),'ntfs.original_idempotency_binding_mismatch')
+        and intent['idempotency']['request_digest']==request_identity_digest(
+            policy=contract.document['idempotency']['request_digest_policy_id'],
+            scope=id_scope,candidate_digest=candidate['digest'],input_records=inputs),
+        'ntfs.original_idempotency_binding_mismatch')
     _require(type(pre_validator_bytes) is bytes and len(pre_validator_bytes)<=_CONTROL_LIMIT,
         'ntfs.original_precondition_bytes_required')
     verify_saved_precondition_results(registry,contract,intent,plan,pre_validator_bytes)

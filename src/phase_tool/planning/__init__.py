@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from ..candidate import CapturedCandidate
 from ..canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes, profile_digest
 from ..errors import PhaseError
+from .request_identity import request_identity_digest
 from ..freeze import FrozenInput, revalidate_frozen
 from ..paths import safe_relative_locator
 from ..registry import RegistrySnapshot, ResolvedContract
@@ -101,13 +102,11 @@ def _idempotency_from_root_records(
         "operation_intent": contract.document["operation"]["intent"],
     }
     scope_digest = profile_digest("idempotency-scope", scope)
-    request_digest = profile_digest(
-        "request",
-        {
-            "scope": scope,
-            "candidate_digest": candidate.digest,
-            "inputs": [item.intent_record() for _, item in sorted(frozen_inputs.items())],
-        },
+    request_digest = request_identity_digest(
+        policy=contract.document["idempotency"]["request_digest_policy_id"],
+        scope=scope,
+        candidate_digest=candidate.digest,
+        input_records=[item.intent_record() for _, item in sorted(frozen_inputs.items())],
     )
     return scope_digest, request_digest, key, root_identity, root_identities
 

@@ -377,10 +377,14 @@ def inspect_run(
     _expected_candidate_digest: str | None = None,
     _expected_frozen_input: tuple[str, str] | None = None,
     _include_canonical_result: bool = False,
+    _include_bundle_manifest: bool = False,
 ) -> dict[str, Any]:
     """Verify evidence and, for observed results, re-read installation-bound target bytes."""
-    if type(_include_canonical_result) is not bool:
+    if type(_include_canonical_result) is not bool or type(_include_bundle_manifest) is not bool:
         raise PhaseError("inspection.invalid_result_projection")
+    if _include_bundle_manifest and _native_authority is not None:
+        # A Host verifier result is not a native Bundle projection/capability.
+        raise PhaseError("inspection.bundle_projection_unsupported")
     _validate_capture_expectations(_expected_candidate_digest, _expected_frozen_input)
     capture_expectations = ({} if _expected_candidate_digest is None else {
         "_expected_candidate_digest": _expected_candidate_digest,
@@ -469,6 +473,8 @@ def inspect_run(
             inspect_missing_recovery(registry, root, run_root, intent, plan, root_bindings or {}))
         if _native_authority is not None:
             _native_authority._usable()  # Whole-read root/profile identity recheck.
+        if _include_bundle_manifest:
+            raise PhaseError("inspection.bundle_projection_unavailable")
         if capture_expectations:
             raise PhaseError("inspection.captured_request_unavailable")
         return {
@@ -514,6 +520,7 @@ def inspect_run(
     native_target_identity = None
     target_verified: bool | None = None
     contract_result: Any | None = None
+    bundle_manifest_bytes: bytes | None = None
     state_classification: str | None = None
     if receipt["evidence"]["intent_digest"] is not None:
         intent, _ = _read_canonical(run_root / "intent.json")
@@ -632,6 +639,34 @@ def inspect_run(
             contract_binding["package_digest"],
             core_version=receipt["core"]["version"],
         )
+        host_bundle = (_native_authority is None and contract.document["operation"]["mechanism"]["id"]
+            in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"})
+        if _include_bundle_manifest and not host_bundle:
+            raise PhaseError("inspection.bundle_projection_unsupported")
+        bundle_prior = None
+        if host_bundle and receipt["execution_disposition"] == "reused_existing":
+            if (intent is not None or plan is not None or receipt["mutation_attempted"] is not False
+                or receipt["effect_receipts"]):
+                raise PhaseError("inspection.prior_receipt_mismatch", run_id)
+            prior_digest = receipt.get("prior_verified_receipt_digest")
+            if not isinstance(prior_digest, str):
+                raise PhaseError("inspection.prior_receipt_missing")
+            bundle_prior_run = _prior_receipt_run_id(root / ".phase" / "runs", run_id, prior_digest)
+            # This same inspector verifies the original leaf's real owner/plan.
+            # The CURRENT reused run has no plan and never becomes that owner.
+            bundle_prior = inspect_run(root, bundle_prior_run, registry,
+                root_bindings=root_bindings, _visited_receipts=_visited_receipts | {receipt_digest},
+                _include_canonical_result=True, **capture_expectations,
+                **({"_include_bundle_manifest": True} if _include_bundle_manifest else {}))
+            if (bundle_prior.get("terminal_status") != "succeeded_verified"
+                or bundle_prior.get("target_verified") is not True
+                or bundle_prior.get("contract") != receipt["contract"]
+                or canonical_bytes(bundle_prior.get("canonical_result")) != canonical_bytes(canonical_result)):
+                raise PhaseError("inspection.prior_receipt_mismatch", bundle_prior_run)
+            if bundle_prior.get("implementation_binding") != receipt.get("implementation_binding"):
+                raise PhaseError("inspection.implementation_binding_mismatch")
+            if _include_bundle_manifest:
+                bundle_manifest_bytes = canonical_bytes(bundle_prior["bundle_manifest"]["manifest"])
         roots = root_bindings or {}
         root_id = canonical_result["root_binding"]
         try:
@@ -661,7 +696,11 @@ def inspect_run(
             ):
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         try:
-            if _native_authority is not None:
+            if bundle_prior is not None:
+                # Actual target observation comes from the freshly verified
+                # original leaf, correlated to the entire CURRENT reference.
+                streamed_state = bundle_prior["canonical_result"]["state"]
+            elif _native_authority is not None:
                 if appended is not None or native_proof is None:
                     raise PhaseError('inspection.native_binding_mismatch')
                 if contract.document['identity']['id'] in {'publish_new_version.v1','publish_new_version.v2'}:
@@ -698,6 +737,8 @@ def inspect_run(
                     elif contract.document["operation"]["mechanism"]["id"] in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}:
                         from ..bundle import verify_bundle
                         data, _manifest = verify_bundle(authority.target, state["digest"], run_id=run_id, plan_digest=plan_digest)
+                        if _include_bundle_manifest:
+                            bundle_manifest_bytes = data
                         from ..prepared_binding import verify_bound_bundle_target
                         verify_bound_bundle_target(registry, contract, intent, plan, run_root, authority.target)
                         authority.assert_namespace_binding()
@@ -747,16 +788,19 @@ def inspect_run(
             prior_digest = receipt.get("prior_verified_receipt_digest")
             if not isinstance(prior_digest, str):
                 raise PhaseError("inspection.prior_receipt_missing")
-            prior_run_id = _prior_receipt_run_id(root / ".phase" / "runs", run_id, prior_digest)
-            prior = inspect_run(
-                root,
-                prior_run_id,
-                registry,
-                root_bindings=root_bindings,
-                _visited_receipts=_visited_receipts | {receipt_digest},
-                **capture_expectations,
-                **({} if _native_authority is None else {"_native_authority": _native_authority}),
-            )
+            if bundle_prior is not None:
+                prior_run_id, prior = bundle_prior_run, bundle_prior
+            else:
+                prior_run_id = _prior_receipt_run_id(root / ".phase" / "runs", run_id, prior_digest)
+                prior = inspect_run(
+                    root,
+                    prior_run_id,
+                    registry,
+                    root_bindings=root_bindings,
+                    _visited_receipts=_visited_receipts | {receipt_digest},
+                    **capture_expectations,
+                    **({} if _native_authority is None else {"_native_authority": _native_authority}),
+                )
             if prior.get("terminal_status") != "succeeded_verified" or prior.get("target_verified") is not True or prior.get("contract") != receipt["contract"]:
                 raise PhaseError("inspection.prior_receipt_mismatch", prior_run_id)
             if prior.get("implementation_binding") != receipt.get("implementation_binding"):
@@ -860,4 +904,15 @@ def inspect_run(
         and receipt["evidence"]["finalization_status"] == "finalized"
         and receipt["execution_disposition"] in {"executed", "reused_existing"}):
         result["canonical_result"] = parse_json_bytes(canonical_bytes(canonical_result))
+    if _include_bundle_manifest:
+        if (bundle_manifest_bytes is None or target_verified is not True
+            or receipt["terminal_status"] != "succeeded_verified"
+            or receipt["evidence"]["finalization_status"] != "finalized"):
+            raise PhaseError("inspection.bundle_projection_unavailable")
+        from ..bundle import parse_manifest
+        manifest = parse_manifest(bundle_manifest_bytes)
+        result["bundle_manifest"] = {
+            "manifest": manifest, "manifest_digest": digest_bytes(bundle_manifest_bytes),
+            "member_count": len(manifest["members"]), "total_length": manifest["total_length"],
+        }
     return result

@@ -173,7 +173,7 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch
     if version=='1.0':
         _require(set(config)==fields,'ntfs.accepted_launch_shape')
         return None,None
-    _require(version in {'1.1','1.2','1.3'} and set(config)==fields|{
+    _require(version in {'1.1','1.2','1.3','2.0'} and set(config)==fields|{
         'history_manifest_set_base64','history_manifest_set_digest'}
         and type(config['history_manifest_set_base64']) is str,
         'ntfs.accepted_launch_shape')
@@ -183,8 +183,11 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch
     _require(base64.b64encode(raw).decode('ascii')==config['history_manifest_set_base64'],
         'ntfs.accepted_history_shape')
     digest=config['history_manifest_set_digest']
+    header=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+    _require(type(header) is dict and (version=='2.0')==(header.get('history_manifest_set_version')=='2.0'),
+        'ntfs.owner_fixture_startup_required')
     from .experimental_history_set import mixed_history_buffers
-    parser=(mixed_history_buffers if version=='1.3' else
+    parser=(mixed_history_buffers if version in {'1.3','2.0'} else
         _native_experimental_history_buffers if version=='1.2' else _native_history_manifest_buffers)
     parser(raw,digest,active_bytes=manifest_bytes,active_digest=manifest_digest)
     return raw,digest
@@ -266,12 +269,19 @@ class _NativeAcceptedLaunch:
         invocation=parse_json_bytes(invocation_bytes,maximum_bytes=2*1024**2)
         _require(type(config) is dict and canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
             and canonical_bytes(invocation)==invocation_bytes,'ntfs.accepted_launch_shape')
-        _require(config.get('native_launch_version') not in {'1.2','1.3','1.4'}
+        _require(config.get('native_launch_version') not in {'1.2','1.3','1.4','2.0'}
             or _experimental_admission_context is not None,'ntfs.experimental_admission_required')
-        if config.get('native_launch_version') in {'1.3','1.4'}:
+        if config.get('native_launch_version') in {'1.3','1.4','2.0'}:
             from .experimental_history_set import _mixed_history_contexts
             _require(type(_experimental_admission_context) in _mixed_history_contexts(),
                 'ntfs.experimental_admission_required')
+        from .experimental_history_set import _mixed_history_contexts
+        from .owner_directory_fixture import is_fixture
+        if config.get('native_launch_version')=='2.0':
+            _require(type(_experimental_admission_context) in _mixed_history_contexts()
+                and is_fixture(_experimental_admission_context.raw),'ntfs.owner_fixture_startup_required')
+        elif type(_experimental_admission_context) in _mixed_history_contexts():
+            _require(not is_fixture(_experimental_admission_context.raw),'ntfs.owner_fixture_startup_required')
         if _experimental_admission_context is not None:
             from .experimental_history import (_ExperimentalHistoryFile1Admission,
                 _ExperimentalHistoryVersion1Admission)

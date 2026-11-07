@@ -26,7 +26,8 @@ def fixed_startup_version(outer):
     need(type(outer) is dict)
     version=outer.get('native_fixed_startup_version')
     need((version=='1.1' and set(outer)==common|{'experimental_admission_base64'})
-        or (version=='1.2' and set(outer)==common))
+        or (version=='1.2' and set(outer)==common)
+        or (version=='2.0' and set(outer)==common|{'owner_directory_fixture_base64'}))
     return version
 
 
@@ -78,8 +79,11 @@ def fixed_startup():
         _require_qualified_native_file2_manifest(manifest_raw,outer['manifest_digest'])
         admission=None
     else:
-        admission_raw=base64.b64decode(outer['experimental_admission_base64'],validate=True)
-        need(len(admission_raw)<=32768)
+        field='owner_directory_fixture_base64' if version=='2.0' else 'experimental_admission_base64'
+        admission_raw=base64.b64decode(outer[field],validate=True)
+        need(len(admission_raw)<=32768 and base64.b64encode(admission_raw).decode('ascii')==outer[field])
+        from phase_tool.mutation.ntfs.owner_directory_fixture import is_fixture
+        need((version=='2.0')==(config.get('native_launch_version')=='2.0')==is_fixture(admission_raw))
         admission=fixed_admission(config,json.loads(manifest_raw),admission_raw)
     return outer,config_raw,manifest_raw,_NativeAcceptedLaunch,admission
 
@@ -111,7 +115,16 @@ def fixed_admission(config,manifest,raw):
         and manifest.get('contract')==row[0]._contract]
     need(len(matches)==1)
     kind,factory=matches[0];admission=kind(raw);document=admission.document()
+    need((config.get('native_launch_version')=='2.0')==(document.get('experimental_admission_version')=='2.0'))
     registry=factory();contract=manifest['contract']
+    if config.get('native_launch_version')=='2.0':
+        from phase_tool.mutation.ntfs.owner_directory_fixture import check_manifest
+        from phase_tool.canonical import canonical_bytes
+        need(document.get('experimental_admission_version')=='2.0')
+        check_manifest(kind,raw,manifest,'sha256:'+hashlib.sha256(canonical_bytes(manifest)).hexdigest())
+        need(registry.digest==manifest['registry_snapshot_digest']
+            and registry.contract_bindings().get(contract['id']+'@'+contract['version'])==contract)
+        return admission
     need(document['contract']==contract and registry.digest==manifest['registry_snapshot_digest']
         and registry.contract_bindings().get(contract['id']+'@'+contract['version'])==contract)
     return admission

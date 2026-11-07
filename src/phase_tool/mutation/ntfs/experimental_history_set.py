@@ -29,6 +29,9 @@ def mixed_history_buffers(raw, expected_digest, *, active_bytes, active_digest):
         and type(expected_digest) is str and digest_bytes(raw) == expected_digest,
         'ntfs.accepted_history_binding_mismatch')
     value = parse_json_bytes(raw, maximum_bytes=2*1024**2)
+    if type(value) is dict and value.get('history_manifest_set_version')=='2.0':
+        from .owner_directory_fixture import owner_history_buffers
+        return owner_history_buffers(raw,expected_digest,active_bytes=active_bytes,active_digest=active_digest)
     _require(type(value) is dict and canonical_bytes(value) == raw
         and set(value) == {'history_manifest_set_version', 'manifests'}
         and value['history_manifest_set_version'] == '1.3'
@@ -82,6 +85,9 @@ def mixed_history_buffers(raw, expected_digest, *, active_bytes, active_digest):
 
 def validate_mixed_history_bindings(active, bindings):
     from ...installation import _NativeFileCreateReadBinding
+    from .owner_directory_fixture import is_fixture,validate_owner_history_bindings
+    if type(active) is _NativeFileCreateReadBinding and type(active.experimental_admission) in _mixed_history_contexts() and is_fixture(active.experimental_admission.raw):
+        return validate_owner_history_bindings(active,bindings)
     context = (bindings[0]._qualification_context if type(bindings) is tuple and bindings
         and type(bindings[0]) is _NativeFileCreateReadBinding else None)
     if context is None:

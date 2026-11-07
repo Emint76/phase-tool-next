@@ -5,21 +5,21 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
 from .bundle import CONTRACT_BINDING, parse_manifest, read_metadata, validate_members
 from .candidate import encode_structured_input
-from .canonical import parse_json_bytes, profile_digest
+from .canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from .errors import PhaseError
 from .evidence import read_evidence_bytes, validate_run_id
 from .installation import qualify_host_authority_roots
 from .paths import contained_target_path, safe_relative_locator
-from .publish_file import _root
+from .publish_file import _root, _semantic_replay_enabled
 from .streaming import REQUEST_LIMIT
 
 
 class PublishBundleResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    publish_bundle_result_version: Literal["1.0"] = "1.0"
+    publish_bundle_result_version: Literal["1.0", "1.1"] = "1.0"
     status: Literal["verified", "rejected_before_write", "committed_unverified", "indeterminate"] = "rejected_before_write"
     success: bool = False
     request_id: str
@@ -34,11 +34,45 @@ class PublishBundleResult(BaseModel):
     receipt_digest: str | None = None
     intent_digest: str | None = None
     effect_plan_digest: str | None = None
+    execution_disposition: Literal["not_executed", "executed", "reused_existing"] | None = None
     mutation_attempted: bool | None = False
     target_verified: bool = False
     inspection_required: bool = False
     error: str | None = None
     exit_code: int = 10
+
+
+    @model_validator(mode="after")
+    def _legacy_disposition_unavailable(self):
+        if self.publish_bundle_result_version == "1.0" and self.execution_disposition is not None:
+            raise ValueError("Legacy bundle result has no execution disposition field")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_versioned_result(self, handler):
+        value = handler(self)
+        if self.publish_bundle_result_version == "1.0":
+            value.pop("execution_disposition", None)
+        return value
+
+
+def _require_bundle_projection(reference, projection, *, binding, target_locator, members):
+    """Literal correlation of already verified facts; no target or history I/O."""
+    if (type(reference) is not dict or reference.get("contract") != binding
+        or reference.get("root_binding") != "phase_result_root"
+        or reference.get("locator") != target_locator or type(projection) is not dict
+        or set(projection) != {"manifest", "manifest_digest", "member_count", "total_length"}):
+        raise PhaseError("bundle.evidence_mismatch")
+    raw = canonical_bytes(projection["manifest"])
+    manifest = parse_manifest(raw)
+    digest = digest_bytes(raw)
+    if (reference.get("state") != {"exists": True, "digest": digest, "length": len(raw), "head_token": None}
+        or projection["manifest_digest"] != digest or type(projection["member_count"]) is not int
+        or projection["member_count"] != len(manifest["members"])
+        or type(projection["total_length"]) is not int or projection["total_length"] != manifest["total_length"]
+        or [item["path"] for item in manifest["members"]] != members):
+        raise PhaseError("bundle.evidence_mismatch")
+    return manifest, digest
 
 
 def publish_bundle(application, *, source_root: Path, members: list[str], target_root: Path,
@@ -49,6 +83,7 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
     result = PublishBundleResult(request_id=request_id, run_id=run_id,
         evidence_root=str(evidence_root), target_locator=target_locator)
     handed_off = False
+    semantic_replay = False
     lock = None
     try:
         if publication_version not in {'1.0','2.0'}:
@@ -87,9 +122,13 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
         if (evidence_root/".phase/runs"/run_id).exists():
             result.status, result.mutation_attempted, result.exit_code = "indeterminate", None, 40
             raise PhaseError("evidence.run_exists")
-        if destination.exists():
-            raise PhaseError("bundle.target_exists_inspection_required")
         binding = application._binding(selected_binding)
+        semantic_replay = _semantic_replay_enabled(application, binding)
+        if destination.exists() and not semantic_replay:
+            raise PhaseError("bundle.target_exists_inspection_required")
+        if semantic_replay:
+            result.publish_bundle_result_version = "1.1"
+            result.execution_disposition = "not_executed"
         result.contract_digest = binding["package_digest"]
         candidate = {"operation_id":request_id,"idempotency_key":request_id,
                      "input_binding":"payload","target_locator":target_locator,"members":members}
@@ -111,33 +150,61 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
                 raise PhaseError(executed["error"] or "bundle.execution_unknown")
             for field in ("receipt_digest","intent_digest","effect_plan_digest","mutation_attempted"):
                 setattr(result,field,executed[field])
+            if semantic_replay:
+                result.execution_disposition = executed["execution_disposition"]
             if executed["success"]:
                 result.status,result.exit_code = "committed_unverified",30
             elif executed["mutation_attempted"]:
                 result.status,result.exit_code = "indeterminate",40
             if not executed["success"]:
                 raise PhaseError(executed["error"] or "bundle.execution_failed")
-        inspected = application.inspect(evidence_root=evidence_root,run_id=run_id,
-            root_bindings={"phase_result_root":target_root}).payload
+        reused = executed["execution_disposition"] == "reused_existing"
+        reference = projection = None
+        if reused and (not semantic_replay or executed["mutation_attempted"] is not False
+            or executed["intent_digest"] is not None or executed["effect_plan_digest"] is not None):
+            raise PhaseError("bundle.evidence_mismatch")
+        if semantic_replay:
+            # Core alone compared every projected captured-input field/scope.
+            # The same inspector now verifies its original owner and projects
+            # the observed manifest; the facade never walks original evidence.
+            response, reference, projection = application._inspect_bundle_with_result(
+                evidence_root=evidence_root,run_id=run_id,
+                root_bindings={"phase_result_root":target_root},
+                _expected_candidate_digest=profile_digest("candidate", candidate))
+            inspected = response.payload
+        else:
+            inspected = application.inspect(evidence_root=evidence_root,run_id=run_id,
+                root_bindings={"phase_result_root":target_root}).payload
         keys = ("run_id","terminal_status","execution_disposition","mutation_attempted",
                 "receipt_digest","intent_digest","effect_plan_digest")
         if not inspected["success"] or not inspected["target_verified"] or any(executed[k] != inspected[k] for k in keys):
             raise PhaseError("bundle.inspection_mismatch")
-        run = evidence_root/".phase/runs"/run_id
-        intent = parse_json_bytes(read_evidence_bytes(run/"intent.json"))
-        plan = parse_json_bytes(read_evidence_bytes(run/"attachments/effect-plan.json"))
-        if (profile_digest("intent",intent) != result.intent_digest
-            or profile_digest("effect-plan",plan) != result.effect_plan_digest
-            or intent["candidate"]["storage"]["value"] != candidate
-            or intent["contract"] != binding or len(plan["effects"]) != 1):
-            raise PhaseError("bundle.evidence_mismatch")
-        effect = plan["effects"][0]
-        if effect["target"] != {"root_binding":"phase_result_root","relative_locator":target_locator}:
-            raise PhaseError("bundle.evidence_mismatch")
-        manifest = parse_manifest(read_metadata(run/"blobs"/effect["content_digest"].removeprefix("sha256:")))
-        if [item["path"] for item in manifest["members"]] != members:
-            raise PhaseError("bundle.evidence_mismatch")
-        result.bundle_digest = effect["content_digest"]
+        if reused:
+            manifest, bundle_digest = _require_bundle_projection(reference, projection,
+                binding=binding,target_locator=target_locator,members=members)
+            result.bundle_digest = bundle_digest
+        else:
+            run = evidence_root/".phase/runs"/run_id
+            intent = parse_json_bytes(read_evidence_bytes(run/"intent.json"))
+            plan = parse_json_bytes(read_evidence_bytes(run/"attachments/effect-plan.json"))
+            if (profile_digest("intent",intent) != result.intent_digest
+                or profile_digest("effect-plan",plan) != result.effect_plan_digest
+                or intent["candidate"]["storage"]["value"] != candidate
+                or intent["contract"] != binding or len(plan["effects"]) != 1):
+                raise PhaseError("bundle.evidence_mismatch")
+            effect = plan["effects"][0]
+            if effect["target"] != {"root_binding":"phase_result_root","relative_locator":target_locator}:
+                raise PhaseError("bundle.evidence_mismatch")
+            manifest = parse_manifest(read_metadata(run/"blobs"/effect["content_digest"].removeprefix("sha256:")))
+            if [item["path"] for item in manifest["members"]] != members:
+                raise PhaseError("bundle.evidence_mismatch")
+            result.bundle_digest = effect["content_digest"]
+
+            if semantic_replay:
+                observed_manifest, observed_digest = _require_bundle_projection(reference, projection,
+                    binding=binding,target_locator=target_locator,members=members)
+                if observed_manifest != manifest or observed_digest != result.bundle_digest:
+                    raise PhaseError("bundle.evidence_mismatch")
         result.member_count = len(members)
         result.total_length = manifest["total_length"]
         result.status,result.success,result.target_verified,result.exit_code = "verified",True,True,0
@@ -145,6 +212,8 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
         result.error = exc.code if isinstance(exc,PhaseError) else "bundle.failure"
         if handed_off and result.receipt_digest is None:
             result.status,result.mutation_attempted,result.exit_code = "indeterminate",None,40
+            if semantic_replay:
+                result.execution_disposition = None
         result.inspection_required = result.status in {"indeterminate","committed_unverified"} or result.error == "bundle.target_exists_inspection_required"
     finally:
         if lock is not None:

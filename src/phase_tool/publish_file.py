@@ -158,6 +158,26 @@ def _require_file_publication_evidence(*, intent, plan, binding, candidate,
         raise PhaseError("publish_file.evidence_mismatch")
 
 
+def _semantic_replay_enabled(application, binding: dict[str, str]) -> bool:
+    """Select only an exact resolved contract policy; no request-selected switch."""
+    from . import __version__
+    from .planning.request_identity import SEMANTIC_REQUEST_POLICY
+    contract = application.registry.resolve_contract(
+        binding["id"], binding["version"], binding["package_digest"],
+        core_version=__version__,
+    )
+    return contract.document["idempotency"]["request_digest_policy_id"] == SEMANTIC_REQUEST_POLICY
+
+
+def _require_reused_file_reference(reference, *, binding, target_locator, content_digest, content_length):
+    """Correlate an inspector-verified CURRENT result, never original evidence I/O."""
+    if (type(reference) is not dict or reference.get("contract") != binding
+        or reference.get("root_binding") != TARGET_ROOT_BINDING
+        or reference.get("locator") != target_locator
+        or reference.get("state") != {"exists": True, "digest": content_digest, "length": content_length, "head_token": None}):
+        raise PhaseError("publish_file.evidence_mismatch")
+
+
 def publish_file(
     application: PhaseApplication,
     *,
@@ -233,10 +253,11 @@ def publish_file(
             result.mutation_attempted = None
             result.exit_code = 40
             raise PhaseError("evidence.run_exists")
-        if destination.exists():
+        binding = application._binding(contract_binding)
+        semantic_replay = _semantic_replay_enabled(application, binding)
+        if destination.exists() and not semantic_replay:
             result.inspection_required = True
             raise PhaseError("publish_file.target_exists_inspection_required")
-        binding = application._binding(contract_binding)
         result.contract_digest = binding["package_digest"]
         candidate, candidate_bytes = _file_publication_candidate(request_id, target_locator)
         # Explicit isolated scratch: callers supply roots, never candidates/blobs.
@@ -291,10 +312,29 @@ def publish_file(
             raise PhaseError(payload["error"] or "publish_file.execution_failed")
         result.status = "committed_unverified"
         result.exit_code = 30
-        inspected = application.inspect(
-            evidence_root=evidence_root, run_id=run_id,
-            root_bindings={TARGET_ROOT_BINDING: target_root},
-        ).payload
+        reused = payload["execution_disposition"] == "reused_existing"
+        reference = None
+        if reused:
+            # Core compared ALL projected frozen-input fields and exact scope
+            # under the original policy before issuing this receipt-only reuse.
+            # These inspector assertions additionally correlate this capture to
+            # the verified original leaf; a payload digest alone is not replay authority.
+            if (not semantic_replay or payload["mutation_attempted"] is not False
+                or payload["intent_digest"] is not None or payload["effect_plan_digest"] is not None):
+                raise PhaseError("publish_file.evidence_mismatch")
+            response, reference = application._inspect_with_result(
+                evidence_root=evidence_root, run_id=run_id,
+                root_bindings={TARGET_ROOT_BINDING: target_root},
+                _expected_candidate_digest=profile_digest("candidate", candidate),
+                _expected_frozen_input=("payload", result.content_digest),
+                _include_canonical_result=True,
+            )
+            inspected = response.payload
+        else:
+            inspected = application.inspect(
+                evidence_root=evidence_root, run_id=run_id,
+                root_bindings={TARGET_ROOT_BINDING: target_root},
+            ).payload
         if not inspected["success"]:
             raise PhaseError(inspected["error"] or "publish_file.inspection_failed")
         compared = _PUBLICATION_EVIDENCE_FIELDS
@@ -302,15 +342,21 @@ def publish_file(
             raise PhaseError("publish_file.evidence_mismatch")
         if inspected["target_verified"] is not True or not result.receipt_digest or payload["terminal_status"] != "succeeded_verified":
             raise PhaseError("publish_file.not_verified")
-        run_root = evidence_root / ".phase" / "runs" / run_id
-        intent = parse_json_bytes(read_evidence_bytes(run_root / "intent.json"))
-        plan = parse_json_bytes(read_evidence_bytes(run_root / "attachments" / "effect-plan.json"))
-        _require_file_publication_evidence(
-            intent=intent, plan=plan, binding=binding, candidate=candidate,
-            intent_digest=result.intent_digest, effect_plan_digest=result.effect_plan_digest,
-            content_digest=result.content_digest, content_length=result.content_length,
-            target_locator=target_locator, request_id=request_id,
-        )
+        if reused:
+            _require_reused_file_reference(
+                reference, binding=binding, target_locator=target_locator,
+                content_digest=result.content_digest, content_length=result.content_length,
+            )
+        else:
+            run_root = evidence_root / ".phase" / "runs" / run_id
+            intent = parse_json_bytes(read_evidence_bytes(run_root / "intent.json"))
+            plan = parse_json_bytes(read_evidence_bytes(run_root / "attachments" / "effect-plan.json"))
+            _require_file_publication_evidence(
+                intent=intent, plan=plan, binding=binding, candidate=candidate,
+                intent_digest=result.intent_digest, effect_plan_digest=result.effect_plan_digest,
+                content_digest=result.content_digest, content_length=result.content_length,
+                target_locator=target_locator, request_id=request_id,
+            )
         result.success = True
         result.status = "verified"
         result.target_verified = True

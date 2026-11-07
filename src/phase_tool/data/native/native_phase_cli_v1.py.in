@@ -53,11 +53,12 @@ def bindings():
     need(os.name=='nt'and sys.version_info[:3]==(3,12,10)and sys.flags.isolated
         and sys.flags.no_site and not sys.flags.optimize and sys.dont_write_bytecode,'fixed isolated Windows CPython3.12.10 required')
     outer=strict(ordinary(HERE/'native-phase.json',2*1024**2))
-    need(outer['native_fixed_startup_version'] in {'1.1','1.2'},'fixed startup version')
+    need(outer['native_fixed_startup_version'] in {'1.1','1.2','2.0'},'fixed startup version')
     raw=base64.b64decode(outer['config_base64'],validate=True)
     manifest=base64.b64decode(outer['manifest_base64'],validate=True)
     need(sha(raw)==outer['config_digest']and sha(manifest)==outer['manifest_digest'],'fixed config/manifest bytes')
     config=strict(raw);need(canon(config)==raw and canon(strict(manifest))==manifest,'canonical fixed configuration')
+    need((outer['native_fixed_startup_version']=='2.0')==(config.get('native_launch_version')=='2.0'),'fixture startup and launch version must match')
     launcher=HERE/'launcher.py';need(Path(config['windows_launcher']).is_absolute()
         and Path(config['windows_launcher']).absolute()==launcher,'only sibling fixed launcher')
     need(sha(ordinary(launcher,2*1024**2))==config['artifact_graph']['launcher_digest'],'exact installed launcher')

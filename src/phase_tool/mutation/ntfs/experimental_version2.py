@@ -28,6 +28,9 @@ class _ExperimentalVersion2Admission(_ExperimentalFile1Admission):
     def document(self):
         _require(type(self.raw) is bytes and len(self.raw)<=32768,'ntfs.experimental_admission_required')
         doc=parse_json_bytes(self.raw,maximum_bytes=32768)
+        if type(doc) is dict and doc.get('experimental_admission_version')=='2.0':
+            from .owner_directory_fixture import fixture_document
+            return fixture_document(self.raw)
         _require(type(doc) is dict and canonical_bytes(doc)==self.raw and set(doc)=={
             'experimental_admission_version','authorization_digest','contract','run_id','request_id',
             'target_locator','candidate_digest','content_digest','content_length','windows_roots','root_grants',
@@ -68,6 +71,9 @@ class _ExperimentalVersion2Admission(_ExperimentalFile1Admission):
         _require(type(binding) is _NativeFileCreateReadBinding and binding.experimental_admission is self,
             'ntfs.experimental_admission_required')
         doc=self.document();manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
+        if doc['experimental_admission_version']=='2.0':
+            from .owner_directory_fixture import check_manifest,captured_binding_view
+            return captured_binding_view(self,check_manifest(type(self),self.raw,manifest,binding.manifest_digest))
         _require(manifest['native_read_installation_version']=='1.5'
             and manifest['installation_id']==self._installation_prefix+self.digest[7:]
             and manifest['contract']==doc['contract'] and manifest['root_grants']==doc['root_grants']
@@ -78,6 +84,9 @@ class _ExperimentalVersion2Admission(_ExperimentalFile1Admission):
     def check_original(self,intent,plan):
         from .intent import _version2_content_binding
         doc=self.document();value=intent['candidate']['storage']['value']
+        if doc['experimental_admission_version']=='2.0':
+            from .owner_directory_fixture import original_binding_view
+            doc=original_binding_view(self,intent,plan)
         content=_version2_content_binding(intent,plan)
         _require(intent['run_id']==plan['run_id']==doc['run_id'] and intent['contract']==plan['contract']==doc['contract']
             and value['idempotency_key']==doc['request_id'] and value['target_locator']==doc['target_locator']

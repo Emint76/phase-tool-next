@@ -248,6 +248,14 @@ def verify_original(binding, run_id, request_id, expected_intent_digest):
     files=native_inventory(binding,run)
     required={'effect-plan.json','pre-validator-results.json','prepared-stage.json',
         'native-parent-failure.json','experimental-admission.json'}
+    from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+    from .owner_directory_fixture import is_fixture
+    admission=binding.experimental_admission
+    if type(admission) is _ExperimentalBundle2AdmissionV3 and is_fixture(admission.raw):
+        # Same Original was parsed by binding.read above. Repeat its actual
+        # scope/capture/intent attachment verification before widening names.
+        admission.verify_attachment(binding,run_id)
+        required.add('experimental-attempt.json')
     actual={name.split('/',1)[1]for name in files if name.startswith('attachments/')}
     # Optional original Core terminal records remain immutable and validated;
     # no arbitrary claimed/actual attachment may be used as a recovery exemption.

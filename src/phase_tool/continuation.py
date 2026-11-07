@@ -56,22 +56,61 @@ def validate_record_schema(registry,contract,resource,value):
         raise PhaseError('recovery.invalid_record')
 
 
-def prepared_value(intent, effect, stage, target_root):
-    info = stage.stat()
+def prepared_record(intent, effect, stage_locator, *, device, inode):
+    """Existing record format from an already checked platform observation.
+
+    Target authority owns the observation. This builder neither opens a target
+    nor substitutes a projected Linux path for a native Windows object.
+    """
     return PreparedStage(run_id=intent['run_id'],request_id=intent['idempotency']['key'],
         request_digest=intent['idempotency']['request_digest'],
         original_intent_digest=profile_digest('intent',intent),effect_plan_digest=intent['effect_plan_digest'],
-        contract=intent['contract'],stage_locator=stage.relative_to(target_root).as_posix(),
-        device=info.st_dev,inode=info.st_ino,content_digest=effect['content_digest'],
+        contract=intent['contract'],stage_locator=stage_locator,
+        device=device,inode=inode,content_digest=effect['content_digest'],
         pre_validator_results_digest=intent['evidence']['pre_validator_results_digest']).model_dump()
+
+
+def prepared_value(intent, effect, stage, target_root):
+    info = stage.stat()
+    return prepared_record(intent,effect,stage.relative_to(target_root).as_posix(),
+                           device=info.st_dev,inode=info.st_ino)
+
+
+def save_prepared_record(intent, effect, value, run, *, _native_store=None, _native_binding=None):
+    """Same durable checkpoint owner for Host and checked native observations.
+
+    The caller must establish the platform identity and deterministic locator.
+    All intent/effect fields are rebuilt here before either existing write.
+    A failure leaves its original partial checkpoint; it never sends an ACK or
+    retries publication. A native caller must read both records before its ACK.
+    """
+    checked = PreparedStage.model_validate(value).model_dump()
+    expected = prepared_record(intent,effect,checked['stage_locator'],
+                               device=checked['device'],inode=checked['inode'])
+    if canonical_bytes(checked) != canonical_bytes(expected):
+        raise PhaseError('recovery.preparation_mismatch')
+    data = canonical_bytes(checked)
+    if _native_store is not None or _native_binding is not None:
+        from .evidence import _write_native_canonical
+        from .prepared_binding import binding_value, requires_preparation_binding
+        if (not requires_preparation_binding(intent) or _native_store is None
+            or _native_binding is None or _native_store.run_root != run):
+            raise PhaseError('ntfs.original_closed_checkpoint_required')
+        # One existing EvidenceStore writer holds both owned parent identities
+        # across these two existing writes and their exact readback. A partial
+        # failure leaves the original records; no replacement or second attempt.
+        _write_native_canonical(_native_store,_native_binding,'prepared-stage-checkpoint',
+            {'prepared':checked,'binding':binding_value(intent,effect,checked)})
+        return digest_bytes(data)
+    _write_bytes_exclusive_atomic(run/'attachments/prepared-stage.json',data,'prepared-stage')
+    from .prepared_binding import save_preparation_binding
+    save_preparation_binding(intent,effect,checked,run)
+    return digest_bytes(data)
 
 
 def save_prepared(intent, effect, stage, target_root, run):
     value = prepared_value(intent,effect,stage,target_root)
-    data = canonical_bytes(value)
-    _write_bytes_exclusive_atomic(run/'attachments/prepared-stage.json',data,'prepared-stage')
-    from .prepared_binding import save_preparation_binding
-    save_preparation_binding(intent,effect,value,run)
+    save_prepared_record(intent,effect,value,run)
 
 
 def write_or_verify(path, value):

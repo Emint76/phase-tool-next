@@ -5,11 +5,12 @@ fingerprints detect ordinary drift, not an atomic snapshot of a hostile writer.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
 import stat
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryFile
 
 from .errors import PhaseError
 from .evidence import _ensure_directory_durable, _reject_existing_links
@@ -153,6 +154,28 @@ def copy_and_hash_stream(binding_id: str, input_root: Path, relative_locator: st
         # Only this invocation's private temporary link; never the retained blob.
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _verified_blob_snapshot(blob: Path, expected: tuple[str, int]):
+    """Borrow one verified anonymous Linux input FD for this context only.
+
+    The trusted caller resolves the frozen blob and expected binding. This
+    helper authenticates neither its caller nor an installation. It copies
+    using the existing fixed file2 cap, verifies the PRIVATE copy completely
+    before yielding, and never reopens the shared blob during consumption.
+    No target, evidence record, wire message or native admission is created.
+    """
+    with TemporaryFile(dir=blob.parent) as snapshot:
+        source = os.open(blob, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            captured = transfer(source, FILE_LIMIT, snapshot.fileno())
+        finally:
+            os.close(source)
+        if captured != expected:
+            raise PhaseError("mechanism.content_binding_mismatch")
+        os.lseek(snapshot.fileno(), 0, os.SEEK_SET)
+        yield snapshot.fileno()
 
 
 def open_regular_target(authority) -> int:

@@ -67,11 +67,18 @@ class BrokerExecutionInterrupted(Exception):
         cause: PhaseError | OSError,
         effect_receipts: list[dict[str, Any]],
         progress_digest: str | None,
+        *,
+        possible_dispatch: bool = False,
     ) -> None:
+        # Internal executor disposition, never inferred from an empty receipt
+        # list or caller request. Existing in-process paths keep the old default.
+        if type(possible_dispatch) is not bool:
+            raise PhaseError("broker.invalid_dispatch_disposition")
         super().__init__(str(cause))
         self.cause = cause
         self.effect_receipts = tuple(effect_receipts)
         self.progress_digest = progress_digest
+        self.possible_dispatch = possible_dispatch
 
 
 def ordered_progress_document(plan: Mapping[str, Any], effect_receipts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -235,9 +242,19 @@ class EffectBroker:
     def __init__(
         self,
         registry: RegistrySnapshot,
-        authority_provider: AuthorityProvider,
+        authority_provider: AuthorityProvider | None,
         authority_profile_binding: GuaranteeProfileBinding | None = None,
+        *, _native_authority: object | None = None,
     ) -> None:
+        self._native_authority = _native_authority
+        if _native_authority is not None:
+            from .ntfs.experimental_file1 import _is_native_authority
+            if (not _is_native_authority(_native_authority)
+                or _native_authority.registry is not registry
+                or _native_authority.profile != authority_profile_binding
+                or authority_provider is not None):
+                raise PhaseError("ntfs.closed_native_installation_required")
+            _native_authority._usable()
         self.registry = registry
         self.authority_provider = authority_provider
         self.authority_profile_binding = authority_profile_binding
@@ -442,7 +459,30 @@ class EffectBroker:
             raise PhaseError("broker.content_blob_mismatch", blob_digest)
         return content
 
-    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest, *, progress=None):
+    def resume_prepared_bundle(self, plan, contract, intent_path, target_root, expected_intent_digest, *, progress=None,
+                               _native_checkpoint=None):
+        if self._native_authority is not None:
+            # Native dispatch precedes EVERY Host/POSIX root or lock operation.
+            from .ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+            from .ntfs.bundle_recovery import _NativeCommitCheckpoint
+            from .ntfs.native import _require
+            authority=self._native_authority
+            _require(type(authority) is _ExperimentalBundle2AuthorityV3
+                and type(_native_checkpoint) is _NativeCommitCheckpoint
+                and _native_checkpoint.binding is authority.read_binding
+                and _native_checkpoint.original['plan']==plan
+                and _native_checkpoint.context['intent_digest']==expected_intent_digest
+                and intent_path==_native_checkpoint.original['run']/'intent.json'
+                and str(target_root)==parse_json_bytes(authority._projections_bytes)['phase_result_root'],
+                'recovery.closed_native_role_required')
+            authority.require_contract(contract)
+            entry=self.registry.resolve_mechanism(plan['mechanism'])
+            descriptor=parse_json_bytes(self.registry.resource_bytes(str(entry['artifact'])))
+            _require(descriptor.get('execution_allowed') is True
+                and descriptor.get('recovery')=='explicit_prepared_commit','recovery.commit_not_authorized')
+            return authority.channel.recover_bundle(_native_checkpoint)
+        if _native_checkpoint is not None:
+            raise PhaseError('recovery.closed_native_role_required')
         from ..continuation_progress import RecoveryProgress, RecoveryRootLock
         from ..continuation import continue_locked
         progress = progress if progress is not None else RecoveryProgress()
@@ -471,8 +511,19 @@ class EffectBroker:
         evidence_root: Path | None = None,
         timestamp: str,
         faults: BrokerFaults | None = None,
+        _native_intent_digest: str | None = None,
     ) -> BrokerExecutionResult:
         active = validate_broker_faults(BrokerFaults() if faults is None else faults)
+        if self._native_authority is not None:
+            # Whole-effect dispatch BEFORE any POSIX target/root/FD validation.
+            # No fake authority descriptors and no request-controlled selector.
+            if active != BrokerFaults():
+                raise PhaseError("ntfs.native_fault_injection_forbidden")
+            return self._native_authority.execute(plan, contract, frozen_inputs, root_bindings,
+                intent_path, timestamp=timestamp, receipt_validator=self._receipt_validator,
+                expected_intent_digest=_native_intent_digest)
+        if _native_intent_digest is not None:
+            raise PhaseError("ntfs.closed_native_installation_required")
         if not intent_path.is_file():
             raise PhaseError("broker.intent_missing")
         locked_plan, intent = self._locked_plan_from_evidence(plan, contract, root_bindings, intent_path)

@@ -55,6 +55,11 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
             raise PhaseError('bundle.unsupported_version')
         selected_binding = 'bundle_create.v2@1.1.0' if publication_version == '2.0' else CONTRACT_BINDING
         result.contract_binding = selected_binding
+        # Host adapters resolve/lock POSIX targets and own scratch cleanup.
+        # Native publication needs prepared Core input and a fresh read-only inspector.
+        from .installation import _NativeFileCreateInstallation
+        if type(getattr(application, 'installation', None)) is _NativeFileCreateInstallation:
+            raise PhaseError('ntfs.high_level_publication_unavailable')
         validate_run_id(run_id)
         if not re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*", request_id) or len(request_id) > 128:
             raise PhaseError("bundle.invalid_request_id")
@@ -88,17 +93,19 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
         result.contract_digest = binding["package_digest"]
         candidate = {"operation_id":request_id,"idempotency_key":request_id,
                      "input_binding":"payload","target_locator":target_locator,"members":members}
+        candidate_bytes = encode_structured_input(candidate)
         # Candidate only; Core fixes all input bytes and creates the bound manifest.
         with TemporaryDirectory(prefix="phase-bundle-",dir=preparation_root) as temporary:
             from tempfile import NamedTemporaryFile
             with NamedTemporaryFile(mode="wb",suffix=".json",dir=temporary,delete=False) as output:
-                output.write(encode_structured_input(candidate))
+                output.write(candidate_bytes)
                 candidate_path = Path(output.name)
             handed_off = True
             executed = application.run("execute",contract_binding=selected_binding,
                 contract_digest=binding["package_digest"],candidate_path=candidate_path,
                 evidence_root=evidence_root,run_id=run_id,input_paths={"payload":source_root},
-                root_bindings={"phase_result_root":target_root}).payload
+                root_bindings={"phase_result_root":target_root},
+                _expected_candidate_bytes=candidate_bytes).payload
             if executed["run_id"] != run_id:
                 result.status, result.mutation_attempted, result.exit_code = "indeterminate", None, 40
                 raise PhaseError(executed["error"] or "bundle.execution_unknown")

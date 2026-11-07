@@ -1,0 +1,198 @@
+"""Stdlib-only caller for one accepted fixed native Phase installation.
+
+Usage: accepted-python -I -S -B -u cli.py execute|inspect REQUEST_JSON|- NEW_CAPTURE_DIR
+Install beside the accepted launcher.py and native-phase.json. Requests use the
+existing {run_id,request} envelope and prepared execute or unary known-run inspect.
+Operational delivery captures are separate from Core receipts and evidence.
+No retry, installation, SDK bridge or worker termination is performed. Outer
+process exit and pipe closure cannot establish native worker quiescence.
+"""
+import base64,errno,hashlib,json,os,re,stat,subprocess,sys,time
+from pathlib import Path
+
+MAX_REQUEST=2*1024**2
+MAX_STDOUT=2*1024**2+10
+MAX_STDERR=512*1024
+HERE=Path(__file__).absolute().parent
+_PENDING_DELIVERY_OWNERS=[]  # Process-local only; never a durable operation owner.
+
+def need(value,message):
+    if not value:raise RuntimeError(message)
+def canon(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')
+def sha(raw):return 'sha256:'+hashlib.sha256(raw).hexdigest()
+def strict(raw):
+    def pairs(items):
+        out={}
+        for key,value in items:
+            need(key not in out,'duplicate JSON member');out[key]=value
+        return out
+    def forbidden(value):raise RuntimeError('noninteger/nonfinite JSON number: '+value)
+    return json.loads(raw,object_pairs_hook=pairs,parse_float=forbidden,parse_constant=forbidden)
+
+def ordinary(path,maximum):
+    path=path.absolute()
+    for part in (*reversed(path.parents),path):
+        info=part.lstat()
+        need(not stat.S_ISLNK(info.st_mode)and not getattr(info,'st_file_attributes',0)&0x400,'reparse/symlink path')
+    info=path.lstat();need(stat.S_ISREG(info.st_mode)and info.st_nlink==1 and info.st_size<=maximum,'bounded ordinary file')
+    raw=path.read_bytes();need(len(raw)==info.st_size,'complete bounded file');return raw
+
+def exclusive(path,raw):
+    with path.open('xb')as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+
+def stdin_request():
+    os.set_blocking(0,False);raw=bytearray();deadline=time.monotonic()+30
+    while time.monotonic()<deadline:
+        try:part=os.read(0,min(65536,MAX_REQUEST+1-len(raw)))
+        except BlockingIOError:time.sleep(.005);continue
+        if not part:return bytes(raw)
+        raw.extend(part);need(len(raw)<=MAX_REQUEST,'bounded stdin request')
+    raise TimeoutError('request stdin deadline')
+
+def bindings():
+    need(os.name=='nt'and sys.version_info[:3]==(3,12,10)and sys.flags.isolated
+        and sys.flags.no_site and not sys.flags.optimize and sys.dont_write_bytecode,'fixed isolated Windows CPython3.12.10 required')
+    outer=strict(ordinary(HERE/'native-phase.json',2*1024**2))
+    need(outer['native_fixed_startup_version'] in {'1.1','1.2'},'fixed startup version')
+    raw=base64.b64decode(outer['config_base64'],validate=True)
+    manifest=base64.b64decode(outer['manifest_base64'],validate=True)
+    need(sha(raw)==outer['config_digest']and sha(manifest)==outer['manifest_digest'],'fixed config/manifest bytes')
+    config=strict(raw);need(canon(config)==raw and canon(strict(manifest))==manifest,'canonical fixed configuration')
+    launcher=HERE/'launcher.py';need(Path(config['windows_launcher']).is_absolute()
+        and Path(config['windows_launcher']).absolute()==launcher,'only sibling fixed launcher')
+    need(sha(ordinary(launcher,2*1024**2))==config['artifact_graph']['launcher_digest'],'exact installed launcher')
+    runtime=config['artifact_graph']['windows'];need(runtime['python_version']=='3.12.10'
+        and sha(ordinary(Path(sys.executable),32*1024**2))==runtime['python_executable_digest'],'exact accepted Python executable')
+    return launcher,outer
+
+def exchange(process,frame):
+    """Bound only the outer launcher pipes; no kill, resend or worker inference."""
+    output=[bytearray(),bytearray()];discarded=[0,0];eof=[False,False]
+    streams=[process.stdout,process.stderr];caps=[MAX_STDOUT,MAX_STDERR]
+    primary=None;secondary=[];offset=0;closed=False;close_failed=False;deadline=time.monotonic()+180
+    def error(value):return {'type':type(value).__name__,'message':str(value),
+        'errno':getattr(value,'errno',None),'winerror':getattr(value,'winerror',None)}
+    def close_input():
+        nonlocal closed,close_failed,primary
+        if closed:return
+        closed=True
+        try:process.stdin.close()
+        except BaseException as value:
+            close_failed=True
+            if primary is None:primary=error(value)
+            else:secondary.append(error(value))
+    try:
+        for stream in (process.stdin,*streams):os.set_blocking(stream.fileno(),False)
+        while time.monotonic()<deadline:
+            if not closed:
+                try:offset+=os.write(process.stdin.fileno(),frame[offset:])
+                except BlockingIOError:pass
+                except OSError as value:primary=error(value);close_input()
+                if not closed and offset==len(frame):close_input()
+            for index,stream in enumerate(streams):
+                if eof[index]:continue
+                try:part=os.read(stream.fileno(),65536)
+                except BlockingIOError:continue
+                except OSError as value:
+                    if value.errno==errno.EPIPE:part=b''
+                    else:raise
+                if not part:eof[index]=True;continue
+                accepted=min(len(part),caps[index]-len(output[index]))
+                output[index].extend(part[:accepted]);discarded[index]+=len(part)-accepted
+            if process.poll()is not None and all(eof):break
+            time.sleep(.005)
+        else:raise TimeoutError('outer delivery deadline; known run remains unresolved')
+    except BaseException as value:
+        if primary is None:primary=error(value)
+        else:secondary.append(error(value))
+    finally:close_input()
+    return bytes(output[0]),bytes(output[1]),{'primary':primary,'secondary':secondary,'discarded':discarded,
+        'eof':eof,'complete':primary is None and not any(discarded)and all(eof),
+        'initial_complete':offset==len(frame),'bytes_sent':offset,'stdin_close_failed':close_failed}
+
+def main():
+    need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect'},'usage: cli.py execute|inspect REQUEST_JSON|- NEW_CAPTURE_DIR')
+    action,source,destination=sys.argv[1:];launcher,outer=bindings()
+    raw=stdin_request()if source=='-'else ordinary(Path(source),MAX_REQUEST)
+    value=strict(raw);need(type(value)is dict and set(value)=={'run_id','request'}
+        and type(value['run_id'])is str and type(value['request'])is dict,'existing request envelope required')
+    request=value['request'];need(request.get('operation')==action,'command/action mismatch')
+    expected={'operation'}if action=='inspect'else{
+        'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'}
+    need(set(request)==expected,'only existing prepared execute/unary inspect request')
+    body=canon(value);need(0<len(body)<=MAX_REQUEST,'bounded canonical request')
+    requested_capture=Path(destination).absolute()
+    need(requested_capture.name not in ('','.','..'),'ordinary new capture leaf required')
+    ordinary_parent=requested_capture.parent
+    for part in (*reversed(ordinary_parent.parents),ordinary_parent):
+        info=part.lstat();need(stat.S_ISDIR(info.st_mode)and not stat.S_ISLNK(info.st_mode)
+            and not getattr(info,'st_file_attributes',0)&0x400,'ordinary existing capture parent required')
+    capture_dir=ordinary_parent.resolve(strict=True)/requested_capture.name
+    need(not capture_dir.is_relative_to(HERE.resolve(strict=True)),'capture directory must be outside installation directory')
+    capture_dir.mkdir();exclusive(capture_dir/'request.json',body)
+    frame=f'{len(body):08x}\n'.encode()+body+b'\n'
+    out=err=b'';process=None;result=None
+    report={'run_id':value['run_id'],'operation':action,'request_sha256':sha(body),'child_delivery':'UNKNOWN',
+        'capture':None,'process_exit':None,'outer_owner_finalization':'UNKNOWN','error':None,
+        'native_worker_quiescence_proven':False,'retry_authorized':False,'manifest_digest':outer['manifest_digest'],
+        'scope':'operational outer delivery only; not receipt/evidence, worker proof or caller ACK'}
+    try:
+        process=subprocess.Popen([sys.executable,'-I','-S','-B','-u',str(launcher),
+            'inspect-parent'if action=='inspect'else'parent'],cwd=str(HERE),
+            env={'SYSTEMROOT':os.environ['SYSTEMROOT'],'WINDIR':os.environ['WINDIR'],'PYTHONDONTWRITEBYTECODE':'1'},
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        _PENDING_DELIVERY_OWNERS.append(process);report['pid']=process.pid
+        out,err,capture=exchange(process,frame);report['capture']=capture;report['process_exit']=process.poll()
+        if all(capture['eof'])and type(process.poll())is int:
+            errors=[]
+            for stream in (process.stdin,process.stdout,process.stderr):
+                try:
+                    if not stream.closed:stream.close()
+                except BaseException as error:errors.append(type(error).__name__)
+            try:
+                if not process._handle.closed:process._handle.Close()
+            except BaseException as error:errors.append(type(error).__name__)
+            if not errors and not capture['stdin_close_failed']and all(stream.closed for stream in (process.stdin,process.stdout,process.stderr))and process._handle.closed:report['outer_owner_finalization']='closed'
+            report['outer_close_errors']=errors
+        need(capture['complete']is True and capture['initial_complete']is True
+            and report['outer_owner_finalization']=='closed','outer capture incomplete; inspect known run')
+        need(re.fullmatch(b'[0-9a-f]{8}\n',out[:9])is not None and out[-1:]==b'\n'
+            and len(out)==int(out[:8],16)+10,'incomplete native delivery frame')
+        native=strict(out[9:-1]);need(canon(native)==out[9:-1]and type(native)is dict
+            and set(native)=={'protocol','version','channel_id','run_id','result','exit_code'}
+            and native['protocol']=='phase.native.command'and native['version']=='1.0'
+            and native['run_id']==value['run_id']and type(native['channel_id'])is str
+            and re.fullmatch('[0-9a-f]{32}',native['channel_id'])is not None,'native envelope correlation')
+        candidate=native['result'];need(type(candidate)is dict and candidate.get('command')==action
+            and candidate.get('run_id')in (None,value['run_id'])
+            and type(native['exit_code'])is int and type(candidate.get('exit_code'))is int
+            and 0<=native['exit_code']<=255 and native['exit_code']==candidate['exit_code']==report['process_exit'],
+            'native command/exit correlation')
+        # Existing parent/Core owns schema and scientific/domain semantics.
+        # Never replace nullable/negative/uncertain fields or synthesize success.
+        result=candidate;report['child_delivery']='COMPLETE_NATIVE_COMMAND_FRAME'
+    except BaseException as error:report['error']={'type':type(error).__name__,'message':str(error)}
+    report.update(stdout_bytes=len(out),stderr_bytes=len(err),stdout_sha256=sha(out),stderr_sha256=sha(err))
+    try:
+        exclusive(capture_dir/'stdout.bin',out);exclusive(capture_dir/'stderr.bin',err)
+        exclusive(capture_dir/'delivery.json',canon(report))
+    except BaseException as error:
+        sys.stderr.buffer.write(canon({'run_id':value['run_id'],'capture_error':type(error).__name__,
+            'stdout_base64':base64.b64encode(out).decode(),'stderr_base64':base64.b64encode(err).decode(),
+            'retry_authorized':False,'message':'Delivery diagnostics incomplete; inspect known run.'})+b'\n')
+        sys.stderr.buffer.flush();return 50
+    if err:sys.stderr.buffer.write(err);sys.stderr.buffer.flush()
+    if result is None:
+        sys.stderr.buffer.write(canon({'run_id':value['run_id'],'child_delivery':'UNKNOWN','retry_authorized':False,
+            'captures':str(capture_dir),'message':'No synthetic command result. Inspect the known run through its fixed reader.'})+b'\n')
+        sys.stderr.buffer.flush();return 50
+    sys.stdout.buffer.write(canon(result)+b'\n');sys.stdout.buffer.flush();return result['exit_code']
+
+if __name__=='__main__':
+    try:status=main()
+    except BaseException as error:
+        try:os.write(2,canon({'error':type(error).__name__,'message':str(error),'retry_authorized':False})+b'\n')
+        except BaseException:pass
+        status=50
+    raise SystemExit(status)

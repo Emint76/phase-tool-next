@@ -110,6 +110,8 @@ def execute_original_with_capture(parent, intent_digest, *, common):
              and context['operation_nonce'] == parent._launch.operation_nonce
              and context['installation_digest'] == parent._launch.installation_digest
              and grant == parent._launch.root_grant, 'ntfs.parent_original_binding_mismatch')
+    if getattr(parent,'_dynamic_a05_test',None) is not None:
+        parent._after_original_read(parsed,intent_digest)
     parent._spawn_attempted = True
     parent._worker = parent._launch.spawn_worker()
     parent._worker_count = 1

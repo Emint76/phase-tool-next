@@ -119,6 +119,7 @@ class _NativeFileCreateReadBinding:
     manifest_digest: str
     registry: object
     experimental_admission: object | None = None
+    _qualification_context: object | None = None
 
     def check_evidence_root(self):
         """Current qualified ext4 identity, shared by readonly native consumers."""
@@ -323,8 +324,15 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
         binding = manifest.get(key)
         _require(type(binding) is dict and set(binding) == {'id', 'version', 'package_digest'}
             and all(type(value) is str for value in binding.values()), 'ntfs.original_installation_shape')
+    context = registry._qualification_context
+    if context is None:
+        snapshot_digest = canonical_digest(registry.to_document())
+    else:
+        from .mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+        _require(type(context) is _CatalogRegistryContext, 'ntfs.history_catalog_context_mismatch')
+        snapshot_digest = context.snapshot_digest(registry)
     _require(manifest.get('registry_snapshot_digest') == registry.digest
-        == canonical_digest(registry.to_document()), 'ntfs.original_registry_mismatch')
+        == snapshot_digest, 'ntfs.original_registry_mismatch')
     binding = manifest['contract']
     version = manifest.get('native_read_installation_version')
     from .mutation.ntfs.bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2
@@ -365,7 +373,8 @@ def _resolve_native_file_create_read_binding(*, manifest_bytes: bytes,
                 'additionalProperties': {'type': 'string', 'minLength': 1}}})
     Draft202012Validator({'$schema': schema['$schema'], '$defs': schema['$defs'],
         'type': 'object', 'properties': properties, 'required': sorted(properties), 'additionalProperties': False},
-        registry=registry.schema_registry(), format_checker=FormatChecker()).validate(manifest)
+        registry=(registry.schema_registry() if context is None else context.manifest_schema_registry(registry)),
+        format_checker=FormatChecker()).validate(manifest)
     _evidence_identity(canonical_bytes(manifest['evidence_identity']))
     root = PurePosixPath(manifest['evidence_root'])
     _require(root.is_absolute() and str(root) == manifest['evidence_root'] and str(root) != '/'
@@ -539,6 +548,9 @@ def _resolve_native_history_bindings(active, raw, expected_digest):
     from .mutation.ntfs.bootstrap import _native_history_manifest_buffers
     from .mutation.ntfs.native import _require
     _require(type(active) is _NativeFileCreateReadBinding,'ntfs.original_read_binding_required')
+    from .mutation.ntfs.qualification_catalog import _QualificationHistoryCatalog, resolve_history_catalog
+    if type(raw) is _QualificationHistoryCatalog:
+        return resolve_history_catalog(active, raw, expected_digest)
     if raw is None and expected_digest is None:
         from .canonical import parse_json_bytes
         _require(not _requires_native_experimental_history(active)
@@ -1134,7 +1146,7 @@ def _native_read_binding_for_launch(launch):
     return binding
 
 
-def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,admission):
+def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,admission, _catalog_context=None):
     """Data-only historical resolver; no launch, channel or current-wheel check."""
     from dataclasses import replace
     from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
@@ -1159,9 +1171,15 @@ def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,
         _ExperimentalHistoryFile1Admission:_native_experimental_history_registry,
         _ExperimentalHistoryVersion1Admission:_native_experimental_history_registry}
     _require(type(admission) in registries,'ntfs.experimental_admission_required')
+    if _catalog_context is None:
+        registry = registries[type(admission)]()
+    else:
+        from .mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+        _require(type(_catalog_context) is _CatalogRegistryContext, 'ntfs.history_catalog_context_mismatch')
+        registry = _catalog_context.registry(type(admission), registries[type(admission)])
     binding=replace(_resolve_native_file_create_read_binding(manifest_bytes=manifest_bytes,
-        expected_manifest_digest=expected_manifest_digest,registry=registries[type(admission)]()),
-        experimental_admission=admission)
+        expected_manifest_digest=expected_manifest_digest,registry=registry),
+        experimental_admission=admission, _qualification_context=_catalog_context)
     admission.check_binding(binding);admission.profile(binding)
     return binding
 

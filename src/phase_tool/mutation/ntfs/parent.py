@@ -75,7 +75,7 @@ class _NativeWindowsParent:
     endpoint obtains the original tuple from existing Core evidence and parser.
     Separate native RO calls are performed by this owner, never by the worker.
     """
-    def __init__(self, launch, core_pipe, *, _prepared_ack_test=None):
+    def __init__(self, launch, core_pipe, *, _prepared_ack_test=None, _dynamic_a05_test=None):
         from .bootstrap import _NativeAcceptedLaunch
         _require(not getattr(self,'_initialization_attempted',False),
             'ntfs.parent_initialization_consumed')
@@ -87,6 +87,12 @@ class _NativeWindowsParent:
                 'ntfs.prepared_ack_test_role_required')
             _prepared_ack_test.check_launch(launch)
         self._prepared_ack_test=_prepared_ack_test
+        if _dynamic_a05_test is not None:
+            from .dynamic_a05_test import _DynamicA05Test
+            _require(type(_dynamic_a05_test) is _DynamicA05Test and _prepared_ack_test is None,
+                'ntfs.dynamic_a05_test_role_required')
+            _dynamic_a05_test.check_launch(launch)
+        self._dynamic_a05_test=_dynamic_a05_test
         self._owner=os.getpid(),threading.get_ident()
         self._launch,self._pipe=launch,core_pipe
         self._sequence=0
@@ -223,6 +229,7 @@ class _NativeWindowsParent:
             and context['installation_digest']==self._launch.installation_digest
             and grant==(self._launch.root_grants if self._version2 else self._launch.root_grant),
             'ntfs.parent_original_binding_mismatch')
+        self._after_original_read(parsed,intent_digest)
         # Consume before Popen, READY parsing or any possible GO. Failed spawn
         # is terminal too; no second worker, fallback or replacement process.
         handshake_deadline=self._file2_exchange_deadline if self._file2 or self._bundle else _deadline() if self._version1 or self._version2 else None
@@ -352,6 +359,19 @@ class _NativeWindowsParent:
                 'worker_completion_wire':captured(self._completion_wire),
                 'possible_dispatch':self._go_attempted,'retry_authorized':False}) from primary
         return partial
+
+    def _after_original_read(self,parsed,intent_digest):
+        """Optional exact test token, after genuine read/binding, before spawn.
+
+        Ordinary owners have no token. This does not change a Core intent,
+        admit a storage route, infer an outcome or rearm a worker/GO slot.
+        """
+        token=getattr(self,'_dynamic_a05_test',None)
+        if token is None:return
+        from .dynamic_a05_test import _DynamicA05Test
+        _require(type(token) is _DynamicA05Test,'ntfs.dynamic_a05_test_role_required')
+        token.original_read_complete(self._launch,parsed,intent_digest,
+            _exchange_deadline_ns=self._file2_exchange_deadline)
 
     def _transfer_file2(self,pipe,parsed,deadline,common):
         """One owned exchange, bounded data forwarding; no worker/GO retry.

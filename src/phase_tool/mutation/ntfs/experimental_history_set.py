@@ -81,6 +81,18 @@ def mixed_history_buffers(raw, expected_digest, *, active_bytes, active_digest):
 
 
 def validate_mixed_history_bindings(active, bindings):
+    from ...installation import _NativeFileCreateReadBinding
+    context = (bindings[0]._qualification_context if type(bindings) is tuple and bindings
+        and type(bindings[0]) is _NativeFileCreateReadBinding else None)
+    if context is None:
+        return _validate_mixed_history_bindings(active,bindings)
+    from .qualification_catalog import _CatalogRegistryContext
+    _require(type(context) is _CatalogRegistryContext,'ntfs.history_catalog_context_mismatch')
+    with context.validation_pass():
+        return _validate_mixed_history_bindings(active,bindings)
+
+
+def _validate_mixed_history_bindings(active, bindings):
     """Validate every exact reader and its complete common physical domain."""
     from pathlib import PurePosixPath
     from ...installation import _NativeFileCreateReadBinding, _native_experimental_read_binding
@@ -90,6 +102,14 @@ def validate_mixed_history_bindings(active, bindings):
     _require(type(active) is _NativeFileCreateReadBinding and type(bindings) is tuple
         and len(bindings) >= 2 and type(active.experimental_admission) in contexts,
         'ntfs.original_history_binding_mismatch')
+    context = None
+    if bindings and type(bindings[0]) is _NativeFileCreateReadBinding:
+        context = bindings[0]._qualification_context
+    if context is not None:
+        from .qualification_catalog import _CatalogRegistryContext
+        _require(type(context) is _CatalogRegistryContext
+            and all(type(row) is _NativeFileCreateReadBinding and row._qualification_context is context for row in bindings),
+            'ntfs.history_catalog_context_mismatch')
     manifests = []
     admissions = []
     current_domains = []
@@ -100,11 +120,16 @@ def validate_mixed_history_bindings(active, bindings):
         _require(type(row) is _NativeFileCreateReadBinding
             and type(row.experimental_admission) in contexts, 'ntfs.original_history_binding_mismatch')
         checked = _native_experimental_read_binding(manifest_bytes=row.manifest_bytes,
-            expected_manifest_digest=row.manifest_digest, admission=row.experimental_admission)
-        _require(type(row.registry) is type(checked.registry)
-            and row.registry.digest == checked.registry.digest
-            and canonical_bytes(row.registry.to_document()) == canonical_bytes(checked.registry.to_document()),
-            'ntfs.original_history_binding_mismatch')
+            expected_manifest_digest=row.manifest_digest, admission=row.experimental_admission, _catalog_context=context)
+        if context is None:
+            _require(type(row.registry) is type(checked.registry)
+                and row.registry.digest == checked.registry.digest
+                and canonical_bytes(row.registry.to_document()) == canonical_bytes(checked.registry.to_document()),
+                'ntfs.original_history_binding_mismatch')
+        else:
+            context.check(row.registry)
+            context.check(checked.registry)
+            _require(row.registry is checked.registry, 'ntfs.original_history_binding_mismatch')
         manifest = parse_json_bytes(row.manifest_bytes, maximum_bytes=2*1024**2)
         admission = row.experimental_admission.check_binding(row)
         row.experimental_admission.profile(row)

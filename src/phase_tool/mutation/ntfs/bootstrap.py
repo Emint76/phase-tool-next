@@ -145,7 +145,7 @@ def _native_experimental_history_buffers(raw, expected_digest, *, active_bytes, 
     return tuple(buffers)
 
 
-def _accepted_launch_history(config, manifest_bytes, manifest_digest):
+def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch=None):
     """Closed config1.0/1.1 preserved; config1.2 is a separate experiment."""
     fields={'native_launch_version','phase_wheel','phase_wheel_digest',
         'dependency_file_digests','windows_launcher','linux_launcher','docker_executable',
@@ -154,6 +154,22 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest):
     _require(type(config) is dict and type(config.get('native_launch_version')) is str,
         'ntfs.accepted_launch_shape')
     version=config['native_launch_version']
+    if version=='1.4':
+        _require(set(config)==fields|{'history_catalog'}, 'ntfs.accepted_launch_shape')
+        _require(type(_launch) is _NativeAcceptedLaunch
+            and _launch._config_bytes == canonical_bytes(config)
+            and _launch._manifest_bytes == manifest_bytes
+            and _launch.installation_digest == manifest_digest,
+            'ntfs.history_catalog_runtime_required')
+        # No acceptance boolean/token: run the actual fixed runtime/wheel check
+        # before reading any catalog file from its trusted artifact namespace.
+        _NativeAcceptedLaunch.check_runtime(_launch)
+        from .qualification_catalog import load_history_catalog
+        _require(type(config['phase_wheel']) is str, 'ntfs.accepted_wheel_required')
+        loaded = load_history_catalog(config['history_catalog'],
+            artifact_root=Path(config['phase_wheel']).parent,
+            active_bytes=manifest_bytes, active_digest=manifest_digest)
+        return loaded, config['history_catalog']['whole_set_digest']
     if version=='1.0':
         _require(set(config)==fields,'ntfs.accepted_launch_shape')
         return None,None
@@ -250,9 +266,9 @@ class _NativeAcceptedLaunch:
         invocation=parse_json_bytes(invocation_bytes,maximum_bytes=2*1024**2)
         _require(type(config) is dict and canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
             and canonical_bytes(invocation)==invocation_bytes,'ntfs.accepted_launch_shape')
-        _require(config.get('native_launch_version') not in {'1.2','1.3'}
+        _require(config.get('native_launch_version') not in {'1.2','1.3','1.4'}
             or _experimental_admission_context is not None,'ntfs.experimental_admission_required')
-        if config.get('native_launch_version') == '1.3':
+        if config.get('native_launch_version') in {'1.3','1.4'}:
             from .experimental_history_set import _mixed_history_contexts
             _require(type(_experimental_admission_context) in _mixed_history_contexts(),
                 'ntfs.experimental_admission_required')
@@ -263,7 +279,14 @@ class _NativeAcceptedLaunch:
                 _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
             _require(shared==(config.get('native_launch_version')=='1.2'),
                 'ntfs.experimental_admission_scope')
-        self._history_manifest_set=_accepted_launch_history(config,manifest_bytes,expected_manifest_digest)
+        if config.get('native_launch_version') == '1.4':
+            # The real check needs only these immutable invocation buffers and
+            # process owner. No channel, target, evidence or process is created.
+            self._owner = os.getpid(), threading.get_ident()
+            self._config_bytes,self._manifest_bytes,self._invocation_bytes = config_bytes,manifest_bytes,invocation_bytes
+            self._manifest_digest = expected_manifest_digest
+        self._history_manifest_set=_accepted_launch_history(config,manifest_bytes,expected_manifest_digest,
+            _launch=self if config.get('native_launch_version') == '1.4' else None)
         _require(type(invocation) is dict and set(invocation)=={'run_id','channel_id','operation_nonce','request'}
             and type(invocation['run_id']) is str
             and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',invocation['run_id']) is not None

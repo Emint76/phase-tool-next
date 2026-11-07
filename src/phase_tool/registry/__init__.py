@@ -41,6 +41,7 @@ class RegistrySnapshot:
         self._document = frozen_document
         self._resources = MappingProxyType({str(name): bytes(data) for name, data in resources.items()})
         self.digest = canonical_digest(frozen_document)
+        self._qualification_context = None
         if frozen_document.get("registry_snapshot_version") != "1.0":
             raise PhaseError("registry.unsupported_snapshot")
         if not isinstance(frozen_document.get("entries"), list):
@@ -51,6 +52,12 @@ class RegistrySnapshot:
         return cls(deepcopy(document), resources)
 
     def to_document(self) -> dict[str, Any]:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.document(self)
         return json.loads(canonical_bytes(self._document).decode("utf-8"))
 
     def contract_bindings(self) -> dict[str, dict[str, str]]:
@@ -194,7 +201,26 @@ class RegistrySnapshot:
         entry = self._schema_entry(schema_ref, digest)
         return parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
 
+    def _check_schema(self, schema) -> None:
+        context = self._qualification_context
+        if context is None:
+            Draft202012Validator.check_schema(schema)
+        else:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            context.check_schema(self, schema)
+
     def schema_registry(self) -> Registry:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.schema_registry(self)
+        return self._schema_registry_uncached()
+
+    def _schema_registry_uncached(self) -> Registry:
         registry = Registry()
         for entry in self._document["entries"]:
             if entry.get("kind") != "schema" or entry.get("current", True) is not True:
@@ -224,7 +250,7 @@ class RegistrySnapshot:
         self._verify_entry(entry)
         vocabulary = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
         vocabulary_schema = self.schema_document("https://phase-tool.local/schemas/mutation-guarantee-vocabulary.schema.json")
-        Draft202012Validator.check_schema(vocabulary_schema)
+        self._check_schema(vocabulary_schema)
         errors = sorted(Draft202012Validator(vocabulary_schema).iter_errors(vocabulary), key=lambda item: list(item.path))
         if errors:
             raise PhaseError("guarantee_vocabulary.schema_invalid", errors[0].message)
@@ -234,6 +260,15 @@ class RegistrySnapshot:
         return deepcopy(vocabulary)
 
     def resolve_guarantee_profile(self, binding: Mapping[str, Any]) -> dict[str, Any]:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.resolve_guarantee_profile(self, binding)
+        return self._resolve_guarantee_profile_uncached(binding)
+
+    def _resolve_guarantee_profile_uncached(self, binding: Mapping[str, Any]) -> dict[str, Any]:
         matches = [
             entry
             for entry in self._document["entries"]
@@ -277,7 +312,7 @@ class RegistrySnapshot:
         if len(schema_bindings) != 1:
             raise PhaseError("guarantee_profile.schema_unbound", descriptor["id"])
         profile_schema = self.schema_document("https://phase-tool.local/" + resource, schema_bindings[0])
-        Draft202012Validator.check_schema(profile_schema)
+        self._check_schema(profile_schema)
         errors = sorted(Draft202012Validator(profile_schema).iter_errors(descriptor), key=lambda item: list(item.path))
         if errors:
             raise PhaseError("guarantee_profile.schema_invalid", errors[0].message)
@@ -291,6 +326,10 @@ class RegistrySnapshot:
         if sorted(conformance) != sorted(provided) or len(conformance) != len(set(conformance)):
             raise PhaseError("guarantee_profile.conformance_incomplete", descriptor["id"])
 
+        self._check_profile_implementation(descriptor)
+        return deepcopy(descriptor)
+
+    def _check_profile_implementation(self, descriptor):
         implementation = descriptor["implementation"]
         prefix = "phase_tool/"
         artifact = implementation["artifact"]
@@ -299,7 +338,6 @@ class RegistrySnapshot:
         implementation_bytes = package_resources.files("phase_tool").joinpath(artifact[len(prefix) :]).read_bytes()
         if digest_bytes(implementation_bytes) != implementation["artifact_digest"]:
             raise PhaseError("guarantee_profile.implementation_digest_mismatch", descriptor["id"])
-        return deepcopy(descriptor)
 
     def resolve_contract_hook(self, binding: Mapping[str, Any]) -> dict[str, Any]:
         entry = self._resolve_binding(kind="contract_hook", binding=binding, capability="contract_hook")
@@ -309,6 +347,15 @@ class RegistrySnapshot:
         return descriptor
 
     def resolve_contract(self, identifier: str, version: str, package_digest: str, *, core_version: str) -> ResolvedContract:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.resolve_contract(self, identifier, version, package_digest, core_version=core_version)
+        return self._resolve_contract_uncached(identifier, version, package_digest, core_version=core_version)
+
+    def _resolve_contract_uncached(self, identifier: str, version: str, package_digest: str, *, core_version: str) -> ResolvedContract:
         matches = self._exact_entries(kind="contract", identifier=identifier, version=version, package_digest=package_digest)
         if not matches:
             raise PhaseError("registry.entry_not_found", f"{identifier}@{version}")
@@ -332,7 +379,7 @@ class RegistrySnapshot:
             if len(matches) != 1:
                 raise PhaseError("contract.schema_unbound")
             contract_schema = self.schema_document("https://phase-tool.local/" + resource, matches[0])
-        Draft202012Validator.check_schema(contract_schema)
+        self._check_schema(contract_schema)
         errors = sorted(Draft202012Validator(contract_schema, format_checker=FormatChecker()).iter_errors(contract), key=lambda item: list(item.path))
         if errors:
             raise PhaseError("contract.schema_invalid", errors[0].message)

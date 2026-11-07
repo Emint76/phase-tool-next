@@ -1143,10 +1143,14 @@ class PhaseCore:
         try:
             native_history={}
             if native_authority is not None:
-                from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
-                    _ExperimentalHistoryVersion1Admission)
-                if type(native_authority.read_binding.experimental_admission) in (
-                        _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission):
+                from .installation import _NativeFileCreateInstallation
+                from .mutation.ntfs.experimental_file1 import _is_native_authority
+                if (type(self.installation) is not _NativeFileCreateInstallation
+                        or not _is_native_authority(native_authority)
+                        or self.installation.authority is not native_authority
+                        or native_authority.read_binding is not self.installation.read_binding):
+                    raise PhaseError('ntfs.closed_native_installation_required')
+                if self.installation.history_bindings is not None:
                     native_history['_native_history_bindings']=self.installation.history_bindings
             reused = self._check_idempotency(store, contract, self.registry, key, scope_digest, request_digest, request.root_bindings, execute=execute, _native_authority=native_authority,**native_history)
             if execute and reused is not None:

@@ -420,13 +420,18 @@ def run_native_original(launch):
     return 0
 
 
-def run_native_parent(launch, *, _prepared_ack_test=None):
+def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None):
     from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
     if _prepared_ack_test is not None:
         _require(type(_prepared_ack_test) is _FailFirstPreparedAck,
             'ntfs.prepared_ack_test_role_required')
         _prepared_ack_test.check_launch(launch)
+    if _dynamic_a05_test is not None:
+        from .dynamic_a05_test import _DynamicA05Test
+        _require(type(_dynamic_a05_test) is _DynamicA05Test and _prepared_ack_test is None,
+            'ntfs.dynamic_a05_test_role_required')
+        _dynamic_a05_test.check_launch(launch)
     launch.check_runtime()
     process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())
     witness=pipe=None
@@ -436,8 +441,11 @@ def run_native_parent(launch, *, _prepared_ack_test=None):
         witness=WindowsProcessWitness(process)
         pipe=launch._pipe(process)
         pipe.send_frame(launch._invocation_bytes,time.perf_counter_ns()+30_000_000_000)
-        owner=(_NativeWindowsParent(launch,pipe) if _prepared_ack_test is None else
-            _NativeWindowsParent(launch,pipe,_prepared_ack_test=_prepared_ack_test))
+        if _dynamic_a05_test is not None:
+            owner=_NativeWindowsParent(launch,pipe,_dynamic_a05_test=_dynamic_a05_test)
+        else:
+            owner=(_NativeWindowsParent(launch,pipe) if _prepared_ack_test is None else
+                _NativeWindowsParent(launch,pipe,_prepared_ack_test=_prepared_ack_test))
         response=owner.serve()
     except BaseException as error:primary=error
     finally:

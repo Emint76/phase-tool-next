@@ -34,7 +34,9 @@ def _run_native_file_create(core, request, *, execute, faults):
     context = _NativeRunContext(native_authority=authority)
     secondary = []
     try:
-        return _run_admitted(core, request, execute=execute, context=context, secondary=secondary)
+        from .common_flock_test import _take_common_flock_test
+        test=_take_common_flock_test(installed.read_binding,request.run_id)
+        return _run_admitted(core, request, execute=execute, context=context, secondary=secondary, _common_flock_test=test)
     except BaseException as primary:
         # Covers lock/worker/validation AND proof/receipt publication failures,
         # including a visible receipt whose final durability acknowledgement failed.
@@ -42,7 +44,7 @@ def _run_native_file_create(core, request, *, execute, faults):
             authority=authority, primary=primary, secondary=secondary) from primary
 
 
-def _run_admitted(core, request, *, execute, context, secondary):
+def _run_admitted(core, request, *, execute, context, secondary, _common_flock_test=None):
     from ...core import PhaseOutcome, _NativeRunContext, _guard_native_original_intents
     from ...evidence import validate_receipt, _write_native_canonical
     from ...installation import _NativeFileCreateInstallation
@@ -57,7 +59,7 @@ def _run_admitted(core, request, *, execute, context, secondary):
     primary = None
     outcome = None
     try:
-        with _guard_native_original_intents(installed.read_binding,history_bindings=installed.history_bindings):
+        with _guard_native_original_intents(installed.read_binding,history_bindings=installed.history_bindings, _common_flock_test=_common_flock_test):
             try:
                 outcome = core._run_lifecycle(request, execute=execute, native_ctx=context)
                 # Core may prepare an indeterminate terminal from interruption.
@@ -79,6 +81,8 @@ def _run_admitted(core, request, *, execute, context, secondary):
                 raise primary
         # Only after the context manager's real __exit__ completed successfully.
         context.common_guard_finalized = True
+        if _common_flock_test is not None:
+            _common_flock_test.guard_return()
     except BaseException as error:
         if primary is not None and error is not primary:
             secondary.append(error)

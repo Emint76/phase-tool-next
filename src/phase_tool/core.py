@@ -42,9 +42,14 @@ CORE_BINDING = {
 
 
 class _OperationalFileLock:
-    def __init__(self, path: Path, *, _checked_release: bool = False) -> None:
+    def __init__(self, path: Path, *, _checked_release: bool = False, _common_flock_test=None) -> None:
         if type(_checked_release) is not bool:
             raise PhaseError("lock.invalid_checked_mode")
+        if _common_flock_test is not None:
+            from .mutation.ntfs.common_flock_test import _CommonCoreFlockTest
+            if type(_common_flock_test) is not _CommonCoreFlockTest or not _checked_release:
+                raise PhaseError("ntfs.c01_flock_test_type")
+        self._common_flock_test=_common_flock_test
         self.path = path
         self._stream = None
         self._checked_release = _checked_release
@@ -105,10 +110,14 @@ class _OperationalFileLock:
         descriptor = self._checked_fd
         try:
             deadline = time.monotonic() + _OPERATIONAL_LOCK_TIMEOUT_SECONDS
+            if self._common_flock_test is not None:
+                self._common_flock_test.bind_lock(self.path,descriptor,self._checked_parent_identity,self._checked_identity,deadline)
             while True:
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError as error:
+                    if self._common_flock_test is not None:
+                        self._common_flock_test.acquire_return(descriptor,False,error.errno)
                     if error.errno not in {errno.EINTR, errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
                         raise
                     remaining = deadline - time.monotonic()
@@ -117,7 +126,11 @@ class _OperationalFileLock:
                     if error.errno != errno.EINTR:
                         time.sleep(min(_OPERATIONAL_LOCK_RETRY_SECONDS, remaining))
                 else:
+                    if self._common_flock_test is not None:
+                        self._common_flock_test.acquire_return(descriptor,True,None)
                     self._check_checked_namespace()
+                    if self._common_flock_test is not None:
+                        self._common_flock_test.acquired(descriptor)
                     return self
         except BaseException as primary:
             # May have acquired before a namespace-check failure. Finalize this
@@ -145,9 +158,21 @@ class _OperationalFileLock:
             errors.append(error)
         else:
             try: fcntl.flock(descriptor, fcntl.LOCK_UN)
-            except BaseException as error: errors.append(error)
+            except BaseException as error:
+                errors.append(error)
+                if self._common_flock_test is not None:
+                    self._common_flock_test.unlock_return(descriptor,False,getattr(error,'errno',None))
+            else:
+                if self._common_flock_test is not None:
+                    self._common_flock_test.unlock_return(descriptor,True,None)
             try: os.close(descriptor)
-            except BaseException as error: errors.append(error)
+            except BaseException as error:
+                errors.append(error)
+                if self._common_flock_test is not None:
+                    self._common_flock_test.close_return(descriptor,False,getattr(error,'errno',None))
+            else:
+                if self._common_flock_test is not None:
+                    self._common_flock_test.close_return(descriptor,True,None)
         self._checked_secondary(primary, errors)
 
     def __enter__(self) -> "_OperationalFileLock":
@@ -1490,7 +1515,7 @@ class PhaseCore:
 
 
 @contextmanager
-def _guard_native_original_intents(read_binding, *, history_bindings=None, _recovery_selection=None):
+def _guard_native_original_intents(read_binding, *, history_bindings=None, _recovery_selection=None, _common_flock_test=None):
     """Unselected refusal barrier over existing Core evidence, not authority.
 
     A future trusted native entrypoint must acquire this BEFORE EvidenceStore
@@ -1834,7 +1859,7 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
         # Purpose is fixed in code, never a request key/nonce/run/installation ID.
         lock_path=operational_lock_path(phase/'locks',digest_bytes(b'phase.native-original-intents.v1'))
         anchors[lock_path.parent]=safe_info(lock_path.parent,directory=True)
-        with _OperationalFileLock(lock_path, _checked_release=True) as lock:
+        with _OperationalFileLock(lock_path, _checked_release=True, _common_flock_test=_common_flock_test) as lock:
             try:
                 opened=os.fstat(lock.fileno())
                 lock_identity=(opened.st_dev,opened.st_ino)
@@ -1843,6 +1868,8 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
                     _require(safe_info(lock_path,directory=False)==lock_identity,
                         'ntfs.original_evidence_identity_mismatch')
                 check_lock()
+                if _common_flock_test is not None:
+                    _common_flock_test.before_history(lock.fileno())
                 check_history();check_lock()
                 try:
                     yielded=True

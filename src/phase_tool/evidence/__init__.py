@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
+import time
 import errno
 import os
 import re
 import stat
 import sysconfig
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -143,6 +146,56 @@ def _read_qualification_catalog_chunk(path, maximum_bytes):
         return data
     finally:
         os.close(descriptor)
+
+
+def _write_owned_stderr_bytes(raw, deadline):
+    """Bounded raw bytes on the current owned stderr pipe; no native policy.
+
+    Caller supplies one existing absolute monotonic deadline. This does not
+    create a receipt, prove process exit or acknowledge final result delivery.
+    Descriptor2 is borrowed, never closed; its original mode is restored only
+    while the same declared descriptor identity is still present.
+    """
+    import select
+    import time
+    def remaining():
+        value=deadline-time.monotonic()
+        if not value>0:raise PhaseError('evidence.raw_stderr_deadline')
+        return value
+    if type(raw) is not bytes or not 0<len(raw)<=128*1024 or type(deadline) is not float or not 0<deadline-time.monotonic()<=30:
+        raise PhaseError('evidence.raw_stderr_bound')
+    info=os.fstat(2)
+    if not stat.S_ISFIFO(info.st_mode):raise PhaseError('evidence.raw_stderr_pipe_required')
+    identity=(info.st_dev,info.st_ino);old=os.get_blocking(2)
+    offset=0;primary=None;finalization=None;mode_attempted=False
+    def same_descriptor():
+        current=os.fstat(2)
+        if not stat.S_ISFIFO(current.st_mode) or (current.st_dev,current.st_ino)!=identity:
+            raise PhaseError('evidence.raw_stderr_descriptor_changed')
+    try:
+        mode_attempted=True;os.set_blocking(2,False)
+        while offset<len(raw):
+            poll=select.poll();poll.register(2,select.POLLOUT)
+            events=poll.poll(max(0,int(remaining()*1000)))
+            if not events or any(fd!=2 or not flags&select.POLLOUT or flags&(select.POLLERR|select.POLLNVAL) for fd,flags in events):
+                raise PhaseError('evidence.raw_stderr_not_ready')
+            remaining();same_descriptor()
+            try:count=os.write(2,raw[offset:offset+4096])
+            except BlockingIOError:continue
+            if count<=0:raise PhaseError('evidence.raw_stderr_no_progress')
+            offset+=count;remaining()
+    except BaseException as error:primary=error
+    finally:
+        if mode_attempted:
+            try:
+                same_descriptor() # Never restore flags on a reused foreign fd.
+                os.set_blocking(2,old)
+            except BaseException as error:finalization=error
+    if primary is not None and finalization is not None:
+        raise BaseExceptionGroup('raw stderr delivery and mode finalization failed',[primary,finalization])
+    if primary is not None:raise primary
+    if finalization is not None:raise finalization
+    remaining()
 
 def evidence_file_exists(path: Path) -> bool:
     return os.path.isfile(_platform_path(path))
@@ -1294,3 +1347,271 @@ def _write_native_canonical(store,binding,relative,value):
                     except BaseException:pass
     if primary is not None:raise primary
     return result
+
+
+class _RegularTreeReadError(RuntimeError):
+    def __init__(self, code, details=None):
+        self.code = code
+        self.details = {} if details is None else details
+        super().__init__(code + ('' if not self.details else ' ' + json.dumps(self.details, sort_keys=True, separators=(',', ':'))))
+
+def _tree_require(value, code, details=None):
+    if not value:
+        raise _RegularTreeReadError(code, details)
+
+class _RegularTreeOSIO:
+    def lstat(self, path):
+        return path.lstat()
+
+    def names(self, path, maximum):
+        found = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                _tree_require(len(found) < maximum, 'file_tree.entry_limit')
+                found.append(entry.name)
+        return tuple(found)
+
+    def open_read(self, path):
+        return os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0)
+                       | getattr(os, 'O_NOINHERIT', 0) | getattr(os, 'O_CLOEXEC', 0)
+                       | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+
+    def fstat(self, handle):
+        return os.fstat(handle)
+
+    def read(self, handle, count):
+        return os.read(handle, count)
+
+    def close(self, handle):
+        os.close(handle)
+
+class _RegularTreeCountedIO:
+    def __init__(self, io, deadline_ns):
+        self.io = io
+        self.deadline_ns = deadline_ns
+        self.counts = {name: 0 for name in ('lstat', 'names', 'open_read', 'fstat', 'read', 'close')}
+
+    def remaining(self):
+        _tree_require(time.monotonic_ns() < self.deadline_ns, 'file_tree.deadline')
+
+    def call(self, name, *args):
+        # Cleanup is compulsory even after the fixed operation deadline. A late
+        # close is a failed observation, never a successful extended operation.
+        if name != 'close':
+            self.remaining()
+        self.counts[name] += 1
+        value = getattr(self.io, name)(*args)
+        self.remaining()
+        return value
+
+def _tree_ordinary(info, *, directory):
+    _tree_require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400,
+                  'file_tree.reparse_forbidden')
+    _tree_require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode),
+                  'file_tree.ordinary_type_required')
+    if not directory:
+        _tree_require(info.st_nlink == 1, 'file_tree.hardlink_forbidden')
+
+def _tree_identity(info, windows):
+    fields = (info.st_dev, info.st_ino, info.st_mode)
+    if windows:
+        _tree_require(hasattr(info, 'st_birthtime_ns'), 'file_tree.birthtime_required')
+        fields += (info.st_birthtime_ns,)
+    return fields
+
+def _tree_state(info, windows):
+    # Full mode and ctime remain in every SAME-METHOD before/after comparison.
+    return _tree_identity(info, windows) + (info.st_nlink, info.st_size, info.st_mtime_ns,
+        info.st_ctime_ns, getattr(info, 'st_file_attributes', 0), getattr(info, 'st_reparse_tag', 0))
+
+def _tree_cross(info, windows):
+    # Measured CPython3.12 Windows lstat/fstat executable-bit and ctime variance
+    # is confined to this CROSS-METHOD comparison. Identity is not normalized.
+    identity = ((info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_birthtime_ns)
+                if windows else _tree_identity(info, windows))
+    return identity + (info.st_nlink, info.st_size, info.st_mtime_ns)
+
+def _tree_expected(document, maximum_files, maximum_file_bytes, maximum_total_bytes):
+    if document is None:
+        return None
+    _tree_require(type(document) is dict and len(document) <= maximum_files, 'file_tree.manifest_shape')
+    checked = {}
+    total = 0
+    for name, row in document.items():
+        _tree_require(type(name) is str and name and '\\' not in name and ':' not in name and '\x00' not in name,
+                      'file_tree.relative_member_required')
+        path = PurePosixPath(name)
+        _tree_require(not path.is_absolute() and str(path) == name
+                      and all(part not in {'', '.', '..'} for part in path.parts), 'file_tree.member_escape')
+        _tree_require(type(row) is dict and set(row) == {'bytes', 'sha256'}
+                      and type(row['bytes']) is int and 0 <= row['bytes'] <= maximum_file_bytes
+                      and type(row['sha256']) is str and len(row['sha256']) == 71
+                      and row['sha256'].startswith('sha256:')
+                      and all(ch in '0123456789abcdef' for ch in row['sha256'][7:]), 'file_tree.manifest_row')
+        total += row['bytes']
+        _tree_require(total <= maximum_total_bytes, 'file_tree.total_limit')
+        checked[name] = dict(row)
+    _tree_require(len({name.casefold() for name in checked}) == len(checked), 'file_tree.case_alias')
+    return checked
+
+def _hash_regular_tree_member(io, path, before, expected, windows):
+    _tree_ordinary(before, directory=False)
+    _tree_require(before.st_size == expected['bytes'], 'file_tree.initial_length')
+    handle = None
+    primary = finalization = opened_after = None
+    size = 0
+    hasher = hashlib.sha256()
+    try:
+        # Store the owned handle BEFORE the post-open deadline check. An open
+        # returning after the deadline must still be closed exactly once.
+        io.remaining()
+        io.counts['open_read'] += 1
+        handle = io.io.open_read(path)
+        io.remaining()
+        opened_before = io.call('fstat', handle)
+        _tree_ordinary(opened_before, directory=False)
+        _tree_require(_tree_cross(before, windows) == _tree_cross(opened_before, windows),
+                      'file_tree.named_opened_identity', {'named_cross': _tree_cross(before, windows),
+                                                        'opened_cross': _tree_cross(opened_before, windows)})
+        while True:
+            part = io.call('read', handle, min(65536, expected['bytes'] - size + 1))
+            _tree_require(type(part) is bytes, 'file_tree.binary_read_required')
+            if not part:
+                break
+            size += len(part)
+            _tree_require(size <= expected['bytes'], 'file_tree.grew_during_read')
+            hasher.update(part)
+        opened_after = io.call('fstat', handle)
+        _tree_ordinary(opened_after, directory=False)
+        _tree_require(_tree_state(opened_before, windows) == _tree_state(opened_after, windows),
+                      'file_tree.opened_changed')
+        _tree_require(size == expected['bytes'], 'file_tree.complete_length')
+        if expected['sha256'] is not None:
+            _tree_require('sha256:' + hasher.hexdigest() == expected['sha256'], 'file_tree.complete_hash')
+    except BaseException as error:
+        primary = error
+    finally:
+        if handle is not None:
+            owned, handle = handle, None
+            try:
+                io.call('close', owned)
+            except BaseException as error:
+                finalization = error
+    if primary is not None and finalization is not None:
+        raise BaseExceptionGroup('file-tree read and owned-handle finalization failed', [primary, finalization])
+    if primary is not None:
+        raise primary
+    if finalization is not None:
+        raise finalization
+    after = io.call('lstat', path)
+    _tree_ordinary(after, directory=False)
+    _tree_require(_tree_state(before, windows) == _tree_state(after, windows)
+                  and _tree_cross(before, windows) == _tree_cross(opened_after, windows) == _tree_cross(after, windows),
+                  'file_tree.named_changed')
+    return {'bytes': size, 'sha256': 'sha256:' + hasher.hexdigest()}, _tree_state(after, windows)
+
+def _snapshot_regular_file_tree(root, *, expected_files, maximum_files, maximum_directories,
+                                maximum_file_bytes, maximum_total_bytes, deadline_ns,
+                                _io=None, _windows=None):
+    """Bounded generic no-follow identity census and COMPLETE byte hashes.
+
+    expected_files=None captures a fresh bounded snapshot; callers still own
+    comparison/admission policy. A supplied manifest requires exact membership,
+    sizes and hashes. Every observation gets fresh IO. No cross-run cache.
+    The caller supplies one existing absolute monotonic deadline; it is never
+    renewed. Post-failure handle closure is compulsory and cannot rescue expiry.
+    """
+    for value in (maximum_files, maximum_directories, maximum_file_bytes, maximum_total_bytes, deadline_ns):
+        _tree_require(type(value) is int and value > 0, 'file_tree.invalid_bound')
+    _tree_require(maximum_files <= 8192 and maximum_directories <= 8192
+                  and maximum_file_bytes <= 16 * 1024**2 and maximum_total_bytes <= 256 * 1024**2,
+                  'file_tree.boundary_limit')
+    root = Path(root)
+    _tree_require(root.is_absolute() and root == Path(os.path.abspath(root)), 'file_tree.absolute_root')
+    windows = os.name == 'nt' if _windows is None else _windows
+    _tree_require(type(windows) is bool, 'file_tree.fixed_host_method')
+    wanted = _tree_expected(expected_files, maximum_files, maximum_file_bytes, maximum_total_bytes)
+    io = _RegularTreeCountedIO(_RegularTreeOSIO() if _io is None else _io, deadline_ns)
+    io.remaining()
+    anchors = {}
+    directories = {}
+    memberships = {}
+    named_before = {}
+    observed = {}
+    file_states = {}
+    total = 0
+    for path in (*reversed(root.parents), root):
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=True)
+        anchors[path] = _tree_identity(info, windows)
+        if path == root:
+            directories[path] = _tree_state(info, windows)
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        names = io.call('names', directory, maximum_files + maximum_directories)
+        _tree_require(type(names) is tuple and len(names) <= maximum_files + maximum_directories
+                      and len(names) == len(set(names)), 'file_tree.entry_limit')
+        _tree_require(all(type(name) is str and name not in {'', '.', '..'} and '/' not in name
+                          and '\\' not in name and ':' not in name and '\x00' not in name for name in names),
+                      'file_tree.ordinary_component')
+        _tree_require(len({name.casefold() for name in names}) == len(names), 'file_tree.case_alias')
+        memberships[directory] = frozenset(names)
+        for name in sorted(names, key=lambda value: value.encode('utf-8')):
+            path = directory / name
+            info = io.call('lstat', path)
+            if stat.S_ISDIR(info.st_mode):
+                _tree_ordinary(info, directory=True)
+                _tree_require(path not in directories and len(directories) < maximum_directories,
+                              'file_tree.directory_limit')
+                directories[path] = _tree_state(info, windows)
+                pending.append(path)
+                continue
+            _tree_ordinary(info, directory=False)
+            relative = path.relative_to(root).as_posix()
+            _tree_require(relative not in named_before and len(named_before) < maximum_files,
+                          'file_tree.file_limit')
+            _tree_require(0 <= info.st_size <= maximum_file_bytes, 'file_tree.file_byte_limit')
+            total += info.st_size
+            _tree_require(total <= maximum_total_bytes, 'file_tree.total_limit')
+            if wanted is not None:
+                _tree_require(relative in wanted and info.st_size == wanted[relative]['bytes'],
+                              'file_tree.initial_membership_length')
+            named_before[relative] = info
+    if wanted is not None:
+        _tree_require(set(named_before) == set(wanted), 'file_tree.initial_membership')
+    # ALL directory/file identities precede the first hash, including siblings.
+    for relative in sorted(named_before, key=lambda value: value.encode('utf-8')):
+        before = named_before[relative]
+        expected = ({'bytes': before.st_size, 'sha256': None} if wanted is None else wanted[relative])
+        try:
+            row, after = _hash_regular_tree_member(io, root / PurePosixPath(relative), before, expected, windows)
+        except BaseException as error:
+            error.add_note('file_tree_context=' + json.dumps({'relative_file': relative,
+                'operation_counts': dict(io.counts)}, sort_keys=True, separators=(',', ':')))
+            raise
+        observed[relative] = row
+        file_states[root / PurePosixPath(relative)] = after
+    if wanted is not None:
+        _tree_require(observed == wanted, 'file_tree.final_manifest')
+    for path, snapshot in directories.items():
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=True)
+        _tree_require(_tree_state(info, windows) == snapshot, 'file_tree.directory_changed')
+        names = io.call('names', path, maximum_files + maximum_directories)
+        _tree_require(type(names) is tuple and len(names) == len(set(names))
+                      and frozenset(names) == memberships[path], 'file_tree.membership_changed')
+    for path, snapshot in file_states.items():
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=False)
+        _tree_require(_tree_state(info, windows) == snapshot, 'file_tree.file_changed_after_hash')
+    for path, snapshot in anchors.items():
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=True)
+        _tree_require(_tree_identity(info, windows) == snapshot, 'file_tree.ancestor_changed')
+    io.remaining()
+    return {'scope': 'READ_ONLY_REGULAR_FILE_TREE_SNAPSHOT_NOT_PHASE_EVIDENCE', 'files': observed,
+        'file_count': len(observed), 'directory_count': len(directories), 'byte_count': total,
+        'operation_counts': dict(io.counts),
+        'all_opened_file_descriptors_closed': io.counts['open_read'] == io.counts['close'],
+        'deadline_ns': deadline_ns, 'cross_run_cache': False}

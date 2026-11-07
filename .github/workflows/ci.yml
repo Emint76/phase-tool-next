@@ -65,7 +65,7 @@ jobs:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           EVIDENCE: ${{ runner.temp }}/phase-next-evidence
         run: |
-          TMPDIR="$RUNNER_TEMP/phase-host-test-temp"
+          TMPDIR="$RUNNER_TEMP/pf"
           test ! -e "$TMPDIR"
           mkdir "$TMPDIR"
           export TMPDIR

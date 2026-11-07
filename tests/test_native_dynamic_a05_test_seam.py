@@ -126,7 +126,7 @@ def token(launch):
     return module._DynamicA05Test(launch, _initial_deadline_ns=time.perf_counter_ns()+25_000_000_000)
 
 
-def test_fixture_exact_source_is_code_pinned_and_normal_startup_unmodified():
+def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     need = RESOURCE.read_bytes()
     assert digest_bytes(need) == module._LAUNCHER_DIGEST
     ordinary = RESOURCE.parents[1]/'../src/phase_tool/data/native/native_phase_candidate_launcher_v1.py.in'
@@ -135,8 +135,26 @@ def test_fixture_exact_source_is_code_pinned_and_normal_startup_unmodified():
     normal_functions = {n.name: n for n in normal.body if isinstance(n, ast.FunctionDef)}
     fixed_functions = {n.name: n for n in fixed.body if isinstance(n, ast.FunctionDef)}
     assert normal_functions.keys() == fixed_functions.keys()
+    # The historical A05 launcher stays byte-pinned at startup1.1/1.2.
+    # Owner-directory startup2.0 deliberately changed exactly these three
+    # helpers. Pin both complete ASTs, including every admission check;
+    # compare every other helper directly. Empty type_params is the
+    # sole AST serialization difference between CPython3.11 and3.12.
+    from hashlib import sha256
+    reviewed_owner_delta = {'fixed_admission': {'ordinary': 'd082dbeed29c14761a76a535d3e344e41490efdfc6c067b6b345d834b8548953', 'historical_a05': 'b0ec48f145a99e1e5f2b77885212a799a2f3def65afd1e3cb6c5fde2a2742f49'}, 'fixed_startup': {'ordinary': '757c02fc6e32ee8743d16e74ec10dfbfacc4bafe84993dc3b23d18619bbd2112', 'historical_a05': 'a3a96a44d8ecc92ec55350fc4aed159ab838a2ac29f99005aec36d5f3592c53d'}, 'fixed_startup_version': {'ordinary': 'b42849d5d27d35b4fd1837013dc8e4a2ede3bf0538d69b52018e197d0ce3bc76', 'historical_a05': '0ab49cbb580624cd803b3d29a6729ca3a02f2be71b068bf688f8eed241bd2f7d'}}
+    def stable_ast(node):
+        normalized = deepcopy(node)
+        for part in ast.walk(normalized):
+            if isinstance(part, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and getattr(part, 'type_params', None) == []:
+                delattr(part, 'type_params')
+        return ast.dump(normalized, include_attributes=False)
     for name in normal_functions.keys()-{'main'}:
-        assert ast.dump(normal_functions[name]) == ast.dump(fixed_functions[name]), name
+        if name in reviewed_owner_delta:
+            expected = reviewed_owner_delta[name]
+            assert sha256(stable_ast(normal_functions[name]).encode()).hexdigest() == expected['ordinary'], name
+            assert sha256(stable_ast(fixed_functions[name]).encode()).hexdigest() == expected['historical_a05'], name
+        else:
+            assert stable_ast(normal_functions[name]) == stable_ast(fixed_functions[name]), name
     assert not any(isinstance(n, ast.Name) and n.id == '_DynamicA05Test' for n in ast.walk(normal))
     calls = [n for n in ast.walk(fixed_functions['main']) if isinstance(n, ast.Call)
              and any(k.arg == '_dynamic_a05_test' for k in n.keywords)]

@@ -105,7 +105,14 @@ class ExperimentalVersion1AdmissionTests(unittest.TestCase):
 
     def test_capability_constants_are_frozen_not_request_fields(self):
         cap, _, _, _, _ = version1_fixture()
-        self.assertEqual([f.name for f in fields(_ExperimentalVersion1Admission)], ['raw'])
+        request_fields = fields(_ExperimentalVersion1Admission)
+        self.assertEqual([f.name for f in request_fields if f.init], ['raw'])
+        private = [f for f in request_fields if not f.init]
+        self.assertEqual([f.name for f in private], ['_owner_fixture_owner', '_owner_fixture_capture'])
+        self.assertTrue(all(not f.repr and not f.compare for f in private))
+        for field_name in ('_owner_fixture_owner', '_owner_fixture_capture'):
+            with self.subTest(field=field_name), self.assertRaises(TypeError):
+                _ExperimentalVersion1Admission(b'{}', **{field_name: None})
         with self.assertRaises(TypeError):
             _ExperimentalVersion1Admission(cap.raw, _required=frozenset())
         for name, value in [('_required', frozenset()), ('_profile', 'other'),

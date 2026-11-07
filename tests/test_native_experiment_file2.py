@@ -55,7 +55,14 @@ class ExperimentalFile2AdmissionTests(unittest.TestCase):
         cap.assess(binding,op['required_guarantees'],[op['mechanism']])
 
     def test_class_constants_are_not_request_or_dataclass_fields(self):
-        self.assertEqual([x.name for x in fields(_ExperimentalFile2Admission)],['raw'])
+        request_fields = fields(_ExperimentalFile2Admission)
+        self.assertEqual([f.name for f in request_fields if f.init], ['raw'])
+        private = [f for f in request_fields if not f.init]
+        self.assertEqual([f.name for f in private], ['_owner_fixture_owner', '_owner_fixture_capture'])
+        self.assertTrue(all(not f.repr and not f.compare for f in private))
+        for field_name in ('_owner_fixture_owner', '_owner_fixture_capture'):
+            with self.subTest(field=field_name), self.assertRaises(TypeError):
+                _ExperimentalFile2Admission(b'{}', **{field_name: None})
         cap,_,_ = file2_fixture()
         with self.assertRaises(TypeError):
             _ExperimentalFile2Admission(cap.raw,_maximum_payload_length=2**63)

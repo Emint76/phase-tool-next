@@ -41,6 +41,109 @@ def read_evidence_bytes(path: Path) -> bytes:
         return stream.read()
 
 
+def _read_dynamic_a05_fixed(path):
+    """Bounded fixed test artifact IO; caller supplies an accepted fixed path."""
+    from ..mutation.ntfs.native import _require
+    _require(type(path) is type(Path()) and path.is_absolute(), 'ntfs.dynamic_a05_test_binding')
+    for part in (*reversed(path.parents), path):
+        info = part.lstat()
+        _require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0)&0x400,
+                 'ntfs.dynamic_a05_test_binding')
+    before = path.stat()
+    _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= 65536,
+             'ntfs.dynamic_a05_test_binding')
+    def cross(info):
+        # CPython3.12 Windows named stat/fstat may expose different meanings of
+        # ctime. Keep each method's full before/after check; do not compare that
+        # field across methods or weaken size/identity/mtime/birthtime checks.
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                getattr(info, 'st_birthtime_ns', None))
+    def same_method(info):
+        return (*cross(info), info.st_ctime_ns, info.st_mode, info.st_nlink)
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0)
+                 | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    try:
+        opened = os.fstat(fd)
+        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
+                 and cross(before) == cross(opened), 'ntfs.dynamic_a05_test_binding')
+        raw = bytearray()
+        while True:
+            part = os.read(fd, min(65536, 65536-len(raw)+1))
+            if not part:
+                break
+            raw.extend(part)
+            _require(len(raw) <= 65536, 'ntfs.dynamic_a05_test_binding')
+        after_opened = os.fstat(fd)
+        after = path.stat()
+        _require(len(raw) == before.st_size == after.st_size
+                 and same_method(before) == same_method(after)
+                 and same_method(opened) == same_method(after_opened)
+                 and cross(after) == cross(after_opened), 'ntfs.dynamic_a05_test_binding')
+        for parent in (*reversed(path.parents), path):
+            info = parent.lstat()
+            _require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0)&0x400,
+                     'ntfs.dynamic_a05_test_binding')
+        return bytes(raw)
+    finally:
+        os.close(fd)
+
+
+def _write_dynamic_a05_telemetry(path, value):
+    """Exclusive bounded raw test telemetry; no receipt or target semantics."""
+    from ..mutation.ntfs.native import _require
+    raw = canonical_bytes(value)
+    _require(len(raw) <= 65536, 'ntfs.dynamic_a05_test_telemetry_bound')
+    with path.open('xb') as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _qualification_catalog_ordinary(path, *, directory):
+    from ..mutation.ntfs.native import _require
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise PhaseError('ntfs.history_catalog_unavailable') from error
+    _require((stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+        and not getattr(info, 'st_file_attributes', 0)&0x400
+        and (directory or info.st_nlink == 1), 'ntfs.history_catalog_file_unsafe')
+    return info
+
+
+def _read_qualification_catalog_chunk(path, maximum_bytes):
+    """Bounded accepted configuration artifact IO, retaining platform checks."""
+    from ..streaming import read_bounded_file, fingerprint
+    from ..mutation.ntfs.native import _require
+    if os.name != 'nt':
+        # Preserve the complete POSIX fingerprint, including handle ctime.
+        return read_bounded_file(path, maximum_bytes)
+    before = _qualification_catalog_ordinary(path, directory=False)
+    descriptor = os.open(path, os.O_RDONLY | os.O_BINARY | getattr(os, 'O_NOINHERIT', 0))
+    try:
+        opened = os.fstat(descriptor)
+        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1,
+            'ntfs.history_catalog_file_unsafe')
+        # CPython3.12 Windows named stat.ctime is birth time while fstat.ctime
+        # can be change time. Compare birth time across APIs and preserve EACH
+        # API's complete before/after ctime check independently.
+        def cross(info):
+            _require(hasattr(info, 'st_birthtime_ns'), 'ntfs.history_catalog_file_unsafe')
+            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_birthtime_ns
+        _require(cross(before) == cross(opened) and opened.st_size <= maximum_bytes,
+            'ntfs.history_catalog_file_unsafe')
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            data = stream.read(maximum_bytes+1)
+        after_opened = os.fstat(descriptor)
+        after_named = _qualification_catalog_ordinary(path, directory=False)
+        _require(len(data) == opened.st_size <= maximum_bytes
+            and fingerprint(opened) == fingerprint(after_opened)
+            and fingerprint(before) == fingerprint(after_named)
+            and cross(opened) == cross(after_named), 'ntfs.history_catalog_digest_mismatch')
+        return data
+    finally:
+        os.close(descriptor)
+
 def evidence_file_exists(path: Path) -> bool:
     return os.path.isfile(_platform_path(path))
 
@@ -454,6 +557,16 @@ class EvidenceStore:
         _ensure_directory_durable(path.parent, parents=True)
         _write_bytes_exclusive_atomic(path, data, path.name)
         return path
+
+
+def _open_operational_lock(path: Path):
+    """Legacy lock-file IO; the caller retains its original lock/close lifecycle.
+
+    Preserve parent creation and append/read mode exactly. This does not grant
+    native admission or change the separately checked POSIX lock path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.open("a+b")
 
 
 def _open_checked_operational_lock(path: Path) -> tuple[int, tuple[int, int], tuple[int, int]]:

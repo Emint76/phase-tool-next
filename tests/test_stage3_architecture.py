@@ -341,6 +341,30 @@ def test_core_has_no_contract_or_effect_specific_control_flow() -> None:
     assert exact_forbidden.isdisjoint(branch_literals)
 
 
+def _open_write_mode(node: ast.Call) -> str | None:
+    """Conservative trusted-source inventory, not a Python security analyser.
+
+    Builtin/io.open take the mode after the path; Path.open takes it first.
+    Descriptor open flags stay separately forbidden outside the IO owners.
+    Unknown/starred modes cannot acquire an implicit read-only exemption.
+    """
+    name = _call_name(node)
+    terminal = name.rsplit(".", 1)[-1]
+    if name == "os.open" or terminal not in {"open", "fdopen"}:
+        return None
+    if any(isinstance(arg, ast.Starred) for arg in node.args) or any(keyword.arg is None for keyword in node.keywords):
+        return "unknown"
+    offset = 1 if isinstance(node.func, ast.Name) or name in {"io.open", "builtins.open", "os.fdopen"} else 0
+    modes = list(node.args[offset:offset+1])
+    modes += [keyword.value for keyword in node.keywords if keyword.arg == "mode"]
+    if not modes:
+        return None
+    if len(modes) != 1 or not isinstance(modes[0], ast.Constant) or type(modes[0].value) is not str:
+        return "unknown"
+    mode = modes[0].value
+    return None if mode in {"r", "rb", "br", "rt", "tr"} else mode
+
+
 def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
     allowed_write_modules = {
         "mutation/expected_head_append.py",
@@ -397,15 +421,10 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                         and not _native_terminal_stdout_write(relative,tree,node)
                         and not _native_terminal_pipe_write(relative,tree,node)):
                     hits.append((relative, node.lineno, name))
-            if terminal == "open" and relative not in allowed_write_modules:
-                modes = [arg.value for arg in node.args[1:2] if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
-                modes += [
-                    keyword.value.value
-                    for keyword in node.keywords
-                    if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str)
-                ]
-                if any(set(mode) & set("wax+") for mode in modes):
-                    hits.append((relative, node.lineno, f"open:{modes[0]}"))
+            if relative not in allowed_write_modules:
+                write_mode = _open_write_mode(node)
+                if write_mode is not None:
+                    hits.append((relative, node.lineno, f"open:{write_mode}"))
     assert hits == []
 
 
@@ -731,3 +750,50 @@ def test_native_terminal_inventory_rejects_new_caller_authority(signature,expect
     calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and _call_name(n)=='os.write']
     assert len(calls)==1
     assert _native_terminal_stdout_write('mutation/ntfs/entrypoint.py',tree,calls[0]) is expected
+
+
+@pytest.mark.parametrize('source,expected', [
+    ("open(path, 'rb')", None), ("open(path)", None),
+    ("io.open(path, 'rb')", None), ("builtins.open(path, mode='rb')", None),
+    ("path.open('rb')", None), ("Path('x').open('rb')", None),
+    ("path.open()", None), ("path.open(mode='rt')", None),
+    ("os.fdopen(fd, 'rb')", None),
+    ("open(path, 'wb')", 'wb'), ("open(path, mode='r+b')", 'r+b'),
+    ("path.open('xb')", 'xb'), ("Path('x').open('a')", 'a'),
+    ("path.open(mode='w')", 'w'), ("io.open(path, 'x')", 'x'),
+    ("builtins.open(path, 'w+')", 'w+'), ("os.fdopen(fd, 'wb')", 'wb'),
+    ("path.open(mode)", 'unknown'), ("open(path, mode)", 'unknown'),
+    ("open(path, **options)", 'unknown'), ("path.open(*options)", 'unknown'),
+    ("path.open('')", ''),
+])
+def test_target_io_inventory_classifies_builtin_and_path_open_modes(source, expected):
+    call = ast.parse(source).body[0].value
+    assert _open_write_mode(call) == expected
+
+
+@pytest.mark.parametrize('source', [
+    "open(path, 'wb')", "path.open('xb')", "path.open(mode='a')",
+    "Path('x').open('r+b')", "io.open(path, 'w')", "os.fdopen(fd, 'wb')",
+    "path.open(mode)", "open(path, **options)",
+    "os.open(path, os.O_RDONLY)", "os.open(path, os.O_WRONLY)",
+    "os.open(path, os.O_RDONLY | os.O_CREAT)",
+    "os.open(path, os.O_RDWR | os.O_TRUNC)",
+    "os.open(path, flags=os.O_APPEND | os.O_WRONLY)",
+])
+def test_target_io_inventory_rejects_injected_open_authority(tmp_path, monkeypatch, source):
+    path = tmp_path/'unapproved.py'
+    path.write_text(source+'\n', encoding='utf-8')
+    monkeypatch.setitem(globals(), 'PACKAGE', tmp_path)
+    with pytest.raises(AssertionError):
+        test_only_mechanism_boundary_owns_target_write_primitives()
+
+
+@pytest.mark.parametrize('source', [
+    "open(path, 'rb')", "path.open('rb')", "path.open(mode='r')",
+    "Path('x').open('rb')", "io.open(path, 'rb')", "os.fdopen(fd, 'rb')",
+])
+def test_target_io_inventory_accepts_injected_readonly_stream_modes(tmp_path, monkeypatch, source):
+    path = tmp_path/'unapproved.py'
+    path.write_text(source+'\n', encoding='utf-8')
+    monkeypatch.setitem(globals(), 'PACKAGE', tmp_path)
+    test_only_mechanism_boundary_owns_target_write_primitives()

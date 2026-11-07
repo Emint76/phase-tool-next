@@ -13,12 +13,12 @@ from ctypes import wintypes as W
 import os
 from pathlib import Path
 import re
-import stat
 import threading
 import time
 
 from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
+from ...evidence import _read_dynamic_a05_fixed as _fixed_read, _write_dynamic_a05_telemetry as _write_fixed
 from .native import _require
 from .uncertainty import _diagnostic
 
@@ -31,59 +31,8 @@ _DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
 _MAX_RAW = 65536
 
 
-def _fixed_read(path):
-    """Bounded fixed installation data; no request-selected path or loader."""
-    _require(type(path) is type(Path()) and path.is_absolute(), 'ntfs.dynamic_a05_test_binding')
-    for part in (*reversed(path.parents), path):
-        info = part.lstat()
-        _require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0)&0x400,
-                 'ntfs.dynamic_a05_test_binding')
-    before = path.stat()
-    _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= _MAX_RAW,
-             'ntfs.dynamic_a05_test_binding')
-    def cross(info):
-        # CPython3.12 Windows named stat/fstat may expose different meanings of
-        # ctime. Keep each method's full before/after check; do not compare that
-        # field across methods or weaken size/identity/mtime/birthtime checks.
-        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-                getattr(info, 'st_birthtime_ns', None))
-    def same_method(info):
-        return (*cross(info), info.st_ctime_ns, info.st_mode, info.st_nlink)
-    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0)
-                 | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
-    try:
-        opened = os.fstat(fd)
-        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
-                 and cross(before) == cross(opened), 'ntfs.dynamic_a05_test_binding')
-        raw = bytearray()
-        while True:
-            part = os.read(fd, min(65536, _MAX_RAW-len(raw)+1))
-            if not part:
-                break
-            raw.extend(part)
-            _require(len(raw) <= _MAX_RAW, 'ntfs.dynamic_a05_test_binding')
-        after_opened = os.fstat(fd)
-        after = path.stat()
-        _require(len(raw) == before.st_size == after.st_size
-                 and same_method(before) == same_method(after)
-                 and same_method(opened) == same_method(after_opened)
-                 and cross(after) == cross(after_opened), 'ntfs.dynamic_a05_test_binding')
-        for parent in (*reversed(path.parents), path):
-            info = parent.lstat()
-            _require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0)&0x400,
-                     'ntfs.dynamic_a05_test_binding')
-        return bytes(raw)
-    finally:
-        os.close(fd)
 
 
-def _write_fixed(path, value):
-    raw = canonical_bytes(value)
-    _require(len(raw) <= _MAX_RAW, 'ntfs.dynamic_a05_test_telemetry_bound')
-    with path.open('xb') as stream:
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
 
 
 class _Win32A05Events:

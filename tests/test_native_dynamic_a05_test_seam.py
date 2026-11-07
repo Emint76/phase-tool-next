@@ -539,3 +539,26 @@ def test_late_final_write_persisted_snapshot_never_substitutes_outer_outcome_or_
     assert saved['authoritative'] is False and saved['return_established'] is None and saved['final_acceptance'] is None
     assert saved['telemetry_stage'] == 'pre_return_observation' and 'primary' not in saved
     assert 'after_report_check_ns' not in saved  # That fact is known only AFTER its own close.
+
+
+def test_fixed_artifact_io_is_owned_by_evidence_boundary():
+    assert module._fixed_read.__module__ == 'phase_tool.evidence'
+    assert module._write_fixed.__module__ == 'phase_tool.evidence'
+
+
+def test_fixed_telemetry_remains_bounded_exclusive_and_fsynced(tmp_path):
+    from phase_tool import evidence
+    path = tmp_path/'raw.json'
+    real_fsync = evidence.os.fsync
+    with patch.object(evidence.os, 'fsync', wraps=real_fsync) as synced:
+        module._write_fixed(path, {'raw': True})
+    assert path.read_bytes() == b'{"raw":true}'
+    synced.assert_called_once()
+    with pytest.raises(FileExistsError):
+        module._write_fixed(path, {'raw': False})
+    assert path.read_bytes() == b'{"raw":true}'
+    large = tmp_path/'too-large.json'
+    with pytest.raises(PhaseError) as caught:
+        module._write_fixed(large, {'raw': 'x'*module._MAX_RAW})
+    assert caught.value.code == 'ntfs.dynamic_a05_test_telemetry_bound'
+    assert not large.exists()

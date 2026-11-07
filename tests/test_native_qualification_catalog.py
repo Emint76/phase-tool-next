@@ -250,7 +250,8 @@ def test_catalog_foreign_orphan_still_blocks_existing_complete_core_scan(tmp_pat
 def test_windows_reader_keeps_independent_drift_and_cross_identity_checks(damage, tmp_path):
     from types import SimpleNamespace
     target = tmp_path/'ordinary.json'; target.write_bytes(b'catalog reader control')
-    real_fstat = os.fstat; real_ordinary = catalog._ordinary
+    from phase_tool import evidence
+    real_fstat = os.fstat; real_ordinary = evidence._qualification_catalog_ordinary
     fd_count = 0; named_count = 0
     def values(info):
         return {name: getattr(info,name) for name in ('st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns','st_birthtime_ns','st_nlink','st_mode')}
@@ -268,7 +269,7 @@ def test_windows_reader_keeps_independent_drift_and_cross_identity_checks(damage
             data = values(info); data['st_ctime_ns'] += 100
             return SimpleNamespace(**data)
         return info
-    with patch.object(os,'fstat',side_effect=changed_fstat), patch.object(catalog,'_ordinary',side_effect=changed_named):
+    with patch.object(os,'fstat',side_effect=changed_fstat), patch.object(evidence,'_qualification_catalog_ordinary',side_effect=changed_named):
         with pytest.raises(PhaseError): catalog._read_chunk(target, 1024)
 
 
@@ -622,3 +623,7 @@ def test_validation_pass_rejects_foreign_thread_and_foreign_snapshot_context():
         registry=next(iter(context._registries.values()))
         with pytest.raises(PhaseError,match='ntfs.history_catalog_snapshot_changed'):other.check(registry)
     assert context._validation_depth == other._validation_depth == 0
+
+
+def test_catalog_artifact_reader_is_owned_by_evidence_boundary():
+    assert catalog._read_chunk.__module__ == 'phase_tool.evidence'

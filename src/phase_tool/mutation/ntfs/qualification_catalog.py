@@ -19,7 +19,8 @@ import threading
 
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
-from ...streaming import read_bounded_file, fingerprint
+from ...streaming import fingerprint
+from ...evidence import _read_qualification_catalog_chunk as _read_chunk
 from .native import _require
 from .experimental_history_set import mixed_history_buffers
 
@@ -133,35 +134,6 @@ def _ordinary(path, *, directory):
 
 
 
-def _read_chunk(path, maximum_bytes):
-    if os.name != 'nt':
-        # Preserve the complete POSIX fingerprint, including handle ctime.
-        return read_bounded_file(path, maximum_bytes)
-    before = _ordinary(path, directory=False)
-    descriptor = os.open(path, os.O_RDONLY | os.O_BINARY | getattr(os, 'O_NOINHERIT', 0))
-    try:
-        opened = os.fstat(descriptor)
-        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1,
-            'ntfs.history_catalog_file_unsafe')
-        # CPython3.12 Windows named stat.ctime is birth time while fstat.ctime
-        # can be change time. Compare birth time across APIs and preserve EACH
-        # API's complete before/after ctime check independently.
-        def cross(info):
-            _require(hasattr(info, 'st_birthtime_ns'), 'ntfs.history_catalog_file_unsafe')
-            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_birthtime_ns
-        _require(cross(before) == cross(opened) and opened.st_size <= maximum_bytes,
-            'ntfs.history_catalog_file_unsafe')
-        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            data = stream.read(maximum_bytes+1)
-        after_opened = os.fstat(descriptor)
-        after_named = _ordinary(path, directory=False)
-        _require(len(data) == opened.st_size <= maximum_bytes
-            and fingerprint(opened) == fingerprint(after_opened)
-            and fingerprint(before) == fingerprint(after_named)
-            and cross(opened) == cross(after_named), 'ntfs.history_catalog_digest_mismatch')
-        return data
-    finally:
-        os.close(descriptor)
 
 
 def load_history_catalog(document, *, artifact_root, active_bytes, active_digest):

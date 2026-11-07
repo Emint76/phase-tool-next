@@ -17,7 +17,7 @@ from .candidate import CapturedCandidate, capture_structured, normalize_captured
 from .canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from .contracts import load_contract_hook
 from .errors import PhaseError
-from .evidence import EvidenceStore, evidence_file_exists, iter_run_artifacts, operational_lock_path, read_evidence_bytes, validate_intent, validate_receipt
+from .evidence import _open_operational_lock, EvidenceStore, evidence_file_exists, iter_run_artifacts, operational_lock_path, read_evidence_bytes, validate_intent, validate_receipt
 from .freeze import FrozenInput, freeze_declared_inputs
 from .inspection import inspect_run
 from .installation import Installation, host_installation
@@ -153,8 +153,7 @@ class _OperationalFileLock:
     def __enter__(self) -> "_OperationalFileLock":
         if self._checked_release:
             return self._enter_checked()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._stream = self.path.open("a+b")
+        self._stream = _open_operational_lock(self.path)
         if os.name == "nt":
             import msvcrt
 

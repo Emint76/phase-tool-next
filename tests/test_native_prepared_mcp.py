@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from ._native_startup_shell import startup_shell
+from ._native_startup_shell import startup_shell, legacy_data_launch
 from unittest.mock import Mock, patch
 
 from phase_tool import evidence, installation
@@ -172,9 +172,8 @@ class NativePreparedMCPTests(unittest.TestCase):
         # This is a real NO-GO path, never a qualified native execution.
         args=self.args();request=inspection_mcp._prepared_request(args['candidate_path'],
             args['input_paths'],args['expected_inputs'],args['maximum_candidate_bytes'])
-        launch=SimpleNamespace(_inspection_only=False,check_runtime=Mock(),
-            invocation={'request':request},_manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1],
-            run_id=args['run_id'],operation_nonce='a'*32,channel_id='b'*32)
+        launch=legacy_data_launch(manifest_bytes=startup_shell()[0],inspection_only=False,
+            invocation={'request':request,'run_id':args['run_id'],'operation_nonce':'a'*32,'channel_id':'b'*32})
         with (patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
                 patch.object(entrypoint,'_deliver_linux_frame') as deliver,
                 patch.object(LinuxNativeChannelV2,'__init__',side_effect=AssertionError('channel reached')) as channel,
@@ -295,10 +294,8 @@ class NativePreparedMCPTests(unittest.TestCase):
                 manifest_bytes=manifest,expected_manifest_digest=digest_bytes(manifest))
             def shell(**kwargs):
                 invocation=parse_json_bytes(kwargs['invocation_bytes'])
-                return SimpleNamespace(_inspection_only=kwargs['_inspection_only'],check_runtime=Mock(),
-                    invocation=invocation,_manifest_bytes=kwargs['manifest_bytes'],
-                    installation_digest=kwargs['expected_manifest_digest'],run_id=invocation['run_id'],
-                    operation_nonce=invocation['operation_nonce'],channel_id=invocation['channel_id'])
+                return legacy_data_launch(manifest_bytes=kwargs['manifest_bytes'],invocation=invocation,
+                    inspection_only=kwargs['_inspection_only'])
             with (self.subTest(version=version),
                     patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=shell),
                     patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
@@ -497,9 +494,8 @@ class NativePreparedMCPTests(unittest.TestCase):
             manifest=canonical_bytes({'native_read_installation_version':version,
                 'registry_snapshot_digest':registry.digest,
                 'contract':registry.contract_bindings()['file_create.v1@1.0.0']})
-            launch=SimpleNamespace(_inspection_only=True,check_runtime=Mock(),invocation={'request':request},
-                _manifest_bytes=manifest,installation_digest=digest_bytes(manifest),
-                run_id=args['run_id'],operation_nonce='a'*32,channel_id='b'*32)
+            launch=legacy_data_launch(manifest_bytes=manifest,inspection_only=True,
+                invocation={'request':request,'run_id':args['run_id'],'operation_nonce':'a'*32,'channel_id':'b'*32})
             with (self.subTest(version=version),patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
                     patch.object(entrypoint,'_deliver_linux_frame') as deliver,
                     patch.object(LinuxNativeChannelV2,'__init__',side_effect=AssertionError('channel reached')) as c2,
@@ -511,7 +507,7 @@ class NativePreparedMCPTests(unittest.TestCase):
                 self.assertEqual(result['error'],'ntfs.native_profile_not_qualified')
                 c2.assert_not_called();c3.assert_not_called();store.assert_not_called();reader.assert_not_called()
             wrong=parse_json_bytes(manifest);wrong['contract']['id']='publish_new_version.v1'
-            launch._manifest_bytes=canonical_bytes(wrong);launch.installation_digest=digest_bytes(launch._manifest_bytes)
+            launch._manifest_bytes=canonical_bytes(wrong);launch._manifest_digest=digest_bytes(launch._manifest_bytes)
             with (patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
                     patch.object(installation,'_native_installation_for_manifest',side_effect=AssertionError('factory reached')) as factory):
                 with self.assertRaisesRegex(PhaseError,'ntfs.original_single_effect_required'):

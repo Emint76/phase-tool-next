@@ -6,6 +6,7 @@ remain the owners. Windows alone owns the remaining native effect.
 """
 from __future__ import annotations
 from .owner_semantic_fixture import is_semantic_owner_authority
+from .owner_directory import is_owner_directory_authority
 from pathlib import Path
 import os
 import threading
@@ -165,7 +166,7 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
     from ...evidence import _open_native_recovery_store, _close_native_recovery_store, _write_native_recovery_canonical
     from .experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
     from .bundle_execution import _bundle_projection_value
-    _require(type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2'), 'recovery.closed_native_role_required')
+    _require(type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2') or is_owner_directory_authority(authority, 'Bundle2'), 'recovery.closed_native_role_required')
     result = NativeRecoveryResult(run_id=run_id, request_id=request_id, recovery_mutation_attempted=False, recovery_mode=mode if mode in {'observe', 'commit_prepared'} else 'observe')
     store = None
     original = None

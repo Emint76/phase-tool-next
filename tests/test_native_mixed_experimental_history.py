@@ -236,7 +236,6 @@ def test_factory_checks_every_companion_before_channel_creation():
 
 @pytest.mark.skipif(not sys.platform.startswith('linux'), reason='closed recovery authority requires Linux')
 def test_standard_recovery_core_keeps_exact_installed_companions_before_any_channel_or_dispatch():
-    from types import SimpleNamespace
     from unittest.mock import Mock
     from phase_tool.application import PhaseApplication
     from phase_tool.mutation.ntfs import bundle_recovery_entrypoint, entrypoint
@@ -250,11 +249,21 @@ def test_standard_recovery_core_keeps_exact_installed_companions_before_any_chan
     request = {'operation': 'recover_publication', 'native_bundle_recovery_request_version': '1.0',
         'request_id': active.experimental_admission.document()['request_id'],
         'expected_intent_digest': 'sha256:'+'a'*64, 'mode': 'observe'}
-    launch = SimpleNamespace(manifest=parse_json_bytes(active.manifest_bytes), _inspection_only=False,
-        invocation={'request': request}, check_runtime=Mock(), _manifest_bytes=active.manifest_bytes,
-        installation_digest=active.manifest_digest, run_id=active.experimental_admission.document()['run_id'],
-        operation_nonce='b'*32, channel_id='c'*32, history_manifest_set=(raw, digest_bytes(raw)),
-        _experimental_admission_context=active.experimental_admission)
+    # Exact-class metadata fixture; runtime/stdio are explicitly modeled.
+    # No accepted installation is claimed. The ordinary helper's exact-type
+    # guard must pass before the original complete-history refusal is reached.
+    from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
+    launch = object.__new__(_NativeAcceptedLaunch)
+    launch._config_bytes = canonical_bytes({'native_launch_version': '1.3'})
+    launch._manifest_bytes, launch._manifest_digest = active.manifest_bytes, active.manifest_digest
+    launch._invocation_bytes = canonical_bytes({'request': request,
+        'run_id': active.experimental_admission.document()['run_id'],
+        'operation_nonce': 'b'*32, 'channel_id': 'c'*32})
+    launch._history_manifest_set = (raw, digest_bytes(raw))
+    launch._experimental_admission_context = active.experimental_admission
+    launch._owner_directory_context = None
+    launch._inspection_only = False
+    launch.check_runtime = Mock()
     with (patch.object(entrypoint, '_linux_stdio_identity', return_value='framing-only-model'),
             patch.object(entrypoint, '_deliver_linux_frame') as delivery,
             patch.object(installation, '_native_installation_for_manifest', wraps=installation._native_installation_for_manifest) as factory,

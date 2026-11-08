@@ -156,6 +156,10 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch
     _require(type(config) is dict and type(config.get('native_launch_version')) is str,
         'ntfs.accepted_launch_shape')
     version=config['native_launch_version']
+    if version=='4.0':
+        from .owner_directory_launch import _owner_configuration_from_launch_config
+        _owner_configuration_from_launch_config(config)
+        return None,None
     if version=='1.4':
         _require(set(config)==fields|{'history_catalog'}, 'ntfs.accepted_launch_shape')
         _require(type(_launch) is _NativeAcceptedLaunch
@@ -245,6 +249,13 @@ def _is_bundle_recovery_launch(launch):
     Matching context with a foreign generation/contract is an error, not a
     fallback to a different registry or authority.
     """
+    if type(launch) is _NativeAcceptedLaunch and launch._config.get('native_launch_version')=='4.0':
+        from .owner_directory_launch import _owner_directory_installation_arguments
+        from .owner_directory import require_owner_directory_binding
+        from ...installation import _native_read_binding_for_launch
+        _owner_directory_installation_arguments(launch)
+        role,_=require_owner_directory_binding(_native_read_binding_for_launch(launch))
+        return role=='Bundle2'
     from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
     if type(launch) is not _NativeAcceptedLaunch or type(getattr(launch, '_experimental_admission_context', None)) is not _ExperimentalBundle2AdmissionV3:
         return False
@@ -269,11 +280,18 @@ class _NativeAcceptedLaunch:
         _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
         self._inspection_only = _inspection_only
         self._experimental_admission_context = _experimental_admission_context
+        self._owner_directory_context = None
         _require(type(config_bytes) is bytes and type(manifest_bytes) is bytes and (type(expected_config_digest) is str) and (type(expected_manifest_digest) is str) and (digest_bytes(config_bytes) == expected_config_digest) and (digest_bytes(manifest_bytes) == expected_manifest_digest), 'ntfs.accepted_launch_binding_required')
         config = parse_json_bytes(config_bytes, maximum_bytes=2 * 1024 ** 2)
         manifest = parse_json_bytes(manifest_bytes, maximum_bytes=2 * 1024 ** 2)
         invocation = parse_json_bytes(invocation_bytes, maximum_bytes=2 * 1024 ** 2)
         _require(type(config) is dict and canonical_bytes(config) == config_bytes and (canonical_bytes(manifest) == manifest_bytes) and (canonical_bytes(invocation) == invocation_bytes), 'ntfs.accepted_launch_shape')
+        ordinary = config.get('native_launch_version') == '4.0'
+        if ordinary:
+            _require(_experimental_admission_context is None,'ntfs.owner_directory_context_required')
+            from .owner_directory_launch import _owner_directory_launch_binding
+            ordinary_binding,_ = _owner_directory_launch_binding(config,manifest_bytes,expected_manifest_digest)
+            self._owner_directory_context = ordinary_binding._owner_directory_context
         _require(config.get('native_launch_version') not in {'1.2', '1.3', '1.4', '2.0', '3.0'} or _experimental_admission_context is not None, 'ntfs.experimental_admission_required')
         if config.get('native_launch_version') in {'1.3', '1.4', '2.0', '3.0'}:
             from .experimental_history_set import _mixed_history_contexts
@@ -295,23 +313,23 @@ class _NativeAcceptedLaunch:
         self._history_manifest_set = _accepted_launch_history(config, manifest_bytes, expected_manifest_digest, _launch=self if config.get('native_launch_version') == '1.4' else None)
         _require(type(invocation) is dict and set(invocation) == {'run_id', 'channel_id', 'operation_nonce', 'request'} and (type(invocation['run_id']) is str) and (re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}', invocation['run_id']) is not None) and (invocation['run_id'] not in {'.', '..'}) and all((type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}', invocation[name]) for name in ('channel_id', 'operation_nonce'))), 'ntfs.accepted_invocation_shape')
         _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9'} and (type(manifest.get('root_grants')) is list) and (len(manifest['root_grants']) == (2 if manifest['native_read_installation_version'] == '1.5' else 1)), 'ntfs.accepted_launch_binding_required')
-        if manifest['native_read_installation_version'] == '1.6':
+        if not ordinary and manifest['native_read_installation_version'] == '1.6':
             from .experimental_bundle1 import _ExperimentalBundle1Admission
             from .bundle_execution import _BUNDLE1_CONTRACT
             _require(type(_experimental_admission_context) is _ExperimentalBundle1Admission and (manifest.get('contract') == _BUNDLE1_CONTRACT or manifest.get('contract') == semantic_owner_contract('Bundle1')), 'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version'] == '1.7':
+        if not ordinary and manifest['native_read_installation_version'] == '1.7':
             from .experimental_bundle2 import _ExperimentalBundle2Admission
             from .bundle_execution import _BUNDLE2_CONTRACT
             _require(type(_experimental_admission_context) is _ExperimentalBundle2Admission and manifest.get('contract') == _BUNDLE2_CONTRACT, 'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version'] == '1.8':
+        if not ordinary and manifest['native_read_installation_version'] == '1.8':
             from .experimental_bundle2_v2 import _ExperimentalBundle2AdmissionV2
             from .bundle_execution import _BUNDLE2_CONTRACT_V2
             _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV2 and (manifest.get('contract') == _BUNDLE2_CONTRACT_V2 or manifest.get('contract') == semantic_owner_contract('Bundle2')), 'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version'] == '1.9':
+        if not ordinary and manifest['native_read_installation_version'] == '1.9':
             from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
             from .bundle_execution import _BUNDLE2_CONTRACT_V2
             _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV3 and (manifest.get('contract') == _BUNDLE2_CONTRACT_V2 or manifest.get('contract') == semantic_owner_contract('Bundle2')), 'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version'] == '1.5':
+        if not ordinary and manifest['native_read_installation_version'] == '1.5':
             from .experimental_version2 import _ExperimentalVersion2Admission, _VERSION2_CONTRACT
             from .version2_observation import _version2_grants
             _require(type(_experimental_admission_context) is _ExperimentalVersion2Admission and (

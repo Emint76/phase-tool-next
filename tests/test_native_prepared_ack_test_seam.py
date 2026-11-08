@@ -20,6 +20,7 @@ from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle
 from phase_tool.mutation.ntfs.parent import _FailFirstPreparedAck,_NativeWindowsParent
 from .test_native_bundle2_prepared import b2_projection,native_stage
 from .test_native_bundle_protocol import CHANNEL
+from ._native_startup_shell import legacy_config_bytes
 
 
 def launch_shell():
@@ -27,6 +28,7 @@ def launch_shell():
     project=replace(b2_projection(),contract_bytes=canonical_bytes(_BUNDLE2_CONTRACT_V2))
     context=parse_json_bytes(project.context_bytes)
     launch=object.__new__(_NativeAcceptedLaunch)
+    launch._config_bytes=legacy_config_bytes('1.2')
     launch._manifest_bytes=canonical_bytes({'native_read_installation_version':'1.9',
         'contract':_BUNDLE2_CONTRACT_V2})
     launch._invocation_bytes=canonical_bytes({'run_id':context['run_id'],'channel_id':CHANNEL,
@@ -200,6 +202,7 @@ class NativeRecoveryDispatchSelectionComponentTests(unittest.TestCase):
 
     def test_legacy_exact_launch_without_new_context_never_reads_manifest(self):
         launch=object.__new__(_NativeAcceptedLaunch)  # No manifest field on purpose.
+        launch._config_bytes=legacy_config_bytes('1.2')
         self.assertIs(_is_bundle_recovery_launch(launch),False)
         launch._experimental_admission_context={'manifest_version':'1.9'}
         self.assertIs(_is_bundle_recovery_launch(launch),False)
@@ -211,6 +214,7 @@ class NativeRecoveryDispatchSelectionComponentTests(unittest.TestCase):
         self.assertIs(_is_bundle_recovery_launch(launch),False)
         class ForeignAdmission(_ExperimentalBundle2AdmissionV3):pass
         launch=object.__new__(_NativeAcceptedLaunch)
+        launch._config_bytes=legacy_config_bytes('1.2')
         launch._experimental_admission_context=ForeignAdmission(b'{}')
         self.assertIs(_is_bundle_recovery_launch(launch),False)
 

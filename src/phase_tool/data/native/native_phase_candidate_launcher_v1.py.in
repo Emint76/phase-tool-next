@@ -26,7 +26,7 @@ def fixed_startup_version(outer):
     need(type(outer) is dict)
     version=outer.get('native_fixed_startup_version')
     need((version=='1.1' and set(outer)==common|{'experimental_admission_base64'})
-        or (version=='1.2' and set(outer)==common)
+        or (version in {'1.2','4.0'}and set(outer)==common)
         or (version in {'2.0','3.0'} and set(outer)==common|{'owner_directory_fixture_base64'}))
     return version
 
@@ -73,7 +73,12 @@ def fixed_startup():
     from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
     need(canonical_bytes(parse_json_bytes(config_raw,maximum_bytes=2*1024**2))==config_raw)
     need(canonical_bytes(parse_json_bytes(manifest_raw,maximum_bytes=2*1024**2))==manifest_raw)
-    if version=='1.2':
+    if version=='4.0':
+        from phase_tool.mutation.ntfs.owner_directory_launch import _owner_directory_launch_binding
+        need(config.get('native_launch_version')=='4.0')
+        _owner_directory_launch_binding(config,manifest_raw,outer['manifest_digest'])
+        admission=None
+    elif version=='1.2':
         from phase_tool.installation import _require_qualified_native_file2_manifest
         need(config.get('native_launch_version')=='1.0')
         _require_qualified_native_file2_manifest(manifest_raw,outer['manifest_digest'])
@@ -165,7 +170,7 @@ def fixed_windows_mcp_sdk_bootstrap(outer,config_raw):
     if extras:
         scope=own.parent/'native-input-scope.json'
         info=scope.lstat()
-        need(outer['native_fixed_startup_version']=='3.0'and extras=={str(scope)}
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'}and extras=={str(scope)}
             and stat.S_ISREG(info.st_mode)and info.st_nlink==1 and info.st_size<=65536
             and not getattr(info,'st_file_attributes',0)&0x400 and not scope.is_symlink())
         scope_raw=scope.read_bytes()
@@ -248,7 +253,7 @@ def main():
             manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
             _experimental_admission_context=admission)
     if role=='input-mcp':
-        need(outer['native_fixed_startup_version']=='3.0')
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'})
         mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
         from phase_tool.mutation.ntfs.inspection_mcp import run_native_input_mcp
         return run_native_input_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
@@ -256,7 +261,11 @@ def main():
             _experimental_admission_context=admission)
     if role=='recovery-mcp':
         from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
-        need(type(admission)is _ExperimentalBundle2AdmissionV3)
+        if outer['native_fixed_startup_version']=='4.0':
+            from phase_tool.mutation.ntfs.owner_directory_launch import _require_owner_directory_recovery_startup
+            _require_owner_directory_recovery_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'])
+        else:
+            need(type(admission)is _ExperimentalBundle2AdmissionV3)
         mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
         from phase_tool.mutation.ntfs.bundle_recovery_mcp import run_native_recovery_mcp
         return run_native_recovery_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
@@ -276,7 +285,7 @@ def main():
             expected_manifest_digest=outer['manifest_digest'],_experimental_admission_context=admission)
     initial,initial_transport,initial_deadline_ns=receive_initial()
     if role=='publish-input':
-        need(outer['native_fixed_startup_version']=='3.0')
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'})
         mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
         from phase_tool.mutation.ntfs.inspection_mcp import _InspectionMCPCallOwner,_native_input_cli_request
         arguments=_native_input_cli_request(initial)
@@ -329,7 +338,11 @@ def main():
         recovery=initial.get('native_worker_original_version')=='4.0'
         if recovery:
             from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
-            need(type(admission)is _ExperimentalBundle2AdmissionV3)
+            if outer['native_fixed_startup_version']=='4.0':
+                from phase_tool.mutation.ntfs.owner_directory_launch import _require_owner_directory_recovery_startup
+                _require_owner_directory_recovery_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'])
+            else:
+                need(type(admission)is _ExperimentalBundle2AdmissionV3)
         context=(initial['recovery_context'] if recovery else
             initial['projection']['context'] if bundle or file2 else
             initial['metadata']['context'] if versioned else initial['context'])

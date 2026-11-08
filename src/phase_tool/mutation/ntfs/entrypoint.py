@@ -3,6 +3,7 @@ The accepted external launcher owns cold source-wheel lifetime and stdio.
 No ordinary CLI fallback, new journal, receipt, target copy or recovery verb.
 """
 from __future__ import annotations
+from .owner_directory_launch import _owner_directory_installation_arguments
 from .input_stage import _cap_input_deadline,_input_observation_timeout_ms
 import base64
 import io
@@ -179,7 +180,8 @@ def run_native_core(launch):
             expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
             history_manifest_set_bytes=history_bytes,history_manifest_set_digest=history_digest,
-            _experimental_admission_context=getattr(launch,'_experimental_admission_context',None))
+            _experimental_admission_context=getattr(launch,'_experimental_admission_context',None),
+            **_owner_directory_installation_arguments(launch))
     except (PhaseError,OSError,ValueError) as error:
         # ONLY this pre-installation boundary is a known ordinary refusal.
         # No Core lifecycle, native request or evidence reservation has begun.
@@ -400,7 +402,8 @@ def run_native_inspection(launch):
             operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
             _inspection_only=True,history_manifest_set_bytes=history_bytes,
             history_manifest_set_digest=history_digest,
-            _experimental_admission_context=getattr(launch,'_experimental_admission_context',None))
+            _experimental_admission_context=getattr(launch,'_experimental_admission_context',None),
+            **_owner_directory_installation_arguments(launch))
     except (PhaseError,OSError,ValueError) as error:
         response=PhaseApplication(registry=registry)._failure('inspect',error)
     else:

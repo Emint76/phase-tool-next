@@ -121,6 +121,7 @@ class _NativeFileCreateReadBinding:
     registry: object
     experimental_admission: object | None = None
     _qualification_context: object | None = None
+    _owner_directory_context: object | None = None
 
     def check_evidence_root(self):
         """Current qualified ext4 identity, shared by readonly native consumers."""
@@ -148,6 +149,9 @@ class _NativeFileCreateReadBinding:
         from .mutation.ntfs.reader import read_original_file_create_buffers,read_original_version1_buffers,read_original_version2_buffers
 
         from .mutation.ntfs.experimental_file1 import _experimental_admission
+        if self._owner_directory_context is not None:
+            from .mutation.ntfs.owner_directory import require_owner_directory_binding
+            require_owner_directory_binding(self)
         admission = _experimental_admission(self)
         if admission is not None:
             admission.verify_attachment(self, run_id)
@@ -181,6 +185,9 @@ class _NativeFileCreateReadBinding:
         from .mutation.ntfs.reader import read_original_file_create_buffers,read_original_version1_buffers,read_original_version2_buffers
         from .mutation.ntfs.intent import validate_planned_file_create_original,validate_planned_version1_original,validate_planned_version2_original
         from .mutation.ntfs.experimental_file1 import _experimental_admission
+        if self._owner_directory_context is not None:
+            from .mutation.ntfs.owner_directory import require_owner_directory_binding
+            require_owner_directory_binding(self)
         admission = _experimental_admission(self)
         if admission is not None:
             admission.verify_attachment(self, run_id)
@@ -252,8 +259,8 @@ class _NativeFileCreateReadBinding:
                 and manifest['contract']==semantic_owner_contract('Bundle2')):
             semantic_role = 'Bundle2'
         if semantic_role is not None:
-            from .mutation.ntfs.owner_semantic_contracts import require_semantic_owner_admission
-            require_semantic_owner_admission(self,semantic_role)
+            from .mutation.ntfs.owner_directory import require_owner_or_semantic_binding
+            require_owner_or_semantic_binding(self,semantic_role)
         _require(((manifest['native_read_installation_version']=='1.6' and manifest['contract']==_BUNDLE1_CONTRACT)
             or (manifest['native_read_installation_version']=='1.7' and manifest['contract']==_BUNDLE2_CONTRACT)
             or (manifest['native_read_installation_version'] in {'1.8','1.9'} and manifest['contract']==_BUNDLE2_CONTRACT_V2)
@@ -272,8 +279,12 @@ class _NativeFileCreateReadBinding:
             installed_evidence_identity=canonical_bytes(manifest['evidence_identity']),intent=intent,projection=projection)
         from .mutation.ntfs.experimental_file1 import _experimental_admission
         admission=_experimental_admission(self)
-        _require(admission is not None,'ntfs.experimental_admission_required')
-        admission.check_original(intent,parse_json_bytes(plan,maximum_bytes=2*1024**2))
+        if self._owner_directory_context is not None:
+            from .mutation.ntfs.owner_directory import require_owner_directory_binding
+            require_owner_directory_binding(self)
+        else:
+            _require(admission is not None,'ntfs.experimental_admission_required')
+            admission.check_original(intent,parse_json_bytes(plan,maximum_bytes=2*1024**2))
         self.check_evidence_root()
         return projection
 
@@ -447,6 +458,16 @@ def _requires_native_experimental_history(binding):
         _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
 
 
+def _requires_native_complete_history(binding):
+    context = getattr(binding, '_owner_directory_context', None)
+    if context is not None:
+        from .mutation.ntfs.owner_directory import _OwnerDirectoryContext
+        from .mutation.ntfs.native import _require
+        _require(type(context) is _OwnerDirectoryContext, 'ntfs.owner_directory_context_required')
+        return True
+    return _requires_native_experimental_history(binding)
+
+
 def _validate_native_history_bindings(active, bindings):
     """Recheck one exact immutable generation before the existing Core lock.
 
@@ -459,6 +480,9 @@ def _validate_native_history_bindings(active, bindings):
     _require(type(active) is _NativeFileCreateReadBinding and type(bindings) is tuple
         and all(type(row) is _NativeFileCreateReadBinding for row in bindings),
         'ntfs.original_history_binding_mismatch')
+    if active._owner_directory_context is not None:
+        from .mutation.ntfs.owner_directory import validate_owner_directory_history
+        return validate_owner_directory_history(active, bindings)
     if active.experimental_admission is not None:
         from .mutation.ntfs.experimental_history_set import (_mixed_history_contexts,
             validate_mixed_history_bindings)
@@ -592,6 +616,11 @@ def _native_history_binding_for_original(bindings,*,run_id,contract,core,install
         'ntfs.original_history_binding_mismatch')
     first=bindings[0]
     _require(type(first) is _NativeFileCreateReadBinding,'ntfs.original_history_binding_mismatch')
+    if first._owner_directory_context is not None:
+        from .mutation.ntfs.owner_directory import owner_directory_original_binding
+        return owner_directory_original_binding(bindings,run_id=run_id,contract=contract,core=core,
+            installation=installation,registry_snapshot_digest=registry_snapshot_digest,
+            pre_intent_rejection=_pre_intent_rejection)
     context=first.experimental_admission
     if type(context) in tuple(_kinds().values()) and is_fixture(context.raw):
         if context.document().get('experimental_admission_version')=='3.0':
@@ -644,7 +673,7 @@ class _NativeFileCreateInstallation:
         self._initialization_attempted = True
         _require(type(read_binding) is _NativeFileCreateReadBinding,
             'ntfs.closed_native_installation_required')
-        _require(not _requires_native_experimental_history(read_binding)
+        _require(not _requires_native_complete_history(read_binding)
             or history_bindings is not None,'ntfs.original_history_binding_mismatch')
         _require(_is_native_authority(authority)
             and authority.read_binding is read_binding, 'ntfs.closed_native_installation_required')
@@ -907,7 +936,23 @@ def _native_lifecycle_installation(*, manifest_bytes, expected_manifest_digest,
 def _native_installation_for_manifest(*, manifest_bytes, expected_manifest_digest,
     run_id, operation_nonce, channel_id, _inspection_only: bool = False,
     history_manifest_set_bytes=None, history_manifest_set_digest=None,
-    _experimental_admission_context=None):
+    _experimental_admission_context=None, _owner_directory_context=None):
+    if _owner_directory_context is not None:
+        from .mutation.ntfs.native import _require
+        from .mutation.ntfs.owner_directory import _OwnerDirectoryContext, owner_directory_role_for_manifest
+        from .mutation.ntfs.owner_directory_installation import _native_owner_directory_installation
+        _require(type(_owner_directory_context) is _OwnerDirectoryContext
+            and _experimental_admission_context is None and history_manifest_set_bytes is None
+            and history_manifest_set_digest is None, 'ntfs.owner_directory_context_required')
+        _require(owner_directory_role_for_manifest(_owner_directory_context.configuration_bytes,
+            _owner_directory_context.configuration_digest, manifest_bytes, expected_manifest_digest)
+            == _owner_directory_context.role, 'ntfs.owner_directory_context_mismatch')
+        return _native_owner_directory_installation(
+            configuration_bytes=_owner_directory_context.configuration_bytes,
+            expected_configuration_digest=_owner_directory_context.configuration_digest,
+            manifest_bytes=manifest_bytes, expected_manifest_digest=expected_manifest_digest,
+            run_id=run_id, operation_nonce=operation_nonce, channel_id=channel_id,
+            _inspection_only=_inspection_only)
     if _experimental_admission_context is not None:
         from .mutation.ntfs.native import _require
         from .mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
@@ -1087,6 +1132,27 @@ def _native_experimental_file1_registry():
 def _native_read_binding_for_launch(launch):
     from .mutation.ntfs.native import _require
     admission = getattr(launch, '_experimental_admission_context', None)
+    config = getattr(launch, '_config', None) if admission is None else None
+    if type(config) is dict and config.get('native_launch_version') == '4.0':
+        from .mutation.ntfs.owner_directory_installation import _native_owner_directory_bindings
+        from .mutation.ntfs.owner_directory import owner_directory_configuration
+        import base64
+        _require(getattr(launch, '_experimental_admission_context', None) is None
+            and type(config.get('owner_directory_configuration_base64')) is str
+            and type(config.get('owner_directory_configuration_digest')) is str,
+            'ntfs.owner_directory_context_required')
+        try:
+            raw = base64.b64decode(config['owner_directory_configuration_base64'], validate=True)
+        except (ValueError, UnicodeError) as exc:
+            raise PhaseError('ntfs.owner_directory_configuration_shape') from exc
+        document = owner_directory_configuration(raw, config['owner_directory_configuration_digest'])
+        _require(document['phase_wheel_digest'] == config.get('phase_wheel_digest'),
+            'ntfs.owner_directory_wheel_mismatch')
+        binding, history = _native_owner_directory_bindings(configuration_bytes=raw,
+            expected_configuration_digest=config['owner_directory_configuration_digest'],
+            manifest_bytes=launch._manifest_bytes, expected_manifest_digest=launch.installation_digest)
+        return binding
+    admission = getattr(launch, '_experimental_admission_context', None)
     if admission is None:
         registry = _native_registry_for_manifest(launch._manifest_bytes, launch.installation_digest)
         from .canonical import parse_json_bytes
@@ -1178,6 +1244,10 @@ def _native_experimental_read_binding(*,manifest_bytes,expected_manifest_digest,
 
 def _native_registry_for_launch(launch):
     # Explicit launcher capability only. Manifest/profile IDs never activate it.
+    config = (getattr(launch, '_config', None)
+        if getattr(launch, '_experimental_admission_context', None) is None else None)
+    if type(config) is dict and config.get('native_launch_version') == '4.0':
+        return _native_read_binding_for_launch(launch).registry
     if getattr(launch, '_experimental_admission_context', None) is None:
         return _native_registry_for_manifest(launch._manifest_bytes, launch.installation_digest)
     return _native_read_binding_for_launch(launch).registry

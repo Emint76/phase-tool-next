@@ -5,6 +5,7 @@ records current verification, never fabricates an original successful execution.
 """
 from __future__ import annotations
 from .mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
+from .mutation.ntfs.owner_directory import is_owner_directory_authority
 from pathlib import Path
 import re
 from typing import Literal
@@ -181,7 +182,9 @@ def recover_publication(application, *, evidence_root: Path, run_id: str, target
     if type(application.installation) is _NativeFileCreateInstallation:
         from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
         authority = application.installation.authority
-        if type(authority) is not _ExperimentalBundle2AuthorityV3 and (not is_semantic_owner_authority(authority, 'Bundle2')):
+        if (type(authority) is not _ExperimentalBundle2AuthorityV3
+                and not is_semantic_owner_authority(authority, 'Bundle2')
+                and not is_owner_directory_authority(authority, 'Bundle2')):
             raise PhaseError('recovery.native_generation_unsupported')
         return authority.recover_prepared(application, evidence_root=evidence_root, run_id=run_id, target_root=target_root, request_id=request_id, expected_intent_digest=expected_intent_digest, mode=mode)
     result = RecoveryResult(run_id=run_id, request_id=request_id)

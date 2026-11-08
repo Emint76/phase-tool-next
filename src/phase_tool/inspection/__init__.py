@@ -1,5 +1,6 @@
 from __future__ import annotations
 from ..mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
+from ..mutation.ntfs.owner_directory import is_owner_directory_authority
 from ..mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 
 from collections.abc import Mapping
@@ -56,10 +57,11 @@ def _verify_native_bundle_projection(contract,receipt,run_id,authority,observati
     exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
         'package_digest':contract.package_digest}
     if exact not in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2):
-        from ..mutation.ntfs.owner_semantic_contracts import require_semantic_owner_contract,require_semantic_owner_admission
+        from ..mutation.ntfs.owner_semantic_contracts import require_semantic_owner_contract
+        from ..mutation.ntfs.owner_directory import require_owner_or_semantic_binding
         role='Bundle1'if exact['id']=='bundle_create.v1'else'Bundle2'
         require_semantic_owner_contract(role,exact)
-        require_semantic_owner_admission(authority.read_binding,role)
+        require_owner_or_semantic_binding(authority.read_binding,role)
     projection = (_original_projection if reused else
         authority.read_binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest']))
     validate_bundle_observation(observation,authority._manifest['root_grants'][0],locator,projection=projection)
@@ -438,7 +440,8 @@ def inspect_run(
         _native_authority._usable()
         _native_authority.require_request_roots(root_bindings or {}, evidence_root)
         from ..mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
-        if ((type(_native_authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(_native_authority, 'Bundle2'))
+        if ((type(_native_authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(_native_authority, 'Bundle2')
+                or is_owner_directory_authority(_native_authority, 'Bundle2'))
                 and (Path(evidence_root)/'.phase/runs'/run_id/'recovery/native-commit-proof.json').exists()):
             if capture_expectations or _include_canonical_result:
                 raise PhaseError('inspection.recovered_projection_unsupported')

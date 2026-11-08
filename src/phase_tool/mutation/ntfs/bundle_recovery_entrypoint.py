@@ -1,5 +1,7 @@
 """Thin fixed native adapter for the existing phase_recover_publication API."""
 from .owner_semantic_fixture import is_semantic_owner_authority
+from .owner_directory import is_owner_directory_authority
+from .owner_directory_launch import _owner_directory_installation_arguments
 from pathlib import Path
 
 from ...canonical import canonical_bytes,parse_json_bytes,digest_bytes,profile_digest
@@ -77,7 +79,8 @@ def run_recovery_core(launch):
         expected_manifest_digest=launch.installation_digest,run_id=launch.run_id,
         operation_nonce=launch.operation_nonce,channel_id=launch.channel_id,
         history_manifest_set_bytes=history_bytes,history_manifest_set_digest=history_digest,
-        _experimental_admission_context=launch._experimental_admission_context)
+        _experimental_admission_context=launch._experimental_admission_context,
+            **_owner_directory_installation_arguments(launch))
     app=PhaseApplication(registry=registry,installation=installation)
     response=app.recover_publication(evidence_root=Path(launch.manifest['evidence_root']),run_id=launch.run_id,
         target_root=Path(launch.manifest['root_projections']['phase_result_root']),
@@ -97,7 +100,7 @@ def inspect_recovered_native(authority, *, evidence_root, run_id):
     from .bundle_recovery_original import verify_original
     from .bundle_recovery import verify_saved_recovery
     from .bundle_execution import _bundle_projection_value, validate_bundle_observation
-    _require((type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2')) and authority._inspection_only, 'recovery.closed_native_inspection_required')
+    _require((type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2') or is_owner_directory_authority(authority, 'Bundle2')) and authority._inspection_only, 'recovery.closed_native_inspection_required')
     binding = authority.read_binding
     root = binding.check_evidence_root()
     _require(Path(evidence_root) == root, 'recovery.native_request_mismatch')

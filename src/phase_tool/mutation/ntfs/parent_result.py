@@ -566,9 +566,10 @@ def _native_bundle_result_binding(read_binding,expected_manifest_digest,registry
     _require(role is not None,'ntfs.original_bundle_effect_required')
     exact=manifest.get('contract')
     if exact!=legacy:
-        from .owner_semantic_contracts import require_semantic_owner_contract,require_semantic_owner_admission
+        from .owner_semantic_contracts import require_semantic_owner_contract
+        from .owner_directory import require_owner_or_semantic_binding
         require_semantic_owner_contract(role,exact)
-        require_semantic_owner_admission(read_binding,role)
+        require_owner_or_semantic_binding(read_binding,role)
     return manifest,exact
 
 

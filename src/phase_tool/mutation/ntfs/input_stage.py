@@ -81,7 +81,7 @@ def _control(raw,maximum_bytes=_CONTROL):
     return value
 
 
-def _input_scope_document(raw,*,config,manifest,scope_path,fixture_raw):
+def _input_scope_document(raw,*,config,manifest,scope_path,fixture_raw,owner_configuration_raw=None):
     """Closed installation-only data; full manifest digest deliberately absent.
 
     scope JSON -> artifact graph -> manifest is acyclic. The actual accepted
@@ -91,20 +91,32 @@ def _input_scope_document(raw,*,config,manifest,scope_path,fixture_raw):
     from .owner_semantic_fixture import semantic_fixture_document as fixture_document
     _require(type(raw)is bytes and 0<len(raw)<=65536,'input_stage.scope_bound')
     doc=parse_json_bytes(raw,maximum_bytes=65536)
-    fields={'native_input_scope_version','scope_id','owner_scope_id','fixture_digest','installation_id','contract',
+    ordinary=config.get('native_launch_version')=='4.0'
+    owner_field='owner_directory_scope_digest'if ordinary else'fixture_digest'
+    fields={'native_input_scope_version','scope_id','owner_scope_id',owner_field,'installation_id','contract',
             'windows_root','volume','root_identity','preparation_root','preparation_identity'}
     _require(type(doc)is dict and set(doc)==fields and canonical_bytes(doc)==raw
-        and doc['native_input_scope_version']=='1.0'and type(doc['scope_id'])is str
+        and doc['native_input_scope_version']==('2.0'if ordinary else'1.0')and type(doc['scope_id'])is str
         and _ID.fullmatch(doc['scope_id'])is not None,'input_stage.scope_shape')
-    _require(config.get('native_launch_version')=='3.0'
+    _require(config.get('native_launch_version')in {'3.0','4.0'}
         and config['dependency_file_digests'].get(str(scope_path))==digest_bytes(raw)
         and config['artifact_graph']['windows'if os.name=='nt'else'linux']['dependency_file_digests'].get(str(scope_path))==digest_bytes(raw),
         'input_stage.scope_graph_binding')
-    fixture=fixture_document(fixture_raw)
+    if ordinary:
+        from .owner_directory_launch import _owner_configuration_from_launch_config
+        from .owner_directory import owner_directory_configuration,owner_directory_scope_digest
+        accepted_raw,accepted_digest=_owner_configuration_from_launch_config(config)
+        _require(fixture_raw is None and owner_configuration_raw==accepted_raw,'input_stage.scope_owner_binding')
+        fixture=owner_directory_configuration(accepted_raw,accepted_digest)
+        accepted_digest=owner_directory_scope_digest(fixture)
+    else:
+        _require(owner_configuration_raw is None,'input_stage.scope_owner_binding')
+        fixture=fixture_document(fixture_raw)
+        accepted_raw,accepted_digest=fixture_raw,digest_bytes(fixture_raw)
     roles=[role for role in ('File1','File2','Version1','Version2','Bundle1','Bundle2')
            if manifest['contract']==semantic_owner_contract(role)]
-    _require(len(roles)==1 and fixture['experimental_admission_version']=='3.0'
-        and doc['owner_scope_id']==fixture['owner_scope_id']and doc['fixture_digest']==digest_bytes(fixture_raw)
+    _require(len(roles)==1 and (ordinary or fixture['experimental_admission_version']=='3.0')
+        and doc['owner_scope_id']==fixture['owner_scope_id']and doc[owner_field]==accepted_digest
         and doc['installation_id']==manifest['installation_id']and doc['contract']==manifest['contract']
         and doc['preparation_root']==manifest['preparation_root']
         and doc['preparation_identity']==manifest['preparation_identity'],'input_stage.scope_owner_binding')
@@ -139,9 +151,18 @@ def _scope_for_launch(launch):
     config=launch._config
     path=Path(config['windows_launcher']if os.name=='nt'else config['linux_launcher']).parent/_SCOPE_FILE
     admission=launch._experimental_admission_context
-    _require(admission is not None,'input_stage.owner_admission_required')
+    ordinary=config.get('native_launch_version')=='4.0'
+    owner_raw=None
+    if ordinary:
+        from .owner_directory_launch import _owner_configuration_from_launch_config,_owner_directory_installation_arguments
+        _owner_directory_installation_arguments(launch)
+        owner_raw,_=_owner_configuration_from_launch_config(config)
+        _require(admission is None,'input_stage.owner_admission_required')
+    else:
+        _require(admission is not None,'input_stage.owner_admission_required')
     raw=_read_qualification_catalog_chunk(path,65536)
-    doc,role=_input_scope_document(raw,config=config,manifest=launch.manifest,scope_path=path,fixture_raw=admission.raw)
+    doc,role=_input_scope_document(raw,config=config,manifest=launch.manifest,scope_path=path,
+        fixture_raw=None if ordinary else admission.raw,owner_configuration_raw=owner_raw)
     launch.check_runtime()
     return doc,role,digest_bytes(raw)
 

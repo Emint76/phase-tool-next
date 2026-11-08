@@ -236,7 +236,7 @@ class _InspectionMCPCallOwner:
                 from ...installation import _native_read_binding_for_launch
                 bundle_binding=_native_read_binding_for_launch(launch)
                 registry=bundle_binding.registry
-            elif self._startup.get('_experimental_admission_context') is not None:
+            elif self._startup.get('_experimental_admission_context') is not None or getattr(launch,'_owner_directory_context',None) is not None:
                 from ...installation import _native_registry_for_launch
                 registry=_native_registry_for_launch(launch)
             else:

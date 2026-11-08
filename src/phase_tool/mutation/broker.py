@@ -1,5 +1,6 @@
 from __future__ import annotations
 from .ntfs.owner_semantic_fixture import is_semantic_owner_authority
+from .ntfs.owner_directory import is_owner_directory_authority
 
 from copy import deepcopy
 from dataclasses import dataclass, fields
@@ -466,7 +467,7 @@ class EffectBroker:
             from .ntfs.bundle_recovery import _NativeCommitCheckpoint
             from .ntfs.native import _require
             authority = self._native_authority
-            _require((type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2')) and type(_native_checkpoint) is _NativeCommitCheckpoint and (_native_checkpoint.binding is authority.read_binding) and (_native_checkpoint.original['plan'] == plan) and (_native_checkpoint.context['intent_digest'] == expected_intent_digest) and (intent_path == _native_checkpoint.original['run'] / 'intent.json') and (str(target_root) == parse_json_bytes(authority._projections_bytes)['phase_result_root']), 'recovery.closed_native_role_required')
+            _require((type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2') or is_owner_directory_authority(authority, 'Bundle2')) and type(_native_checkpoint) is _NativeCommitCheckpoint and (_native_checkpoint.binding is authority.read_binding) and (_native_checkpoint.original['plan'] == plan) and (_native_checkpoint.context['intent_digest'] == expected_intent_digest) and (intent_path == _native_checkpoint.original['run'] / 'intent.json') and (str(target_root) == parse_json_bytes(authority._projections_bytes)['phase_result_root']), 'recovery.closed_native_role_required')
             authority.require_contract(contract)
             entry = self.registry.resolve_mechanism(plan['mechanism'])
             descriptor = parse_json_bytes(self.registry.resource_bytes(str(entry['artifact'])))

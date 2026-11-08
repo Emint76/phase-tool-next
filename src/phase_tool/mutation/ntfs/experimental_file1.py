@@ -241,6 +241,11 @@ def _is_native_authority(value):
     import sys
     if not sys.platform.startswith('linux'):
         return False
+    from .owner_directory_authorities import _ordinary_authority_types
+    if type(value) in _ordinary_authority_types():
+        from .owner_directory import require_owner_directory_binding
+        role, manifest = require_owner_directory_binding(value.read_binding, value._directory_role)
+        return value.read_binding.experimental_admission is None
     from .authority import _NativeFileCreateAuthority
     from .file2_authority import _QualifiedFile2Authority
     from .experimental_authority import _ExperimentalFile1Authority

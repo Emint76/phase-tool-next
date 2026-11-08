@@ -1,5 +1,6 @@
 from __future__ import annotations
 from .mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
+from .mutation.ntfs.owner_directory import is_owner_directory_authority
 from .mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 
 import base64
@@ -990,7 +991,9 @@ class PhaseCore:
                 from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
                 native_bundle = (type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3)
                     or is_semantic_owner_authority(native_ctx.native_authority,'Bundle1')
-                    or is_semantic_owner_authority(native_ctx.native_authority,'Bundle2'))
+                    or is_semantic_owner_authority(native_ctx.native_authority,'Bundle2')
+                    or is_owner_directory_authority(native_ctx.native_authority,'Bundle1')
+                    or is_owner_directory_authority(native_ctx.native_authority,'Bundle2'))
             if native_bundle:
                 frozen = native_ctx.native_authority.freeze_inputs(
                     contract, request, parse_json_bytes(candidate.canonical_bytes),
@@ -1293,7 +1296,8 @@ class PhaseCore:
                 from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
                 from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
                 if (type(native_authority) in (_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3)
-                        or is_semantic_owner_authority(native_authority,'Bundle2')):
+                        or is_semantic_owner_authority(native_authority,'Bundle2')
+                        or is_owner_directory_authority(native_authority,'Bundle2')):
                     # Pass the existing Core store and receipt attachment list;
                     # checkpointing never creates another evidence owner.
                     native_authority.bind_prepared_checkpoint(store,contract,plan,intent_path,
@@ -1540,14 +1544,14 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
     from .evidence import validate_run_id
     from .installation import (_NativeFileCreateReadBinding,
         _resolve_native_file_create_read_binding, _validate_native_history_bindings,
-        _requires_native_experimental_history, _linux_filesystem_type,
+        _requires_native_complete_history, _linux_filesystem_type,
         qualify_host_authority_roots)
     from .mutation.ntfs.native import _require
     from .streaming import read_bounded_file
 
     _require(type(read_binding) is _NativeFileCreateReadBinding,
         'ntfs.original_read_binding_required')
-    _require(not _requires_native_experimental_history(read_binding)
+    _require(not _requires_native_complete_history(read_binding)
         or history_bindings is not None,'ntfs.original_history_binding_mismatch')
     # Recheck immutable configuration/current registry before any lock write.
     _resolve_native_file_create_read_binding(manifest_bytes=read_binding.manifest_bytes,
@@ -1567,7 +1571,8 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
             'recovery.selected_original_mismatch')
 
 
-    per_run=any(row.experimental_admission is not None for row in bindings) and history_bindings is not None
+    per_run=any(row.experimental_admission is not None or row._owner_directory_context is not None
+        for row in bindings) and history_bindings is not None
 
     def historical_binding(contract,core,installation=None,*,run_id,registry_snapshot_digest=None,
         _pre_intent_rejection=False):

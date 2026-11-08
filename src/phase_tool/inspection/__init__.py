@@ -1,4 +1,6 @@
 from __future__ import annotations
+from ..mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
+from ..mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -40,21 +42,61 @@ def _read_canonical(path: Path) -> tuple[Any, str]:
     return value, digest_bytes(data)
 
 
-def _verify_native_bundle_projection(contract,receipt,run_id,authority,observation,locator):
+def _verify_native_bundle_projection(contract,receipt,run_id,authority,observation,locator,*,_original_projection=None):
     """Bind a fresh bundle sample to its original owner and manifest lineage.
 
     Reuse already verifies its original receipt recursively. Its current run ID
     is not the directory owner's creation ID and must never replace that ID.
     """
-    if receipt['execution_disposition']=='reused_existing':return
+    reused = receipt['execution_disposition']=='reused_existing'
+    if reused and _original_projection is None:
+        raise PhaseError('inspection.native_bundle_original_required')
     from ..mutation.ntfs.bundle_execution import (
         _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2,validate_bundle_observation)
     exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
         'package_digest':contract.package_digest}
     if exact not in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2):
-        raise PhaseError('inspection.native_binding_mismatch')
-    projection=authority.read_binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest'])
+        from ..mutation.ntfs.owner_semantic_contracts import require_semantic_owner_contract,require_semantic_owner_admission
+        role='Bundle1'if exact['id']=='bundle_create.v1'else'Bundle2'
+        require_semantic_owner_contract(role,exact)
+        require_semantic_owner_admission(authority.read_binding,role)
+    projection = (_original_projection if reused else
+        authority.read_binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest']))
     validate_bundle_observation(observation,authority._manifest['root_grants'][0],locator,projection=projection)
+    return projection
+
+
+def _native_bundle_original_projection(authority, origin, contract):
+    """Reread one verified leaf through the existing Original parser only.
+
+    origin is transient data from this same recursive inspection, never a
+    caller-supplied installation/capability or a persisted proof/result cache.
+    """
+    from ..mutation.ntfs.handoff import _BundleControlProjection
+    from ..mutation.ntfs.bundle_execution import _bundle_projection_value
+    from ..mutation.ntfs.native import NativeIdentity, _require
+    from ..mutation.ntfs.experimental_file1 import _is_native_authority
+    _require(_is_native_authority(authority), 'ntfs.closed_native_installation_required')
+    authority._usable()
+    authority.require_contract(contract)
+    _require(type(origin) is dict and set(origin)=={
+        'run_id','intent_digest','effect_plan_digest','native_identity'},
+        'inspection.native_bundle_original_required')
+    validate_run_id(origin['run_id'])
+    identity=NativeIdentity.parse(origin['native_identity'])
+    parsed=authority.read_binding.read(run_id=origin['run_id'],intent_digest=origin['intent_digest'])
+    _require(type(parsed) is _BundleControlProjection, 'ntfs.original_bundle_projection_required')
+    value=_bundle_projection_value(parsed)
+    exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
+        'package_digest':contract.package_digest}
+    _require(value['context']['run_id']==origin['run_id']
+        and value['context']['intent_digest']==origin['intent_digest']
+        and value['context']['effect_plan_digest']==origin['effect_plan_digest']
+        and value['contract']==exact
+        and canonical_bytes(value['grant'])==canonical_bytes(authority._manifest['root_grants'][0])
+        and identity.volume_serial==value['grant']['native_identity']['volume_serial'],
+        'inspection.native_bundle_original_mismatch')
+    return parsed
 
 
 def _verify_bound_pre_validators(run_root: Path, intent: Mapping[str, Any]) -> None:
@@ -382,9 +424,6 @@ def inspect_run(
     """Verify evidence and, for observed results, re-read installation-bound target bytes."""
     if type(_include_canonical_result) is not bool or type(_include_bundle_manifest) is not bool:
         raise PhaseError("inspection.invalid_result_projection")
-    if _include_bundle_manifest and _native_authority is not None:
-        # A Host verifier result is not a native Bundle projection/capability.
-        raise PhaseError("inspection.bundle_projection_unsupported")
     _validate_capture_expectations(_expected_candidate_digest, _expected_frozen_input)
     capture_expectations = ({} if _expected_candidate_digest is None else {
         "_expected_candidate_digest": _expected_candidate_digest,
@@ -399,7 +438,7 @@ def inspect_run(
         _native_authority._usable()
         _native_authority.require_request_roots(root_bindings or {}, evidence_root)
         from ..mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
-        if (type(_native_authority) is _ExperimentalBundle2AuthorityV3
+        if ((type(_native_authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(_native_authority, 'Bundle2'))
                 and (Path(evidence_root)/'.phase/runs'/run_id/'recovery/native-commit-proof.json').exists()):
             if capture_expectations or _include_canonical_result:
                 raise PhaseError('inspection.recovered_projection_unsupported')
@@ -521,6 +560,8 @@ def inspect_run(
     target_verified: bool | None = None
     contract_result: Any | None = None
     bundle_manifest_bytes: bytes | None = None
+    bundle_native_origin = None
+    bundle_original_projection = None
     state_classification: str | None = None
     if receipt["evidence"]["intent_digest"] is not None:
         intent, _ = _read_canonical(run_root / "intent.json")
@@ -644,12 +685,14 @@ def inspect_run(
             contract_binding["package_digest"],
             core_version=receipt["core"]["version"],
         )
-        host_bundle = (_native_authority is None and contract.document["operation"]["mechanism"]["id"]
-            in {"mechanism.bundle_create_v1", "mechanism.bundle_create_v2"})
-        if _include_bundle_manifest and not host_bundle:
+        bundle_operation = contract.document["operation"]["mechanism"]["id"] in {
+            "mechanism.bundle_create_v1", "mechanism.bundle_create_v2"}
+        host_bundle = _native_authority is None and bundle_operation
+        native_bundle = _native_authority is not None and bundle_operation
+        if _include_bundle_manifest and not bundle_operation:
             raise PhaseError("inspection.bundle_projection_unsupported")
         bundle_prior = None
-        if host_bundle and receipt["execution_disposition"] == "reused_existing":
+        if bundle_operation and receipt["execution_disposition"] == "reused_existing":
             if (intent is not None or plan is not None or receipt["mutation_attempted"] is not False
                 or receipt["effect_receipts"]):
                 raise PhaseError("inspection.prior_receipt_mismatch", run_id)
@@ -662,7 +705,8 @@ def inspect_run(
             bundle_prior = inspect_run(root, bundle_prior_run, registry,
                 root_bindings=root_bindings, _visited_receipts=_visited_receipts | {receipt_digest},
                 _include_canonical_result=True, **capture_expectations,
-                **({"_include_bundle_manifest": True} if _include_bundle_manifest else {}))
+                **({"_native_authority": _native_authority} if native_bundle else {}),
+                **({"_include_bundle_manifest": True} if _include_bundle_manifest or native_bundle else {}))
             if (bundle_prior.get("terminal_status") != "succeeded_verified"
                 or bundle_prior.get("target_verified") is not True
                 or bundle_prior.get("contract") != receipt["contract"]
@@ -670,7 +714,21 @@ def inspect_run(
                 raise PhaseError("inspection.prior_receipt_mismatch", bundle_prior_run)
             if bundle_prior.get("implementation_binding") != receipt.get("implementation_binding"):
                 raise PhaseError("inspection.implementation_binding_mismatch")
-            if _include_bundle_manifest:
+            if native_bundle:
+                if (native_proof is None or native_proof['target_identity'] is not None
+                    or bundle_prior.get('native_target_identity') is None):
+                    raise PhaseError('inspection.native_bundle_original_required')
+                bundle_native_origin=bundle_prior.get('bundle_native_origin')
+                if (type(bundle_native_origin) is not dict
+                    or bundle_native_origin.get('native_identity')!=bundle_prior['native_target_identity']):
+                    raise PhaseError('inspection.native_bundle_original_mismatch')
+                bundle_original_projection=_native_bundle_original_projection(
+                    _native_authority,bundle_native_origin,contract)
+                if (digest_bytes(bundle_original_projection.manifest_bytes)
+                    != bundle_prior['bundle_manifest']['manifest_digest']):
+                    raise PhaseError('inspection.native_bundle_original_mismatch')
+                bundle_manifest_bytes=bundle_original_projection.manifest_bytes
+            elif _include_bundle_manifest:
                 bundle_manifest_bytes = canonical_bytes(bundle_prior["bundle_manifest"]["manifest"])
         roots = root_bindings or {}
         root_id = canonical_result["root_binding"]
@@ -701,7 +759,7 @@ def inspect_run(
             ):
                 raise PhaseError("inspection.target_mismatch", canonical_result["locator"])
         try:
-            if bundle_prior is not None:
+            if host_bundle and bundle_prior is not None:
                 # Actual target observation comes from the freshly verified
                 # original leaf, correlated to the entire CURRENT reference.
                 streamed_state = bundle_prior["canonical_result"]["state"]
@@ -717,13 +775,47 @@ def inspect_run(
                         raise PhaseError('inspection.native_identity_mismatch')
                     observe=(_native_authority.observe_version2_advisory if version2 else _native_authority.observe_advisory)
                     observation = observe(root_binding=root_id,
-                        locator=canonical_result['locator'],expected_identity=None if targets is None else targets['current'])
+                        locator=canonical_result['locator'],expected_identity=None)
+                    if targets is None:
+                        if receipt['execution_disposition'] != 'reused_existing':
+                            raise PhaseError('inspection.native_identity_mismatch')
+                    elif (targets['current'] is None or canonical_bytes(observation['native']['native_identity'])
+                            != canonical_bytes(targets['current'])):
+                        raise PhaseError('inspection.native_identity_mismatch')
                 else:
+                    expected_identity=(bundle_native_origin['native_identity']
+                        if native_bundle and bundle_prior is not None else native_proof['target_identity'])
+                    file_identity_check = contract.document['identity']['id'] in {'file_create.v1', 'file_create.v2'}
                     observation = _native_authority.observe(run_id=run_id, root_binding=root_id,
-                        locator=canonical_result['locator'], expected_identity=native_proof['target_identity'])
+                        locator=canonical_result['locator'], expected_identity=None if native_bundle or file_identity_check else expected_identity)
+                    if file_identity_check:
+                        original_identity = native_proof['target_identity']
+                        if original_identity is None:
+                            # A receipt-only no-dispatch reuse has no target ID
+                            # of its own. The unchanged recursive prior check
+                            # below must verify the original leaf's identity.
+                            if receipt['execution_disposition'] != 'reused_existing':
+                                raise PhaseError('inspection.native_identity_mismatch')
+                        elif canonical_bytes(observation['native']['native_identity']) != canonical_bytes(original_identity):
+                            raise PhaseError('inspection.native_identity_mismatch')
                 if contract.document['identity']['id'] in {'bundle_create.v1','bundle_create.v2'}:
-                    _verify_native_bundle_projection(contract,receipt,run_id,_native_authority,
-                        observation,canonical_result['locator'])
+                    # Closed advisory sample first; local equality still binds
+                    # the real Full128+volume to the worker-proven original.
+                    # Do not poison the channel merely to classify a different
+                    # well-formed current object. Real observer failures remain unknown.
+                    if (expected_identity is None or observation['native'].get('native_identity')!=expected_identity):
+                        raise PhaseError('inspection.native_identity_mismatch')
+                    parsed_bundle=_verify_native_bundle_projection(contract,receipt,run_id,_native_authority,
+                        observation,canonical_result['locator'],_original_projection=bundle_original_projection)
+                    if _include_bundle_manifest:
+                        if native_proof['target_identity'] is None and bundle_prior is None:
+                            raise PhaseError('inspection.native_bundle_original_required')
+                        bundle_manifest_bytes=parsed_bundle.manifest_bytes
+                        if bundle_prior is None:
+                            context=parse_json_bytes(parsed_bundle.context_bytes)
+                            bundle_native_origin={'run_id':run_id,'intent_digest':context['intent_digest'],
+                                'effect_plan_digest':context['effect_plan_digest'],
+                                'native_identity':observation['native']['native_identity']}
                 streamed_state = observation['state']
                 native_target_identity = observation['native']['native_identity']
             else:
@@ -920,4 +1012,11 @@ def inspect_run(
             "manifest": manifest, "manifest_digest": digest_bytes(bundle_manifest_bytes),
             "member_count": len(manifest["members"]), "total_length": manifest["total_length"],
         }
+        if _native_authority is not None:
+            if (bundle_native_origin is None
+                or bundle_native_origin.get('native_identity')!=native_target_identity):
+                raise PhaseError('inspection.native_bundle_original_required')
+            # Private per-call correlation only; Application's public response
+            # and its Bundle projection triple do not export this origin data.
+            result['bundle_native_origin']=parse_json_bytes(canonical_bytes(bundle_native_origin))
     return result

@@ -52,7 +52,7 @@ class _ExperimentalFile1Admission:
         _require(type(self.raw) is bytes and len(self.raw) <= 32768,
             'ntfs.experimental_admission_required')
         doc = parse_json_bytes(self.raw, maximum_bytes=32768)
-        if type(doc) is dict and doc.get('experimental_admission_version')=='2.0':
+        if type(doc) is dict and doc.get('experimental_admission_version')in {'2.0','3.0'}:
             from .owner_directory_fixture import fixture_document
             return fixture_document(self.raw)
         _require(type(doc) is dict and canonical_bytes(doc) == self.raw
@@ -104,7 +104,7 @@ class _ExperimentalFile1Admission:
             and binding.experimental_admission is self, 'ntfs.experimental_admission_required')
         doc = self.document()
         manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
-        if doc['experimental_admission_version']=='2.0':
+        if doc['experimental_admission_version']in {'2.0','3.0'}:
             from .owner_directory_fixture import check_manifest,captured_binding_view
             return captured_binding_view(self,check_manifest(type(self),self.raw,manifest,binding.manifest_digest))
         _require(manifest['native_read_installation_version'] == self._manifest_version
@@ -118,6 +118,9 @@ class _ExperimentalFile1Admission:
 
     def profile(self, binding):
         self.check_binding(binding)
+        if self.document()['experimental_admission_version']=='3.0':
+            from .owner_semantic_fixture import semantic_owner_profile
+            return semantic_owner_profile(self,binding)
         exact = binding.registry.guarantee_profile_bindings().get(self._profile)
         _require(exact is not None, 'ntfs.experimental_profile_required')
         desc = binding.registry.resolve_guarantee_profile(exact)
@@ -157,7 +160,7 @@ class _ExperimentalFile1Admission:
 
     def verify_attachment(self, binding, run_id, receipt=None):
         doc = self.check_binding(binding)
-        if doc['experimental_admission_version']=='2.0':
+        if doc['experimental_admission_version']in {'2.0','3.0'}:
             from .owner_directory_fixture import verify_fixture_attachments
             return verify_fixture_attachments(self,binding,run_id,receipt)
         _require(run_id == doc['run_id'], 'ntfs.experimental_run_mismatch')
@@ -187,7 +190,7 @@ class _ExperimentalFile1Admission:
 
         """
         doc = self.document()
-        if doc['experimental_admission_version']=='2.0':
+        if doc['experimental_admission_version']in {'2.0','3.0'}:
             from .owner_directory_fixture import original_binding_view
             doc=original_binding_view(self,intent,plan)
         value = intent['candidate']['storage']['value']
@@ -275,6 +278,12 @@ def _is_native_authority(value):
         _ExperimentalVersion1Authority: _ExperimentalVersion1Admission,
         _ExperimentalVersion2Authority: _ExperimentalVersion2Admission,
         _ExperimentalVersion2AuthorityV2: _ExperimentalVersion2Admission}
+    from .owner_semantic_fixture import semantic_owner_authority
+    from .owner_directory_fixture import _kinds
+    for role,kind in _kinds().items():
+        if type(value)is semantic_owner_authority(kind):
+            context=_experimental_admission(value.read_binding)
+            return type(context)is kind and context.document().get('experimental_admission_version')=='3.0'
     if type(value) in paired:
         return type(_experimental_admission(value.read_binding)) is paired[type(value)]
     return False

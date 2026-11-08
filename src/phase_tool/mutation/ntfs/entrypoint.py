@@ -3,6 +3,7 @@ The accepted external launcher owns cold source-wheel lifetime and stdio.
 No ordinary CLI fallback, new journal, receipt, target copy or recovery verb.
 """
 from __future__ import annotations
+from .input_stage import _cap_input_deadline,_input_observation_timeout_ms
 import base64
 import io
 import os
@@ -157,7 +158,17 @@ def run_native_core(launch):
         and all(type(request[k]) is str for k in ('source_locator','target_locator',
             'request_id','expected_current_digest'))
         and (request['expected_digest'] is None or type(request['expected_digest']) is str))
-    _require(prepared_request or publication_request or version1_publication_request,
+    bundle_publication_request=(type(request)is dict and 'native_bundle_publication_request_version'in request)
+    if bundle_publication_request:
+        from .parent_result import _require_native_bundle_publication_request
+        _require(getattr(launch,'_bundle',False),'ntfs.original_bundle_effect_required')
+        _require_native_bundle_publication_request(request)
+    staged_request=type(request)is dict and 'native_staged_publication_request_version'in request
+    if staged_request:
+        from .input_stage import _scope_for_launch,_require_staged_publication_request
+        scope,role,scope_digest=_scope_for_launch(launch)
+        _require_staged_publication_request(request,role=role)
+    _require(prepared_request or publication_request or version1_publication_request or bundle_publication_request or staged_request,
         'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
     # admission still refuses the unqualified candidate, even empty requirements.
@@ -176,7 +187,22 @@ def run_native_core(launch):
     else:
         app=PhaseApplication(registry=registry,installation=installation)
         manifest=launch.manifest
-        if publication_request:
+        if staged_request:
+            from .preparation import _prepare_staged_publication
+            try:
+                candidate_path,inputs,expected,candidate_bytes=_prepare_staged_publication(app,launch,request)
+            except (PhaseError,OSError,ValueError)as error:
+                response=app._failure('execute',error)
+            else:
+                response=app.run('execute',contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
+                    contract_digest=manifest['contract']['package_digest'],candidate_path=candidate_path,
+                    evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,input_paths=inputs,
+                    root_bindings={k:Path(v)for k,v in manifest['root_projections'].items()},
+                    expected_inputs=expected,_expected_candidate_bytes=candidate_bytes)
+        elif bundle_publication_request:
+            response=app.execute_native_bundle_publication(source_locator=request['source_locator'],
+                target_locator=request['target_locator'],request_id=request['request_id'],members=request['members'])
+        elif publication_request:
             from .preparation import _prepare_file_publication
             try:
                 candidate_path, inputs, expected, candidate_bytes = _prepare_file_publication(app,
@@ -295,32 +321,40 @@ def _native_version1_inspection_expectations(request):
 
 def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root_bindings,
         _expected_candidate_digest=None, _expected_frozen_input=None, _expected_receipt_digest=None,
-        _canonical_result_context=None):
-    """Read invocation only: always revoke channel, preserve primary failure."""
-    primary=None
-    response=None
-    reference=None
+        _canonical_result_context=None, _bundle_result_context=None):
+    """Read invocation only; original seal and primary-error semantics apply."""
+    _require(_canonical_result_context is None or _bundle_result_context is None,
+        'ntfs.fixed_inspection_role_required')
+    primary=None;response=None;reference=None;projection=None
     try:
         assertions=({} if _expected_candidate_digest is None and _expected_frozen_input is None else {
-            '_expected_candidate_digest': _expected_candidate_digest,
-            '_expected_frozen_input': _expected_frozen_input})
-        if _canonical_result_context is None:
+            '_expected_candidate_digest':_expected_candidate_digest,
+            '_expected_frozen_input':_expected_frozen_input})
+        if _bundle_result_context is not None:
+            response,reference,projection=application._inspect_bundle_with_result(
+                evidence_root=evidence_root,run_id=run_id,root_bindings=root_bindings,**assertions)
+        elif _canonical_result_context is None:
             response=application.inspect(evidence_root=evidence_root,run_id=run_id,
                 root_bindings=root_bindings,**assertions)
         else:
             response,reference=application._inspect_with_result(evidence_root=evidence_root,
                 run_id=run_id,root_bindings=root_bindings,_include_canonical_result=True,**assertions)
         if _expected_receipt_digest is not None and response.payload['success'] is True:
-            # Compare the CURRENT ACK receipt, including reused_existing. Failed
-            # application responses retain their original error and raw payload.
-            _require(response.payload.get('receipt_digest') == _expected_receipt_digest,
-                'ntfs.file_publication_receipt_mismatch')
+            _require(response.payload.get('receipt_digest')==_expected_receipt_digest,
+                'ntfs.bundle_publication_receipt_mismatch' if _bundle_result_context is not None
+                else 'ntfs.file_publication_receipt_mismatch')
         if _canonical_result_context is not None:
             from .parent_result import validate_native_file_inspection_result
             reference=validate_native_file_inspection_result(response.payload,reference,
                 run_id=run_id,**_canonical_result_context)
-    except BaseException as error:
-        primary=error
+        if _bundle_result_context is not None:
+            from .parent_result import validate_native_bundle_result_delivery
+            frame={'protocol':'phase.native.command','version':'1.3','channel_id':
+                _bundle_result_context['channel_id'],'run_id':run_id,'result':response.payload,
+                'exit_code':response.exit_code,'canonical_result':reference,'bundle_manifest':projection}
+            reference,projection=validate_native_bundle_result_delivery(frame,run_id=run_id,
+                **_bundle_result_context)
+    except BaseException as error:primary=error
     finally:
         try:authority.seal(intent_digest=None)
         except BaseException as error:
@@ -329,39 +363,35 @@ def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root
                 try:primary.add_note('Native inspection channel seal: '+type(error).__name__)
                 except BaseException:pass
     if primary is not None:raise primary
+    if _bundle_result_context is not None:return response,reference,projection
     return response if _canonical_result_context is None else (response,reference)
 
 
 def run_native_inspection(launch):
-    """One fresh read-only invocation through the existing application inspector.
-
-    Only the fixed accepted launcher selects this role. The request contains no
-    path/profile/registry/command selector. The manifest supplies all roots.
-    No Core.run, EvidenceStore, recovery, proof or receipt publication occurs.
-    """
+    """One fresh read-only invocation; all target/Original verification is shared."""
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
-    from ...installation import (_native_registry_for_launch,
-        _native_installation_for_manifest)
-    launch.check_runtime()
-    _require(launch._inspection_only, 'ntfs.fixed_inspection_role_required')
-    identities=_linux_stdio_identity()
-    request=launch.invocation['request']
-    version1_inspection = (type(request) is dict
-        and 'native_version1_publication_inspection_request_version' in request)
-    capture = (_native_version1_inspection_expectations(request) if version1_inspection
-        else _native_file_inspection_expectations(request))
-    from .parent_result import _native_file_result_mode
+    from ...installation import _native_registry_for_launch,_native_installation_for_manifest
+    from .parent_result import (_native_file_result_mode,_native_bundle_result_mode,
+        _native_bundle_inspection_expectations,validate_native_bundle_result_delivery)
+    launch.check_runtime();_require(launch._inspection_only,'ntfs.fixed_inspection_role_required')
+    identities=_linux_stdio_identity();request=launch.invocation['request']
+    bundle_result=_native_bundle_result_mode(request)
+    _require(not bundle_result or launch._bundle,'ntfs.original_bundle_effect_required')
+    version1_inspection=(type(request)is dict and 'native_version1_publication_inspection_request_version'in request)
+    capture=(_native_bundle_inspection_expectations(request) if bundle_result else
+        _native_version1_inspection_expectations(request) if version1_inspection else
+        _native_file_inspection_expectations(request))
     include_result=_native_file_result_mode(request)
-    reference=None
+    reference=projection=binding=None
     registry=_native_registry_for_launch(launch)
-    if capture:
+    if capture and not bundle_result:
         from ...publish_file import CONTRACT_BINDING
-        manifest = parse_json_bytes(launch._manifest_bytes, maximum_bytes=2*1024**2)
-        exact = 'publish_new_version.v1@1.0.0' if version1_inspection else CONTRACT_BINDING
-        binding = registry.contract_bindings().get(exact)
-        _require(binding is not None and manifest.get('contract') == binding
-            and (not version1_inspection or manifest.get('native_read_installation_version') in {'1.2','1.4'}),
+        manifest=parse_json_bytes(launch._manifest_bytes,maximum_bytes=2*1024**2)
+        exact='publish_new_version.v1@1.0.0'if version1_inspection else CONTRACT_BINDING
+        selected=registry.contract_bindings().get(exact)
+        _require(selected is not None and manifest.get('contract')==selected
+            and(not version1_inspection or manifest.get('native_read_installation_version')in {'1.2','1.4'}),
             'ntfs.original_single_effect_required')
     try:
         history_bytes,history_digest=getattr(launch,'history_manifest_set',(None,None))
@@ -372,24 +402,30 @@ def run_native_inspection(launch):
             history_manifest_set_digest=history_digest,
             _experimental_admission_context=getattr(launch,'_experimental_admission_context',None))
     except (PhaseError,OSError,ValueError) as error:
-        # Only pre-installation refusal: no channel/evidence/target read begun.
         response=PhaseApplication(registry=registry)._failure('inspect',error)
     else:
-        manifest=launch.manifest
+        manifest=launch.manifest;binding=installation.read_binding
         context=({'request':request,'manifest_bytes':launch._manifest_bytes,
-            'expected_manifest_digest':launch.installation_digest,'registry':registry}
-            if include_result else None)
+            'expected_manifest_digest':launch.installation_digest,'registry':registry} if include_result else None)
+        bundle_context=({'request':request,'read_binding':binding,'expected_manifest_digest':
+            launch.installation_digest,'registry':registry,'channel_id':launch.channel_id}if bundle_result else None)
         inspected=_inspect_with_channel_seal(PhaseApplication(registry=registry,installation=installation),
             installation.authority,evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
-            root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()}, **capture,
-            **({'_canonical_result_context':context} if include_result else {}))
-        if include_result:response,reference=inspected
+            root_bindings={k:Path(v)for k,v in manifest['root_projections'].items()},**capture,
+            **({'_canonical_result_context':context}if include_result else
+                {'_bundle_result_context':bundle_context}if bundle_result else {}))
+        if bundle_result:response,reference,projection=inspected
+        elif include_result:response,reference=inspected
         else:response=inspected
-    validate_command_result(response.payload,registry)
-    launch.check_runtime()
+    validate_command_result(response.payload,registry);launch.check_runtime()
     frame={'protocol':'phase.native.command','version':'1.0','channel_id':launch.channel_id,
         'run_id':launch.run_id,'result':response.payload,'exit_code':response.exit_code}
-    if include_result:
+    if bundle_result:
+        frame.update(version='1.3',canonical_result=reference,bundle_manifest=projection)
+        validate_native_bundle_result_delivery(frame,request=request,run_id=launch.run_id,
+            channel_id=launch.channel_id,read_binding=binding,
+            expected_manifest_digest=launch.installation_digest,registry=registry)
+    elif include_result:
         frame.update(version='1.1',canonical_result=reference)
         from .parent_result import validate_native_file_result_delivery
         validate_native_file_result_delivery(frame,request=request,run_id=launch.run_id,
@@ -440,7 +476,7 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
     try:
         witness=WindowsProcessWitness(process)
         pipe=launch._pipe(process)
-        pipe.send_frame(launch._invocation_bytes,time.perf_counter_ns()+30_000_000_000)
+        pipe.send_frame(launch._invocation_bytes,_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
         if _dynamic_a05_test is not None:
             owner=_NativeWindowsParent(launch,pipe,_dynamic_a05_test=_dynamic_a05_test)
         else:
@@ -451,7 +487,7 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
     finally:
         try:
             _require(witness is not None,'ntfs.core_creation_witness_unavailable')
-            fact=witness.wait_for_exit(60000)
+            fact=witness.wait_for_exit(_input_observation_timeout_ms(60000))
             _require(fact['worker_exit_established'] is True,'ntfs.core_delivery_process_exit_unknown')
             launch._finalize_exited(process,pipe)
         except BaseException as error:

@@ -65,6 +65,9 @@ def fixture_document(raw):
     """Pure closed parser. A fixture cannot choose a class/factory/policy."""
     _need(type(raw) is bytes and 0<len(raw)<=32768,'ntfs.owner_fixture_shape')
     doc=parse_json_bytes(raw,maximum_bytes=32768)
+    if type(doc)is dict and doc.get('experimental_admission_version')=='3.0':
+        from .owner_semantic_fixture import semantic_fixture_document
+        return semantic_fixture_document(raw)
     _need(type(doc) is dict and canonical_bytes(doc)==raw and set(doc)=={
         'experimental_admission_version','authorization_digest','fixture_uuid','owner_scope_id',
         'wheel_digest','core','windows_roots','root_grants','root_projections',
@@ -129,7 +132,7 @@ def is_fixture(raw):
     """An unknown/malformed new version never falls through as a legacy form."""
     _need(type(raw) is bytes and len(raw)<=32768,'ntfs.owner_fixture_shape')
     value=parse_json_bytes(raw,maximum_bytes=32768)
-    return type(value) is dict and value.get('experimental_admission_version')==_VERSION
+    return type(value) is dict and value.get('experimental_admission_version')in {_VERSION,'3.0'}
 
 
 def fixture_role(kind,raw):
@@ -142,7 +145,7 @@ def fixture_role(kind,raw):
 def installation_id(kind,raw):
     doc,role=fixture_role(kind,raw)
     identity=digest_bytes(canonical_bytes({'fixture_digest':digest_bytes(raw),'role':role['role']}))
-    return kind._installation_prefix+'owner2.'+identity[7:]
+    return kind._installation_prefix+('owner3.'if doc['experimental_admission_version']=='3.0'else'owner2.')+identity[7:]
 
 
 def role_projection(kind,raw):
@@ -151,7 +154,7 @@ def role_projection(kind,raw):
     grants=parse_json_bytes(canonical_bytes(doc['root_grants']))
     current=grants[0];current['root_binding']=role['root_binding']
     shared={key:doc[key] for key in ('authorization_digest','wheel_digest','evidence_identity','preparation_identity','qualification','release_eligible')}
-    shared.update(experimental_admission_version='2.0',contract=role['contract'],owner_scope_id=doc['owner_scope_id'],fixture_digest=digest_bytes(raw))
+    shared.update(experimental_admission_version=doc['experimental_admission_version'],contract=role['contract'],owner_scope_id=doc['owner_scope_id'],fixture_digest=digest_bytes(raw))
     if role['role']=='Version2':
         shared.update(root_grants=grants,windows_roots=doc['windows_roots'])
     else:
@@ -251,7 +254,7 @@ def attempt_record(kind,raw,manifest_digest,captured,intent,plan):
         'ntfs.owner_fixture_original_mismatch')
     _need(plan['effects'] and len(plan['effects'])==1
         and plan['effects'][0]['target']=={'root_binding':role['root_binding'],'relative_locator':capture['target_locator']})
-    return {'experimental_attempt_version':'2.0','fixture_digest':digest_bytes(raw),
+    return {'experimental_attempt_version':doc['experimental_admission_version'],'fixture_digest':digest_bytes(raw),
         'owner_scope_id':doc['owner_scope_id'],'role':role['role'],'capture':capture,
         'installation':{'id':installation_id(kind,raw),'descriptor_digest':manifest_digest},
         'intent_digest':profile_digest('intent',intent),'effect_plan_digest':profile_digest('effect-plan',plan)}
@@ -536,6 +539,9 @@ def owner_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
     _need(type(raw) is bytes and len(raw)<=2*1024**2 and digest_bytes(raw)==expected_digest,
         'ntfs.accepted_history_binding_mismatch')
     value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+    if type(value)is dict and value.get('history_manifest_set_version')=='3.0':
+        from .owner_semantic_history import owner3_history_buffers
+        return owner3_history_buffers(raw,expected_digest,active_bytes=active_bytes,active_digest=active_digest)
     _need(type(value) is dict and canonical_bytes(value)==raw and set(value)=={
         'history_manifest_set_version','fixture_base64','fixture_digest','manifests'}
         and value['history_manifest_set_version']=='2.0','ntfs.accepted_history_shape')
@@ -566,10 +572,14 @@ def owner_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
 def validate_owner_history_bindings(active,bindings):
     """Fresh exact registry/implementation checks on all six installed readers."""
     from ...installation import _NativeFileCreateReadBinding,_native_experimental_read_binding
-    _need(type(active) is _NativeFileCreateReadBinding and type(bindings) is tuple and len(bindings)==6,
+    _need(type(active) is _NativeFileCreateReadBinding and type(bindings) is tuple,
         'ntfs.original_history_binding_mismatch')
     _need(type(active.experimental_admission) in tuple(_kinds().values()),'ntfs.experimental_admission_required')
-    active_raw=active.experimental_admission.raw;fixture_document(active_raw)
+    active_raw=active.experimental_admission.raw;active_doc=fixture_document(active_raw)
+    if active_doc['experimental_admission_version']=='3.0':
+        from .owner_semantic_history import validate_owner3_history_bindings
+        return validate_owner3_history_bindings(active,bindings)
+    _need(len(bindings)==6,'ntfs.original_history_binding_mismatch')
     manifests=[]
     for role,row in zip(_ROLES,bindings,strict=True):
         _need(type(row) is _NativeFileCreateReadBinding and type(row.experimental_admission) is _kinds()[role]

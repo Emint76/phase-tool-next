@@ -4,7 +4,7 @@ Matching data is historical correlation, not authentication of its producer.
 """
 from __future__ import annotations
 import re
-from ...canonical import canonical_bytes, parse_json_bytes
+from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from ...errors import PhaseError
 from .native import NativeIdentity, _require
 from .worker import _grant, validate_worker_completion
@@ -477,3 +477,126 @@ def _require_version1_inspection_delivery(result, *, request, run_id, inspection
             and result['execution_disposition'] in {'executed','reused_existing'}
             and result['receipt_digest'] == request['expected_receipt_digest'],
             'ntfs.version1_inspection_binding_mismatch')
+
+
+def _native_bundle_inspection_expectations(request):
+    """Candidate closed request grammar; no profile/root/registry selectors."""
+    from ...publish_bundle import _bundle_publication_candidate
+    _require(type(request) is dict and set(request)=={'operation',
+        'native_bundle_publication_inspection_request_version','request_id','target_locator',
+        'members','expected_receipt_digest'} and request['operation']=='inspect'
+        and type(request['native_bundle_publication_inspection_request_version']) is str
+        and request['native_bundle_publication_inspection_request_version']=='1.0',
+        'ntfs.fixed_native_request_required')
+    candidate,_=_bundle_publication_candidate(request['request_id'],request['target_locator'],request['members'])
+    _require(request['members']==candidate['members'],'ntfs.fixed_native_request_required')
+    _require(type(request['expected_receipt_digest']) is str and
+        re.fullmatch(r'sha256:[0-9a-f]{64}',request['expected_receipt_digest']) is not None,
+        'ntfs.invalid_expected_receipt_digest')
+    return {'_expected_candidate_digest':profile_digest('candidate',candidate),
+        '_expected_receipt_digest':request['expected_receipt_digest']}
+
+
+def validate_native_bundle_result_delivery(value, *, request, run_id, channel_id,
+        read_binding, expected_manifest_digest, registry):
+    """Candidate frame1.3 DATA correlation after accepted launch/real inspector.
+
+    It authenticates no physical observation by itself and grants no admission.
+    The caller owns actual runtime checks and the existing accepted binding.
+    """
+    from ...installation import _NativeFileCreateReadBinding
+    from ...command_result import validate_command_result
+    from ...publish_bundle import _require_bundle_projection
+    from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2
+    _native_bundle_inspection_expectations(request)
+    _require(type(value) is dict and set(value)=={'protocol','version','channel_id','run_id',
+        'result','exit_code','canonical_result','bundle_manifest'}
+        and value['protocol']=='phase.native.command'and value['version']=='1.3'
+        and value['channel_id']==channel_id and value['run_id']==run_id
+        and type(value['result']) is dict and type(value['exit_code']) is int
+        and len(canonical_bytes(value))<=2*1024**2,'ntfs.parent_command_binding_mismatch')
+    result=value['result'];validate_command_result(result,registry)
+    _require_command_run_binding(result,run_id)
+    _require(result['command']=='inspect'and result['exit_code']==value['exit_code'],
+        'ntfs.parent_command_binding_mismatch')
+    if result['success'] is True:
+        _require(result['receipt_digest']==request['expected_receipt_digest'],'ntfs.bundle_publication_receipt_mismatch')
+    reference,projection=value['canonical_result'],value['bundle_manifest']
+    if reference is None or projection is None:
+        _require(reference is projection is None and not(result['success']is True and result['target_verified']is True),
+            'ntfs.bundle_result_required')
+        return None,None
+    manifest,exact=_native_bundle_result_binding(read_binding,expected_manifest_digest,registry)
+    _require(result['success']is True and result['exit_code']==0 and result['error']is None
+        and result['blockers']==[] and result['target_verified']is True
+        and result['terminal_status']=='succeeded_verified'
+        and result['execution_disposition']in{'executed','reused_existing'}
+        and result['receipt_digest']==request['expected_receipt_digest'],
+        'ntfs.bundle_result_binding_mismatch')
+    contract=registry.resolve_contract(exact['id'],exact['version'],exact['package_digest'],
+        core_version=manifest['core']['version']).document
+    declaration=contract['canonical_result']
+    from jsonschema import Draft202012Validator,FormatChecker
+    schema=registry.schema_document(declaration['result_reference_schema_ref'])
+    _require(type(reference) is dict and not list(Draft202012Validator(schema,
+        registry=registry.schema_registry(),format_checker=FormatChecker()).iter_errors(reference))
+        and reference['owner_id']==declaration['owner_id']
+        and reference['authority_rule']==declaration['authority_rule']
+        and reference['root_binding']==declaration['root_binding']
+        and reference['root_binding']in manifest['root_projections']
+        and reference.get('appended_record')is None,'ntfs.bundle_result_binding_mismatch')
+    _require_bundle_projection(reference,projection,binding=exact,
+        target_locator=request['target_locator'],members=request['members'])
+    return parse_json_bytes(canonical_bytes(reference)),parse_json_bytes(canonical_bytes(projection))
+
+
+def _native_bundle_result_binding(read_binding,expected_manifest_digest,registry):
+    """Same accepted binding, literal role contexts; never a registry selector."""
+    from ...installation import _NativeFileCreateReadBinding
+    from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2
+    _require(type(read_binding) is _NativeFileCreateReadBinding and read_binding.registry is registry
+        and read_binding.manifest_digest==expected_manifest_digest,
+        'ntfs.closed_native_installation_required')
+    manifest=parse_json_bytes(read_binding.manifest_bytes,maximum_bytes=2*1024**2)
+    _require(digest_bytes(read_binding.manifest_bytes)==expected_manifest_digest,
+        'ntfs.original_manifest_digest_mismatch')
+    versions={'1.6':('Bundle1',_BUNDLE1_CONTRACT),'1.7':('Bundle2',_BUNDLE2_CONTRACT),
+        '1.8':('Bundle2',_BUNDLE2_CONTRACT_V2),'1.9':('Bundle2',_BUNDLE2_CONTRACT_V2)}
+    role,legacy=versions.get(manifest.get('native_read_installation_version'),(None,None))
+    _require(role is not None,'ntfs.original_bundle_effect_required')
+    exact=manifest.get('contract')
+    if exact!=legacy:
+        from .owner_semantic_contracts import require_semantic_owner_contract,require_semantic_owner_admission
+        require_semantic_owner_contract(role,exact)
+        require_semantic_owner_admission(read_binding,role)
+    return manifest,exact
+
+
+def _native_bundle_result_mode(request):
+    if type(request) is not dict or 'native_bundle_publication_inspection_request_version'not in request:
+        return False
+    _native_bundle_inspection_expectations(request)
+    return True
+
+
+def _native_bundle_publication_request(source_locator,target_locator,request_id,members):
+    """One fixed execute grammar; Core retains all semantic/capture decisions."""
+    from ...paths import safe_relative_locator
+    from ...publish_bundle import _bundle_publication_candidate
+    _require(type(source_locator) is str,'ntfs.fixed_native_request_required')
+    source_locator=safe_relative_locator(source_locator)
+    candidate,_=_bundle_publication_candidate(request_id,target_locator,members)
+    return {'operation':'execute','native_bundle_publication_request_version':'1.0',
+        'source_locator':source_locator,'target_locator':candidate['target_locator'],
+        'request_id':request_id,'members':candidate['members']}
+
+
+def _require_native_bundle_publication_request(request):
+    _require(type(request) is dict and set(request)=={'operation','native_bundle_publication_request_version',
+        'source_locator','target_locator','request_id','members'} and request['operation']=='execute'
+        and type(request['native_bundle_publication_request_version']) is str
+        and request['native_bundle_publication_request_version']=='1.0','ntfs.fixed_native_request_required')
+    expected=_native_bundle_publication_request(request['source_locator'],request['target_locator'],
+        request['request_id'],request['members'])
+    _require(canonical_bytes(expected)==canonical_bytes(request),'ntfs.fixed_native_request_required')
+    return expected

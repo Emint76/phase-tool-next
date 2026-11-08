@@ -8,6 +8,8 @@ environment override, journal, target retry, copy-out or receipt owner is added.
 Not installed, imported, executed or qualified.
 """
 from __future__ import annotations
+from .input_stage import _cap_input_deadline,_input_observation_timeout_ms
+from .owner_semantic_contracts import semantic_owner_contract
 
 import base64
 import hashlib
@@ -173,7 +175,7 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch
     if version=='1.0':
         _require(set(config)==fields,'ntfs.accepted_launch_shape')
         return None,None
-    _require(version in {'1.1','1.2','1.3','2.0'} and set(config)==fields|{
+    _require(version in {'1.1','1.2','1.3','2.0','3.0'} and set(config)==fields|{
         'history_manifest_set_base64','history_manifest_set_digest'}
         and type(config['history_manifest_set_base64']) is str,
         'ntfs.accepted_launch_shape')
@@ -184,10 +186,10 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch
         'ntfs.accepted_history_shape')
     digest=config['history_manifest_set_digest']
     header=parse_json_bytes(raw,maximum_bytes=2*1024**2)
-    _require(type(header) is dict and (version=='2.0')==(header.get('history_manifest_set_version')=='2.0'),
+    _require(type(header) is dict and ((version in {'2.0','3.0'} and header.get('history_manifest_set_version')==version) or (version not in {'2.0','3.0'} and header.get('history_manifest_set_version')not in {'2.0','3.0'})),
         'ntfs.owner_fixture_startup_required')
     from .experimental_history_set import mixed_history_buffers
-    parser=(mixed_history_buffers if version in {'1.3','2.0'} else
+    parser=(mixed_history_buffers if version in {'1.3','2.0','3.0'} else
         _native_experimental_history_buffers if version=='1.2' else _native_history_manifest_buffers)
     parser(raw,digest,active_bytes=manifest_bytes,active_digest=manifest_digest)
     return raw,digest
@@ -199,7 +201,19 @@ def _original_query_request(launch,action,digest):
         'intent_digest':digest,'operation_nonce':launch.operation_nonce,'channel_id':launch.channel_id,
         'installation_digest':launch.installation_digest}
     request=launch.invocation['request']
-    if action=='read_executing' and type(request) is dict and (
+    if action=='read_executing' and type(request)is dict and 'native_staged_publication_request_version'in request:
+        from .input_stage import _scope_for_launch,_require_staged_publication_request
+        scope,role,scope_digest=_scope_for_launch(launch)
+        query['native_original_query_version']='1.4'
+        query['staged_publication_request']=_require_staged_publication_request(request,role=role)
+        return query
+    if action=='read_executing' and type(request) is dict and 'native_bundle_publication_request_version'in request:
+        from .parent_result import _require_native_bundle_publication_request
+        _require(getattr(launch,'_bundle',False),'ntfs.original_query_binding_mismatch')
+        _require_native_bundle_publication_request(request)
+        query['native_original_query_version']='1.3'
+        query['bundle_publication_request']={key:request[key]for key in('request_id','target_locator','members')}
+    elif action=='read_executing' and type(request) is dict and (
             'native_version1_publication_request_version' in request):
         _require(launch._version1 and set(request)=={'operation',
             'native_version1_publication_request_version','source_locator','target_locator',
@@ -217,8 +231,9 @@ def _original_query_request(launch,action,digest):
             and type(request['source_locator']) is str,'ntfs.fixed_native_request_required')
         query['native_original_query_version']='1.1'
         query['publication_request']={key:request[key] for key in ('request_id','target_locator','expected_digest')}
-    from .original_endpoint import _original_query_publication,_original_query_version1_publication
-    if _original_query_version1_publication(query) is None:
+    from .original_endpoint import (_original_query_publication,_original_query_version1_publication,
+        _original_query_bundle_publication)
+    if _original_query_bundle_publication(query) is None and _original_query_version1_publication(query) is None:
         _original_query_publication(query)  # Exact generation/shape; never downgrade.
     return query
 
@@ -231,13 +246,11 @@ def _is_bundle_recovery_launch(launch):
     fallback to a different registry or authority.
     """
     from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
-    if (type(launch) is not _NativeAcceptedLaunch or
-            type(getattr(launch,'_experimental_admission_context',None)) is not _ExperimentalBundle2AdmissionV3):
+    if type(launch) is not _NativeAcceptedLaunch or type(getattr(launch, '_experimental_admission_context', None)) is not _ExperimentalBundle2AdmissionV3:
         return False
     from .bundle_execution import _BUNDLE2_CONTRACT_V2
-    manifest=launch.manifest
-    _require(type(manifest) is dict and manifest.get('native_read_installation_version')=='1.9'
-        and manifest.get('contract')==_BUNDLE2_CONTRACT_V2,'ntfs.experimental_admission_required')
+    manifest = launch.manifest
+    _require(type(manifest) is dict and manifest.get('native_read_installation_version') == '1.9' and (manifest.get('contract') == _BUNDLE2_CONTRACT_V2 or manifest.get('contract') == semantic_owner_contract('Bundle2')), 'ntfs.experimental_admission_required')
     return True
 
 
@@ -250,112 +263,82 @@ class _NativeAcceptedLaunch:
     and RW roles use that installed composition; this class never copies files
     into a running container or assumes docker CLI exit means Linux-exec exit.
     """
-    def __init__(self, *, config_bytes, expected_config_digest, manifest_bytes,
-                 expected_manifest_digest, invocation_bytes, _inspection_only: bool = False,
-                 _experimental_admission_context=None):
-        _require(not getattr(self,'_initialization_attempted',False),
-            'ntfs.bootstrap_initialization_consumed')
-        self._initialization_attempted=True
+    def __init__(self, *, config_bytes, expected_config_digest, manifest_bytes, expected_manifest_digest, invocation_bytes, _inspection_only: bool=False, _experimental_admission_context=None):
+        _require(not getattr(self, '_initialization_attempted', False), 'ntfs.bootstrap_initialization_consumed')
+        self._initialization_attempted = True
         _require(type(_inspection_only) is bool, 'ntfs.fixed_role_required')
-        self._inspection_only=_inspection_only
-        self._experimental_admission_context=_experimental_admission_context
-        _require(type(config_bytes) is bytes and type(manifest_bytes) is bytes
-            and type(expected_config_digest) is str and type(expected_manifest_digest) is str
-            and digest_bytes(config_bytes)==expected_config_digest
-            and digest_bytes(manifest_bytes)==expected_manifest_digest,
-            'ntfs.accepted_launch_binding_required')
-        config=parse_json_bytes(config_bytes,maximum_bytes=2*1024**2)
-        manifest=parse_json_bytes(manifest_bytes,maximum_bytes=2*1024**2)
-        invocation=parse_json_bytes(invocation_bytes,maximum_bytes=2*1024**2)
-        _require(type(config) is dict and canonical_bytes(config)==config_bytes and canonical_bytes(manifest)==manifest_bytes
-            and canonical_bytes(invocation)==invocation_bytes,'ntfs.accepted_launch_shape')
-        _require(config.get('native_launch_version') not in {'1.2','1.3','1.4','2.0'}
-            or _experimental_admission_context is not None,'ntfs.experimental_admission_required')
-        if config.get('native_launch_version') in {'1.3','1.4','2.0'}:
+        self._inspection_only = _inspection_only
+        self._experimental_admission_context = _experimental_admission_context
+        _require(type(config_bytes) is bytes and type(manifest_bytes) is bytes and (type(expected_config_digest) is str) and (type(expected_manifest_digest) is str) and (digest_bytes(config_bytes) == expected_config_digest) and (digest_bytes(manifest_bytes) == expected_manifest_digest), 'ntfs.accepted_launch_binding_required')
+        config = parse_json_bytes(config_bytes, maximum_bytes=2 * 1024 ** 2)
+        manifest = parse_json_bytes(manifest_bytes, maximum_bytes=2 * 1024 ** 2)
+        invocation = parse_json_bytes(invocation_bytes, maximum_bytes=2 * 1024 ** 2)
+        _require(type(config) is dict and canonical_bytes(config) == config_bytes and (canonical_bytes(manifest) == manifest_bytes) and (canonical_bytes(invocation) == invocation_bytes), 'ntfs.accepted_launch_shape')
+        _require(config.get('native_launch_version') not in {'1.2', '1.3', '1.4', '2.0', '3.0'} or _experimental_admission_context is not None, 'ntfs.experimental_admission_required')
+        if config.get('native_launch_version') in {'1.3', '1.4', '2.0', '3.0'}:
             from .experimental_history_set import _mixed_history_contexts
-            _require(type(_experimental_admission_context) in _mixed_history_contexts(),
-                'ntfs.experimental_admission_required')
+            _require(type(_experimental_admission_context) in _mixed_history_contexts(), 'ntfs.experimental_admission_required')
         from .experimental_history_set import _mixed_history_contexts
         from .owner_directory_fixture import is_fixture
-        if config.get('native_launch_version')=='2.0':
-            _require(type(_experimental_admission_context) in _mixed_history_contexts()
-                and is_fixture(_experimental_admission_context.raw),'ntfs.owner_fixture_startup_required')
+        if config.get('native_launch_version') in {'2.0','3.0'}:
+            _require(type(_experimental_admission_context) in _mixed_history_contexts() and is_fixture(_experimental_admission_context.raw) and _experimental_admission_context.document()['experimental_admission_version']==config['native_launch_version'], 'ntfs.owner_fixture_startup_required')
         elif type(_experimental_admission_context) in _mixed_history_contexts():
-            _require(not is_fixture(_experimental_admission_context.raw),'ntfs.owner_fixture_startup_required')
+            _require(not is_fixture(_experimental_admission_context.raw), 'ntfs.owner_fixture_startup_required')
         if _experimental_admission_context is not None:
-            from .experimental_history import (_ExperimentalHistoryFile1Admission,
-                _ExperimentalHistoryVersion1Admission)
-            shared=type(_experimental_admission_context) in (
-                _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
-            _require(shared==(config.get('native_launch_version')=='1.2'),
-                'ntfs.experimental_admission_scope')
+            from .experimental_history import _ExperimentalHistoryFile1Admission, _ExperimentalHistoryVersion1Admission
+            shared = type(_experimental_admission_context) in (_ExperimentalHistoryFile1Admission, _ExperimentalHistoryVersion1Admission)
+            _require(shared == (config.get('native_launch_version') == '1.2'), 'ntfs.experimental_admission_scope')
         if config.get('native_launch_version') == '1.4':
-            # The real check needs only these immutable invocation buffers and
-            # process owner. No channel, target, evidence or process is created.
-            self._owner = os.getpid(), threading.get_ident()
-            self._config_bytes,self._manifest_bytes,self._invocation_bytes = config_bytes,manifest_bytes,invocation_bytes
+            self._owner = (os.getpid(), threading.get_ident())
+            self._config_bytes, self._manifest_bytes, self._invocation_bytes = (config_bytes, manifest_bytes, invocation_bytes)
             self._manifest_digest = expected_manifest_digest
-        self._history_manifest_set=_accepted_launch_history(config,manifest_bytes,expected_manifest_digest,
-            _launch=self if config.get('native_launch_version') == '1.4' else None)
-        _require(type(invocation) is dict and set(invocation)=={'run_id','channel_id','operation_nonce','request'}
-            and type(invocation['run_id']) is str
-            and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',invocation['run_id']) is not None
-            and invocation['run_id'] not in {'.','..'}
-            and all(type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}',invocation[name])
-                for name in ('channel_id','operation_nonce')),'ntfs.accepted_invocation_shape')
-        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1','1.2','1.3','1.4','1.5','1.6','1.7','1.8','1.9'}
-            and type(manifest.get('root_grants')) is list
-            and len(manifest['root_grants'])==(2 if manifest['native_read_installation_version']=='1.5' else 1),
-            'ntfs.accepted_launch_binding_required')
-        if manifest['native_read_installation_version']=='1.6':
+        self._history_manifest_set = _accepted_launch_history(config, manifest_bytes, expected_manifest_digest, _launch=self if config.get('native_launch_version') == '1.4' else None)
+        _require(type(invocation) is dict and set(invocation) == {'run_id', 'channel_id', 'operation_nonce', 'request'} and (type(invocation['run_id']) is str) and (re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}', invocation['run_id']) is not None) and (invocation['run_id'] not in {'.', '..'}) and all((type(invocation[name]) is str and re.fullmatch('[0-9a-f]{32}', invocation[name]) for name in ('channel_id', 'operation_nonce'))), 'ntfs.accepted_invocation_shape')
+        _require(type(manifest) is dict and manifest.get('native_read_installation_version') in {'1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9'} and (type(manifest.get('root_grants')) is list) and (len(manifest['root_grants']) == (2 if manifest['native_read_installation_version'] == '1.5' else 1)), 'ntfs.accepted_launch_binding_required')
+        if manifest['native_read_installation_version'] == '1.6':
             from .experimental_bundle1 import _ExperimentalBundle1Admission
             from .bundle_execution import _BUNDLE1_CONTRACT
-            _require(type(_experimental_admission_context) is _ExperimentalBundle1Admission
-                and manifest.get('contract')==_BUNDLE1_CONTRACT,'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version']=='1.7':
+            _require(type(_experimental_admission_context) is _ExperimentalBundle1Admission and (manifest.get('contract') == _BUNDLE1_CONTRACT or manifest.get('contract') == semantic_owner_contract('Bundle1')), 'ntfs.experimental_admission_required')
+        if manifest['native_read_installation_version'] == '1.7':
             from .experimental_bundle2 import _ExperimentalBundle2Admission
             from .bundle_execution import _BUNDLE2_CONTRACT
-            _require(type(_experimental_admission_context) is _ExperimentalBundle2Admission
-                and manifest.get('contract')==_BUNDLE2_CONTRACT,'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version']=='1.8':
+            _require(type(_experimental_admission_context) is _ExperimentalBundle2Admission and manifest.get('contract') == _BUNDLE2_CONTRACT, 'ntfs.experimental_admission_required')
+        if manifest['native_read_installation_version'] == '1.8':
             from .experimental_bundle2_v2 import _ExperimentalBundle2AdmissionV2
             from .bundle_execution import _BUNDLE2_CONTRACT_V2
-            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV2
-                and manifest.get('contract')==_BUNDLE2_CONTRACT_V2,'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version']=='1.9':
+            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV2 and (manifest.get('contract') == _BUNDLE2_CONTRACT_V2 or manifest.get('contract') == semantic_owner_contract('Bundle2')), 'ntfs.experimental_admission_required')
+        if manifest['native_read_installation_version'] == '1.9':
             from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
             from .bundle_execution import _BUNDLE2_CONTRACT_V2
-            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV3
-                and manifest.get('contract')==_BUNDLE2_CONTRACT_V2,'ntfs.experimental_admission_required')
-        if manifest['native_read_installation_version']=='1.5':
-            from .experimental_version2 import _ExperimentalVersion2Admission,_VERSION2_CONTRACT
+            _require(type(_experimental_admission_context) is _ExperimentalBundle2AdmissionV3 and (manifest.get('contract') == _BUNDLE2_CONTRACT_V2 or manifest.get('contract') == semantic_owner_contract('Bundle2')), 'ntfs.experimental_admission_required')
+        if manifest['native_read_installation_version'] == '1.5':
+            from .experimental_version2 import _ExperimentalVersion2Admission, _VERSION2_CONTRACT
             from .version2_observation import _version2_grants
-            _require(type(_experimental_admission_context) is _ExperimentalVersion2Admission
-                and manifest.get('contract')==_VERSION2_CONTRACT,'ntfs.experimental_admission_required')
+            _require(type(_experimental_admission_context) is _ExperimentalVersion2Admission and (
+                manifest.get('contract') == _VERSION2_CONTRACT or (
+                    config.get('native_launch_version') == '3.0'
+                    and _experimental_admission_context.document()['experimental_admission_version'] == '3.0'
+                    and manifest.get('contract') == semantic_owner_contract('Version2'))),
+                'ntfs.experimental_admission_required')
             _version2_grants(manifest['root_grants'])
-        _require(manifest['native_read_installation_version']!='1.4'
-            or (self._history_manifest_set[0] is not None
-                and type(manifest.get('contract')) is dict
-                and manifest['contract'].get('id') in {
-                    'file_create.v1','publish_new_version.v1','file_create.v2'}),
-            'ntfs.accepted_history_binding_mismatch')
-        self._owner=os.getpid(),threading.get_ident()
-        self._config_bytes,self._manifest_bytes,self._invocation_bytes=config_bytes,manifest_bytes,invocation_bytes
-        self._manifest_digest=expected_manifest_digest
-        self._spawn_attempted=False
-        self._worker=None
-        self._worker_job=None
-        self._core_spawn_attempted=False
-        self._original_query_attempted=False
-        self._pipe_created=set()
-        self._linux_contours_checked=False
-        self._held=[]
-        self._finalization_attempted=set()
+        _require(manifest['native_read_installation_version'] != '1.4' or (self._history_manifest_set[0] is not None and type(manifest.get('contract')) is dict and (manifest['contract'].get('id') in {'file_create.v1', 'publish_new_version.v1', 'file_create.v2'})), 'ntfs.accepted_history_binding_mismatch')
+        self._owner = (os.getpid(), threading.get_ident())
+        self._config_bytes, self._manifest_bytes, self._invocation_bytes = (config_bytes, manifest_bytes, invocation_bytes)
+        self._manifest_digest = expected_manifest_digest
+        self._spawn_attempted = False
+        self._worker = None
+        self._worker_job = None
+        self._core_spawn_attempted = False
+        self._original_query_attempted = False
+        self._pipe_created = set()
+        self._linux_contours_checked = False
+        self._held = []
+        self._finalization_attempted = set()
         if _experimental_admission_context is not None:
-            from ...installation import _native_read_binding_for_launch,_resolve_native_history_bindings
-            binding=_native_read_binding_for_launch(self)
+            from ...installation import _native_read_binding_for_launch, _resolve_native_history_bindings
+            binding = _native_read_binding_for_launch(self)
             if self._history_manifest_set[0] is not None:
-                _resolve_native_history_bindings(binding,*self._history_manifest_set)
+                _resolve_native_history_bindings(binding, *self._history_manifest_set)
         self.check_runtime()
 
     @property
@@ -405,11 +388,9 @@ class _NativeAcceptedLaunch:
 
     @property
     def _bundle(self):
-        manifest=self.manifest
-        from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2
-        return ((manifest['native_read_installation_version']=='1.6' and manifest['contract']==_BUNDLE1_CONTRACT)
-            or (manifest['native_read_installation_version']=='1.7' and manifest['contract']==_BUNDLE2_CONTRACT)
-            or (manifest['native_read_installation_version'] in {'1.8','1.9'} and manifest['contract']==_BUNDLE2_CONTRACT_V2))
+        manifest = self.manifest
+        from .bundle_execution import _BUNDLE1_CONTRACT, _BUNDLE2_CONTRACT, _BUNDLE2_CONTRACT_V2
+        return manifest['native_read_installation_version'] == '1.6' and (manifest['contract'] == _BUNDLE1_CONTRACT or manifest['contract'] == semantic_owner_contract('Bundle1')) or (manifest['native_read_installation_version'] == '1.7' and manifest['contract'] == _BUNDLE2_CONTRACT) or (manifest['native_read_installation_version'] in {'1.8', '1.9'} and (manifest['contract'] == _BUNDLE2_CONTRACT_V2 or manifest['contract'] == semantic_owner_contract('Bundle2')))
 
     def check_runtime(self):
         _require(self._owner==(os.getpid(),threading.get_ident())
@@ -542,15 +523,16 @@ class _NativeAcceptedLaunch:
     def _spawn(self,args):
         self._windows_required()
         self._check_linux_contours()
+        _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)  # Fail BEFORE spawn after fallible static/contour IO.
         process=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
             bufsize=0,close_fds=True,creationflags=subprocess.CREATE_NO_WINDOW)
         self._held.append(process)  # Retain actual owner BEFORE later fallible setup.
         return process
 
     def _linux_command(self,role):
-        _require(role in {'core','original','inspect'},'ntfs.fixed_linux_role_required')
+        _require(role in {'core','original','inspect','prepare-input'},'ntfs.fixed_linux_role_required')
         config=self._config
-        container=config['core_container_id' if role=='core' else 'reader_container_id']
+        container=config['core_container_id' if role in {'core','prepare-input'} else 'reader_container_id']
         _require(type(container) is str and re.fullmatch('[0-9a-f]{64}',container) is not None
             and type(config['image_digest']) is str and re.fullmatch('sha256:[0-9a-f]{64}',config['image_digest'])
             and Path(config['docker_executable']).is_absolute()
@@ -560,6 +542,15 @@ class _NativeAcceptedLaunch:
         # and installed artifact graph; inspect metadata alone is insufficient.
         return [config['docker_executable'],'exec','-i',container,config['linux_python'],
             '-I','-S','-B','-u',config['linux_launcher'],role]
+
+    def spawn_input_stage(self):
+        _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
+        _require(not self._core_spawn_attempted,'ntfs.core_spawn_consumed')
+        from .input_stage import _scope_for_launch
+        _scope_for_launch(self)
+        _require(self.invocation['request'].get('operation')=='stage_input','input_stage.fixed_role_request')
+        self._core_spawn_attempted=True
+        return self._spawn(self._linux_command('prepare-input'))
 
     def spawn_core(self):
         _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
@@ -621,7 +612,7 @@ class _NativeAcceptedLaunch:
         value={'native_worker_original_version':'1.0','channel_id':self.channel_id,'context':parse_json_bytes(parsed.context_bytes),
             'grant':parse_json_bytes(parsed.grant_bytes),'effect':parse_json_bytes(parsed.effect_bytes),
             'content_base64':base64.b64encode(parsed.content_bytes).decode('ascii'),'timestamp':parsed.timestamp}
-        pipe.send_frame(canonical_bytes(value),time.perf_counter_ns()+30_000_000_000)
+        pipe.send_frame(canonical_bytes(value),_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
 
     def finalize_worker(self,process,pipe):
         _require(process is self._worker,'ntfs.owned_creation_process_required')
@@ -689,12 +680,12 @@ class _NativeAcceptedLaunch:
         try:
             witness=WindowsProcessWitness(process)
             pipe=self._pipe(process)
-            deadline = time.perf_counter_ns()+30_000_000_000
+            deadline = _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)
             pipe.send_frame(canonical_bytes(request),deadline)
             if (self._version1 or self._version2) and action == 'read_executing':
                 answer = _receive_version1_original(self,pipe,request,deadline,_version2=self._version2)
             else:
-                raw,_=pipe.receive_frame(time.perf_counter_ns()+30_000_000_000)
+                raw,_=pipe.receive_frame(_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
                 answer=parse_json_bytes(raw,maximum_bytes=2*1024**2)
             if type(answer) not in (ParsedNativeVersion1,ParsedNativeVersion2):
                 _require(type(answer) is dict and set(answer)=={'query','value','required_evidence_reads_finalized'}
@@ -705,7 +696,7 @@ class _NativeAcceptedLaunch:
         finally:
             try:
                 _require(witness is not None,'ntfs.reader_creation_witness_unavailable')
-                fact=witness.wait_for_exit(60000)
+                fact=witness.wait_for_exit(_input_observation_timeout_ms(60000))
                 _require(fact['worker_exit_established'] is True and fact['exit_code']==0,
                     'ntfs.reader_owner_exit_not_established')
                 self._finalize_exited(process,pipe)

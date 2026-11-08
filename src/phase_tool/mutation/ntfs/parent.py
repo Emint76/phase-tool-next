@@ -4,6 +4,7 @@ metadata/READY/ACK matches never authenticate that boundary. No journal/queue,
 receipt writer, effect retry, process search, respawn, terminate or history owner.
 """
 from __future__ import annotations
+from .input_stage import _cap_input_deadline,_input_observation_timeout_ms
 
 import os
 import base64
@@ -27,7 +28,7 @@ _RUN = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
 
 
 def _deadline():
-    return time.perf_counter_ns()+30_000_000_000
+    return _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)
 
 
 class _FailFirstPreparedAck:
@@ -284,7 +285,7 @@ class _NativeWindowsParent:
         finally:
             try:
                 _require(witness is not None,'ntfs.worker_creation_witness_unavailable')
-                process_fact=witness.wait_for_exit(60000)
+                process_fact=witness.wait_for_exit(_input_observation_timeout_ms(60000))
                 _require(process_fact['worker_exit_established'] is True
                     and process_fact['wait_result']==0 and process_fact['exit_code']==0,
                     'ntfs.worker_exit_not_established')
@@ -513,8 +514,20 @@ class _NativeWindowsParent:
                         return value
                     invocation=getattr(self._launch,'invocation',None)
                     request=invocation.get('request') if type(invocation) is dict else None
+                    from .parent_result import _native_bundle_result_mode,validate_native_bundle_result_delivery
+                    expects_bundle=_native_bundle_result_mode(request)
                     expects_result=_native_file_result_mode(request)
-                    if expects_result or value.get('version')=='1.1' or 'canonical_result' in value:
+                    if expects_bundle or value.get('version')=='1.3' or 'bundle_manifest'in value:
+                        _require(self._inspection_only and expects_bundle,
+                            'ntfs.bundle_result_request_version_required')
+                        from ...installation import _native_read_binding_for_launch
+                        binding=_native_read_binding_for_launch(self._launch)
+                        validate_native_bundle_result_delivery(value,request=request,
+                            run_id=self._launch.run_id,channel_id=self._launch.channel_id,
+                            read_binding=binding,expected_manifest_digest=self._launch.installation_digest,
+                            registry=binding.registry)
+                        _require(canonical_bytes(value)==raw,'ntfs.parent_command_binding_mismatch')
+                    elif expects_result or value.get('version')=='1.1' or 'canonical_result' in value:
                         _require(self._inspection_only and expects_result,
                             'ntfs.file_result_request_version_required')
                         from ...installation import _native_registry_for_launch

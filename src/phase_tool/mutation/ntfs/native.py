@@ -12,6 +12,7 @@ import hashlib
 import os
 import re
 import struct
+import threading
 import time
 from typing import Iterator
 
@@ -242,15 +243,46 @@ class NativeIO:
         return {'device': device.value, 'volume_guid': guid.value.lower(), 'volume_serial32': serial.value,
                 'filesystem': filesystem.value, 'flags': flags.value}
 
+    def input_volume(self,drive):
+        _require(type(drive)is str and re.fullmatch('[A-Z]:',drive)is not None,'input_stage.local_drive_required')
+        device=C.create_unicode_buffer(32768);guid=C.create_unicode_buffer(128);filesystem=C.create_unicode_buffer(128)
+        serial,maximum,flags=C.c_uint32(),C.c_uint32(),C.c_uint32()
+        if not self.kernel.QueryDosDeviceW(drive,device,len(device)):
+            raise PhaseError('ntfs.device_query_failed',details={'winerror':C.get_last_error()})
+        _require(re.fullmatch(r'\\Device\\HarddiskVolume[0-9]+',device.value)is not None,'ntfs.local_fixed_volume_required')
+        if not self.kernel.GetVolumeNameForVolumeMountPointW(drive+'\\',guid,len(guid)):
+            raise PhaseError('ntfs.volume_query_failed',details={'winerror':C.get_last_error()})
+        if not self.kernel.GetVolumeInformationW(drive+'\\',None,0,C.byref(serial),C.byref(maximum),C.byref(flags),filesystem,len(filesystem)):
+            raise PhaseError('ntfs.volume_query_failed',details={'winerror':C.get_last_error()})
+        _require(filesystem.value=='NTFS','ntfs.filesystem_unsupported')
+        return {'device':device.value,'volume_guid':guid.value.lower(),'volume_serial32':serial.value,'filesystem':filesystem.value,'flags':flags.value}
+
+    def input_state(self,handle):
+        self.assert_object(handle)
+        basic=_InputBasicInfo()
+        _require(C.sizeof(_InputBasicInfo)==40,'input_stage.basic_info_abi')
+        if not self.kernel.GetFileInformationByHandleEx(handle.value,0,C.byref(basic),C.sizeof(basic)):
+            raise PhaseError('ntfs.file_query_failed',details={'winerror':C.get_last_error()})
+        info=self.info(handle)
+        return {'native_identity':self.identity(handle).as_dict(),'length':info['length'],
+            'attributes':info['attributes'],'links':info['links'],
+            'creation_time':basic.creation,'write_time':basic.write,'change_time':basic.change}
+
+    def input_snapshot(self,scope,source_locator,members,deadline_ns):
+        return _NativeInputSnapshot(self,scope,source_locator,members,deadline_ns)
+
+
     def _open(self, name: str, *, parent: NativeHandle | None, directory: bool,
               rename_source: bool = False, namespace_flush: bool = False,
-              sharing: int = 3) -> NativeHandle:
+              sharing: int = 3, _input_name: bool = False) -> NativeHandle:
         if parent is not None:
             self.assert_object(parent, directory=True)
-            _leaf(name)
+            _input_leaf(name)if _input_name else _leaf(name)
+        _require(type(_input_name)is bool and (not _input_name or(parent is not None and sharing==1
+            and not rename_source and not namespace_flush)),'input_stage.readonly_name_mode_required')
         _require(type(directory) is bool and type(rename_source) is bool and type(namespace_flush) is bool,
                  'ntfs.invalid_open_mode')
-        _require(sharing in {3, 7} and (sharing == 3 or not (rename_source or namespace_flush)),
+        _require(type(sharing)is int and sharing in {1, 3, 7} and (sharing == 3 or not (rename_source or namespace_flush)),
                  'ntfs.invalid_sharing_mode')
         encoded = name.encode('utf-16-le')
         _require(len(encoded) <= 65532 and '\0' not in name, 'ntfs.name_too_large')
@@ -558,3 +590,151 @@ class NativeIO:
         except BaseException as error:
             event['post_observation_error'] = _error_record(error)
         return event
+
+
+def _input_leaf(value):
+    """Readonly source spelling only; target/member _leaf stays unchanged."""
+    _require(type(value)is str and value not in{'','.','..'}and not value.endswith(('.', ' '))
+        and not any(ord(c)<32 or c in '<>:"/\\|?*'for c in value),'input_stage.invalid_source_leaf')
+    try:encoded=value.encode('utf-16-le',errors='strict')
+    except UnicodeError as error:raise PhaseError('input_stage.invalid_source_unicode')from error
+    _require(0<len(encoded)<=510,'input_stage.source_leaf_utf16_bound')
+    # Win32 DOS aliases remain forbidden, including superscript device digits
+    # and spaces before an extension. No DOS/device/ADS normalization occurs.
+    stem=value.split('.',1)[0].rstrip(' ').casefold()
+    _require(stem not in{'con','prn','aux','nul','conin$','conout$','clock$'}and re.fullmatch(r'(?:com|lpt)[1-9\u00b9\u00b2\u00b3]',stem)is None,
+        'input_stage.source_device_name')
+    return value
+
+
+class _InputBasicInfo(C.Structure):
+    _fields_=[('creation',C.c_int64),('access',C.c_int64),('write',C.c_int64),('change',C.c_int64),('attributes',C.c_uint32)]
+
+
+class _NativeInputSnapshot:
+    """Readonly retained source handles; only existing NativeIO performs APIs.
+
+    Ordinary input-directory admission is installation-owned. Selected file
+    handles deny write/delete sharing. Directory observations are freshly
+    rechecked; this does not assert global or adversarial lifetime immutability.
+    """
+    def __init__(self,api,scope,source_locator,members,deadline_ns):
+        from pathlib import PureWindowsPath
+        from ...bundle import validate_members
+        self.api=api;self.scope=scope;self.deadline=deadline_ns
+        self.owner=(os.getpid(),threading.get_ident());self.handles=[]
+        self.files=[];self.directories={};self.anchors=[];self.records=[];self.close_attempted=False
+        root=PureWindowsPath(scope['windows_root']);self.drive=root.drive
+        primary=None
+        try:
+            self._time()
+            _require(api.input_volume(self.drive)==scope['volume'],'input_stage.volume_mapping_changed')
+            device=self._adopt(api._open(scope['volume']['device']+'\\',parent=None,directory=True))
+            self.anchors.append((device,api.identity(device)))
+            parent=device
+            for component in root.parts[1:]:
+                parent=self._adopt(api._open(component,parent=parent,directory=True,sharing=1,_input_name=True))
+                self.anchors.append((parent,api.identity(parent)))
+            api.assert_object(parent,directory=True,expected=NativeIdentity.parse(scope['root_identity']))
+            self.root=parent
+            from .input_stage import _safe_input_locator
+            source_locator=_safe_input_locator(source_locator)
+            components=source_locator.split('/')
+            source=parent
+            for ordinal,component in enumerate(components):
+                directory=members is not None or ordinal<len(components)-1
+                # Scope/locator ancestors are pinned, not fully enumerated.
+                # A directory-once grant has no 1024-file global census cap.
+                _input_leaf(component)
+                source=self._adopt(api._open(component,parent=source,directory=directory,sharing=1,_input_name=True))
+                api.assert_object(source,directory=directory)
+                _require(api.identity(source).volume_serial==NativeIdentity.parse(scope['root_identity']).volume_serial,
+                    'input_stage.foreign_source_volume')
+                if directory:self.anchors.append((source,api.identity(source)))
+            if members is None:
+                self._file(source,'payload')
+            else:
+                for member in validate_members(members):
+                    current=source;parts=member.split('/')
+                    for ordinal,component in enumerate(parts):
+                        self._directory(current)
+                        directory=ordinal<len(parts)-1
+                        key=(current.value,component.casefold(),directory)
+                        if not hasattr(self,'selected'):self.selected={}
+                        if key not in self.selected:self.selected[key]=self._selected(current,component,directory)
+                        current=self.selected[key]
+                    self._file(current,member)
+            self.verify_complete()
+        except BaseException as error:primary=error
+        if primary is not None:
+            try:self.close()
+            except BaseException as close_error:
+                raise BaseExceptionGroup('input source acquisition and close failed',[primary,close_error])
+            raise primary
+
+    def _time(self):
+        _require(self.owner==(os.getpid(),threading.get_ident())and not self.close_attempted,
+            'input_stage.source_owner_consumed')
+        _require(type(self.deadline)is int and time.perf_counter_ns()<self.deadline,'input_stage.deadline')
+
+    def _adopt(self,handle):
+        # Append actual owned handle before any later query can fail.
+        self.handles.append(handle);self._time();return handle
+
+    def _directory(self,handle):
+        if handle.value in self.directories:return
+        self._time();self.api.assert_object(handle,directory=True)
+        self.directories[handle.value]=(handle,self.api.identity(handle))
+
+    def _selected(self,parent,name,directory):
+        self._time();_input_leaf(name)
+        child=self._adopt(self.api._open(name,parent=parent,directory=directory,sharing=1,_input_name=True))
+        expected=self.api.identity(child)
+        self.api.assert_object(child,directory=directory,expected=expected)
+        _require(expected.volume_serial==NativeIdentity.parse(self.scope['root_identity']).volume_serial,'input_stage.foreign_source_volume')
+        return child
+
+    def _file(self,handle,path):
+        self._time();state=self.api.input_state(handle)
+        _require(not handle.directory and state['links']==1,'input_stage.source_hardlink')
+        _require(all(old['native_identity']!=state['native_identity']for _,old in self.files),
+            'input_stage.source_physical_alias')
+        self.files.append((handle,state))
+        self.records.append({'path':path,'length':state['length'],'native_identity':state['native_identity'],'state':state})
+
+    def chunks(self,index):
+        self._time();_require(type(index)is int and 0<=index<len(self.files),'input_stage.member_index')
+        handle,state=self.files[index];length=state['length'];seen=0
+        _require(self.api.input_state(handle)==state,'input_stage.source_changed')
+        buffered=bytearray()
+        for large in self.api.read_chunks(handle,length):
+            self._time();buffered.extend(large)
+            while len(buffered)>=256*1024:
+                piece=bytes(buffered[:256*1024]);del buffered[:256*1024]
+                self._time();seen+=len(piece)
+                _require(seen<=length and self.api.input_state(handle)==state,'input_stage.source_changed')
+                yield piece
+        if buffered:
+            self._time();seen+=len(buffered)
+            _require(seen<=length and self.api.input_state(handle)==state,'input_stage.source_changed')
+            yield bytes(buffered)
+        _require(seen==length and self.api.input_state(handle)==state,'input_stage.source_changed')
+
+    def verify_complete(self):
+        self._time()
+        _require(self.api.input_volume(self.drive)==self.scope['volume'],'input_stage.volume_mapping_changed')
+        for handle,identity in self.anchors:
+            self._time();self.api.assert_object(handle,directory=True,expected=identity)
+        for handle,identity in self.directories.values():
+            self._time();self.api.assert_object(handle,directory=True,expected=identity)
+        for handle,state in self.files:
+            self._time();_require(self.api.input_state(handle)==state,'input_stage.source_changed')
+
+    def close(self):
+        _require(self.owner==(os.getpid(),threading.get_ident())and not self.close_attempted,
+            'input_stage.source_close_consumed')
+        self.close_attempted=True;errors=[]
+        for handle in reversed(self.handles):
+            try:handle.close()
+            except BaseException as error:errors.append(error)
+        if errors:raise BaseExceptionGroup('input source handle finalization failed',errors)

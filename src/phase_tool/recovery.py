@@ -4,6 +4,7 @@ Original receipts and their statuses are immutable. A new versioned observation
 records current verification, never fabricates an original successful execution.
 """
 from __future__ import annotations
+from .mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
 from pathlib import Path
 import re
 from typing import Literal
@@ -174,77 +175,67 @@ def save_observation(run: Path, result: RecoveryResult) -> None:
     result.observation_path=str(path)
 
 
-def recover_publication(application, *, evidence_root: Path, run_id: str,
-                        target_root: Path, request_id: str, expected_intent_digest: str,
-                        mode: str = 'observe'):
+def recover_publication(application, *, evidence_root: Path, run_id: str, target_root: Path, request_id: str, expected_intent_digest: str, mode: str='observe'):
     from .application import ApplicationResponse
-    # Select the closed native role BEFORE Host/POSIX load_context/_root/lock.
     from .installation import _NativeFileCreateInstallation
     if type(application.installation) is _NativeFileCreateInstallation:
         from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
-        authority=application.installation.authority
-        if type(authority) is not _ExperimentalBundle2AuthorityV3:
+        authority = application.installation.authority
+        if type(authority) is not _ExperimentalBundle2AuthorityV3 and (not is_semantic_owner_authority(authority, 'Bundle2')):
             raise PhaseError('recovery.native_generation_unsupported')
-        return authority.recover_prepared(application,evidence_root=evidence_root,run_id=run_id,
-            target_root=target_root,request_id=request_id,expected_intent_digest=expected_intent_digest,mode=mode)
-    result=RecoveryResult(run_id=run_id,request_id=request_id)
-    progress=RecoveryProgress()
-    run=None
+        return authority.recover_prepared(application, evidence_root=evidence_root, run_id=run_id, target_root=target_root, request_id=request_id, expected_intent_digest=expected_intent_digest, mode=mode)
+    result = RecoveryResult(run_id=run_id, request_id=request_id)
+    progress = RecoveryProgress()
+    run = None
     try:
-        if mode not in {'observe','commit_prepared'}:
+        if mode not in {'observe', 'commit_prepared'}:
             raise PhaseError('recovery.unsupported_mode')
-        root,target,run,intent,plan,contract=load_context(application,evidence_root,run_id,target_root,request_id,expected_intent_digest)
+        root, target, run, intent, plan, contract = load_context(application, evidence_root, run_id, target_root, request_id, expected_intent_digest)
         if mode == 'commit_prepared':
             from .mutation import EffectBroker
-            result.intent_digest=expected_intent_digest
-            result.effect_plan_digest=intent['effect_plan_digest']
-            original=application.inspect(evidence_root=root,run_id=run_id,root_bindings={'phase_result_root':target}).payload
-            result.original_receipt_digest=original.get('receipt_digest')
-            result.original_terminal_status=original.get('terminal_status')
-            EffectBroker(application.registry,application.installation.authority_provider,
-                application.installation.authority_profile_binding).resume_prepared_bundle(
-                    plan,contract,run/'intent.json',target,expected_intent_digest,progress=progress)
+            result.intent_digest = expected_intent_digest
+            result.effect_plan_digest = intent['effect_plan_digest']
+            original = application.inspect(evidence_root=root, run_id=run_id, root_bindings={'phase_result_root': target}).payload
+            result.original_receipt_digest = original.get('receipt_digest')
+            result.original_terminal_status = original.get('terminal_status')
+            EffectBroker(application.registry, application.installation.authority_provider, application.installation.authority_profile_binding).resume_prepared_bundle(plan, contract, run / 'intent.json', target, expected_intent_digest, progress=progress)
         else:
-            with RecoveryRootLock(target,'publication-recovery',progress):
-                # Re-read after locking; no cached mutable evidence or source inputs.
-                root,target,run,intent,plan,contract=load_context(application,evidence_root,run_id,target_root,request_id,expected_intent_digest)
-                result.intent_digest=expected_intent_digest
-                result.effect_plan_digest=intent['effect_plan_digest']
-                _verify_intent_blobs(run,intent,plan)
-                inspected=application.inspect(evidence_root=root,run_id=run_id,root_bindings={'phase_result_root':target}).payload
-                result.original_receipt_digest=inspected.get('receipt_digest')
-                result.original_terminal_status=inspected.get('terminal_status')
-                if not (inspected['success'] and inspected.get('target_verified') is True
-                        and inspected.get('terminal_status')=='succeeded_verified'):
-                    verify_without_final_receipt(application,run,target,intent,plan)
-                progress.effect_state='committed'
-                progress.target_verified=True
-        result.status,result.success,result.exit_code='verified_existing',True,0
-        result.inspection_required=False
-    except (PhaseError,OSError,ValueError,TypeError,KeyError,ValidationError) as exc:
-        progress.record_error('recovery',exc)
-        result.success=False
-        result.inspection_required=True
-        result.error=exc.code if isinstance(exc,PhaseError) else 'recovery.failure'
-        result.status='rejected' if result.error in {'recovery.request_conflict','recovery.invalid_expected_digest','recovery.unsupported_contract'} else 'indeterminate'
-        result.exit_code=10 if result.status=='rejected' else 40
-    result.recovery_mutation_attempted=progress.attempted
-    result.recovery_effect_state=progress.effect_state
-    result.target_verified=progress.target_verified
-    result.lock_finalization=progress.lock_finalization
-    result.error_details=list(progress.errors)
-    # Publish the observation only after lock finalization: never leave a
-    # successful recovery observation for a call that failed during __exit__.
+            with RecoveryRootLock(target, 'publication-recovery', progress):
+                root, target, run, intent, plan, contract = load_context(application, evidence_root, run_id, target_root, request_id, expected_intent_digest)
+                result.intent_digest = expected_intent_digest
+                result.effect_plan_digest = intent['effect_plan_digest']
+                _verify_intent_blobs(run, intent, plan)
+                inspected = application.inspect(evidence_root=root, run_id=run_id, root_bindings={'phase_result_root': target}).payload
+                result.original_receipt_digest = inspected.get('receipt_digest')
+                result.original_terminal_status = inspected.get('terminal_status')
+                if not (inspected['success'] and inspected.get('target_verified') is True and (inspected.get('terminal_status') == 'succeeded_verified')):
+                    verify_without_final_receipt(application, run, target, intent, plan)
+                progress.effect_state = 'committed'
+                progress.target_verified = True
+        result.status, result.success, result.exit_code = ('verified_existing', True, 0)
+        result.inspection_required = False
+    except (PhaseError, OSError, ValueError, TypeError, KeyError, ValidationError) as exc:
+        progress.record_error('recovery', exc)
+        result.success = False
+        result.inspection_required = True
+        result.error = exc.code if isinstance(exc, PhaseError) else 'recovery.failure'
+        result.status = 'rejected' if result.error in {'recovery.request_conflict', 'recovery.invalid_expected_digest', 'recovery.unsupported_contract'} else 'indeterminate'
+        result.exit_code = 10 if result.status == 'rejected' else 40
+    result.recovery_mutation_attempted = progress.attempted
+    result.recovery_effect_state = progress.effect_state
+    result.target_verified = progress.target_verified
+    result.lock_finalization = progress.lock_finalization
+    result.error_details = list(progress.errors)
     if run is not None:
         try:
-            save_observation(run,result)
-        except (PhaseError,OSError,ValueError,TypeError,KeyError) as exc:
-            progress.record_error('observation',exc)
-            result.error_details=list(progress.errors)
-            result.success=False
-            result.inspection_required=True
-            result.status='indeterminate'
-            result.exit_code=40
+            save_observation(run, result)
+        except (PhaseError, OSError, ValueError, TypeError, KeyError) as exc:
+            progress.record_error('observation', exc)
+            result.error_details = list(progress.errors)
+            result.success = False
+            result.inspection_required = True
+            result.status = 'indeterminate'
+            result.exit_code = 40
             if result.error is None:
-                result.error=exc.code if isinstance(exc,PhaseError) else 'recovery.failure'
-    return ApplicationResponse(result.model_dump(),result.exit_code)
+                result.error = exc.code if isinstance(exc, PhaseError) else 'recovery.failure'
+    return ApplicationResponse(result.model_dump(), result.exit_code)

@@ -268,6 +268,28 @@ class PhaseApplication:
             preparation_root=preparation_root, evidence_root=evidence_root,
             request_id=request_id, run_id=run_id, publication_version=publication_version)
 
+    def execute_native_bundle_publication(self,*,source_locator:str,target_locator:str,
+            request_id:str,members:list[str])->ApplicationResponse:
+        """One admitted native Core ACK; independent inspect belongs to parent owner.
+
+        Preparation refusal is pre-Core. Never catch a later Core/dispatch result
+        as a preparation failure or attempt inspect on its consumed authority.
+        """
+        from .mutation.ntfs.preparation import _prepare_bundle_publication
+        try:
+            candidate,inputs,expected,raw=_prepare_bundle_publication(self,source_locator=source_locator,
+                target_locator=target_locator,request_id=request_id,members=members)
+        except (PhaseError,OSError,ValueError)as error:
+            return self._failure('execute',error)
+        from .canonical import parse_json_bytes
+        manifest=parse_json_bytes(self.installation.read_binding.manifest_bytes,maximum_bytes=2*1024**2)
+        exact=manifest['contract']
+        return self.run('execute',contract_binding=exact['id']+'@'+exact['version'],
+            contract_digest=exact['package_digest'],candidate_path=candidate,
+            evidence_root=Path(manifest['evidence_root']),run_id=self.installation.authority._run_id,
+            input_paths=inputs,expected_inputs=expected,_expected_candidate_bytes=raw,
+            root_bindings={key:Path(value)for key,value in manifest['root_projections'].items()})
+
     def inspect(
         self,
         *,

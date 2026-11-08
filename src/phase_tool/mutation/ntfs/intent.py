@@ -9,6 +9,7 @@ Root-wide unresolved scanning/locks, guarantee admission, fresh observations,
 possible-dispatch/GO, worker exit and Core receipts remain mandatory outside.
 """
 from __future__ import annotations
+from .owner_semantic_contracts import semantic_owner_contract
 import base64
 import re
 from .handoff import ParsedNativeFileCreate, ParsedNativeVersion1, ParsedNativeVersion2, _OriginalControlProjection
@@ -36,115 +37,59 @@ def _canonical(raw: bytes):
     return value
 
 
-def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes,
-    registry: RegistrySnapshot, expected_run_id: str, expected_intent_digest: str,
-    installed_core_binding: bytes, installed_native_binding: bytes,
-    installed_implementation_binding: bytes, _execution_requested: bool,
-    _version1: bool, _file2: bool = False, _version2: bool = False, _bundle: bool = False):
+def _original_control_prefix(*, intent_bytes: bytes, plan_bytes: bytes, registry: RegistrySnapshot, expected_run_id: str, expected_intent_digest: str, installed_core_binding: bytes, installed_native_binding: bytes, installed_implementation_binding: bytes, _execution_requested: bool, _version1: bool, _file2: bool=False, _version2: bool=False, _bundle: bool=False):
     """Existing checks BEFORE payload verification; never a complete projection."""
-    _require(type(_version1) is bool and type(_file2) is bool and type(_version2) is bool
-        and type(_bundle) is bool and sum((_version1, _file2, _version2, _bundle)) <= 1
-        and type(_execution_requested) is bool,
-        'ntfs.original_closed_role_required')
-    _require(type(registry) is RegistrySnapshot,'ntfs.original_registry_required')
-    intent=_canonical(intent_bytes)
-    _require(type(intent) is dict and intent.get('phase_intent_version')=='1.2','ntfs.original_native_intent_required')
-    validate_intent(intent,registry)
-    _require(intent['run_id']==expected_run_id and profile_digest('intent',intent)==expected_intent_digest,
-        'ntfs.original_intent_mismatch')
-    _require(intent['registry_snapshot_digest']==registry.digest and intent['execution_requested'] is _execution_requested,
-        'ntfs.original_execution_binding_mismatch')
-    for key,expected in (('core',installed_core_binding),('native_binding',installed_native_binding),
-                         ('implementation_binding',installed_implementation_binding)):
+    _require(type(_version1) is bool and type(_file2) is bool and (type(_version2) is bool) and (type(_bundle) is bool) and (sum((_version1, _file2, _version2, _bundle)) <= 1) and (type(_execution_requested) is bool), 'ntfs.original_closed_role_required')
+    _require(type(registry) is RegistrySnapshot, 'ntfs.original_registry_required')
+    intent = _canonical(intent_bytes)
+    _require(type(intent) is dict and intent.get('phase_intent_version') == '1.2', 'ntfs.original_native_intent_required')
+    validate_intent(intent, registry)
+    _require(intent['run_id'] == expected_run_id and profile_digest('intent', intent) == expected_intent_digest, 'ntfs.original_intent_mismatch')
+    _require(intent['registry_snapshot_digest'] == registry.digest and intent['execution_requested'] is _execution_requested, 'ntfs.original_execution_binding_mismatch')
+    for key, expected in (('core', installed_core_binding), ('native_binding', installed_native_binding), ('implementation_binding', installed_implementation_binding)):
         _canonical(expected)
-        _require(canonical_bytes(intent[key])==expected,'ntfs.original_installation_binding_mismatch')
-    binding=intent['contract']
-    contract=registry.resolve_contract(binding['id'],binding['version'],binding['package_digest'],core_version=intent['core']['version'])
-    plan=_canonical(plan_bytes)
-    _require(digest_bytes(plan_bytes)==intent['evidence']['effect_plan_attachment_digest']
-        and profile_digest('effect-plan',plan)==intent['effect_plan_digest'],'ntfs.original_plan_digest_mismatch')
-    _validate_logical_plan(plan,contract,registry)
+        _require(canonical_bytes(intent[key]) == expected, 'ntfs.original_installation_binding_mismatch')
+    binding = intent['contract']
+    contract = registry.resolve_contract(binding['id'], binding['version'], binding['package_digest'], core_version=intent['core']['version'])
+    plan = _canonical(plan_bytes)
+    _require(digest_bytes(plan_bytes) == intent['evidence']['effect_plan_attachment_digest'] and profile_digest('effect-plan', plan) == intent['effect_plan_digest'], 'ntfs.original_plan_digest_mismatch')
+    _validate_logical_plan(plan, contract, registry)
     operation = 'publish_new_version' if _version1 or _version2 else 'create'
-    _require(plan['run_id']==intent['run_id'] and plan['operation_intent']==intent['operation']['intent']==operation
-        and plan['mechanism']==intent['operation']['mechanism'],'ntfs.original_plan_binding_mismatch')
-    scope=canonical_digest(contract.document['write_scope'])
-    _require(intent['write_scope_digest']==plan['write_scope_digest']==scope,'ntfs.original_write_scope_mismatch')
-    implementation=intent['implementation_binding']
-    _require(implementation['effect_plan_digest']==intent['effect_plan_digest']
-        and implementation['mechanism']==plan['mechanism'] and implementation['authority']['usage']=='provider_backed',
-        'ntfs.original_implementation_mismatch')
-    _require(len(plan['effects'])==1,'ntfs.original_single_effect_required')
-    effect=plan['effects'][0]
+    _require(plan['run_id'] == intent['run_id'] and plan['operation_intent'] == intent['operation']['intent'] == operation and (plan['mechanism'] == intent['operation']['mechanism']), 'ntfs.original_plan_binding_mismatch')
+    scope = canonical_digest(contract.document['write_scope'])
+    _require(intent['write_scope_digest'] == plan['write_scope_digest'] == scope, 'ntfs.original_write_scope_mismatch')
+    implementation = intent['implementation_binding']
+    _require(implementation['effect_plan_digest'] == intent['effect_plan_digest'] and implementation['mechanism'] == plan['mechanism'] and (implementation['authority']['usage'] == 'provider_backed'), 'ntfs.original_implementation_mismatch')
+    _require(len(plan['effects']) == 1, 'ntfs.original_single_effect_required')
+    effect = plan['effects'][0]
     if _version2:
-        _require(contract.document['identity']['id']=='publish_new_version.v2'
-            and contract.document['identity']['version']=='1.0.0'
-            and plan['mechanism']['id']=='mechanism.object_store_publish_v2'
-            and plan['mechanism']['version']=='1.0.0'
-            and set(effect)==_EFFECT_FIELDS|{'ordinal','archive_target','archive_digest','archive_length',
-                'operation_identity','request_digest','content_object_target','content_blob_digest',
-                'content_bytes_b64','media_type','mechanism'}
-            and effect['kind']=='publish_new_version' and type(effect['ordinal']) is int
-            and effect['ordinal']==0 and effect['request_digest'] is None
-            and effect['mechanism']==plan['mechanism'],
-            'ntfs.original_version2_effect_required')
+        _require(contract.document['identity']['id'] == 'publish_new_version.v2' and (contract.document['identity']['version'] == '1.0.0' or binding == semantic_owner_contract('Version2')) and (plan['mechanism']['id'] == 'mechanism.object_store_publish_v2') and (plan['mechanism']['version'] == '1.0.0') and (set(effect) == _EFFECT_FIELDS | {'ordinal', 'archive_target', 'archive_digest', 'archive_length', 'operation_identity', 'request_digest', 'content_object_target', 'content_blob_digest', 'content_bytes_b64', 'media_type', 'mechanism'}) and (effect['kind'] == 'publish_new_version') and (type(effect['ordinal']) is int) and (effect['ordinal'] == 0) and (effect['request_digest'] is None) and (effect['mechanism'] == plan['mechanism']), 'ntfs.original_version2_effect_required')
     elif _version1:
-        _require(contract.document['identity']['id']=='publish_new_version.v1'
-            and contract.document['identity']['version']=='1.0.0'
-            and plan['mechanism']['id']=='mechanism.archive_then_publish_v1'
-            and set(effect)==_EFFECT_FIELDS|{'ordinal','archive_target','archive_digest','archive_length',
-                'operation_identity','request_digest'}
-            and effect['kind']=='publish_new_version' and type(effect['ordinal']) is int
-            and effect['ordinal']==0 and effect['request_digest'] is None,
-            'ntfs.original_version1_effect_required')
+        _require(contract.document['identity']['id'] == 'publish_new_version.v1' and (contract.document['identity']['version'] == '1.0.0' or binding == semantic_owner_contract('Version1')) and (plan['mechanism']['id'] == 'mechanism.archive_then_publish_v1') and (set(effect) == _EFFECT_FIELDS | {'ordinal', 'archive_target', 'archive_digest', 'archive_length', 'operation_identity', 'request_digest'}) and (effect['kind'] == 'publish_new_version') and (type(effect['ordinal']) is int) and (effect['ordinal'] == 0) and (effect['request_digest'] is None), 'ntfs.original_version1_effect_required')
     else:
         if _file2:
-            _require(contract.document['identity']['id']=='file_create.v2'
-                and contract.document['identity']['version']=='1.0.0'
-                and plan['mechanism']['id']=='mechanism.exclusive_create_v2'
-                and plan['mechanism']['version']=='1.0.0',
-                'ntfs.original_file2_effect_required')
+            _require(contract.document['identity']['id'] == 'file_create.v2' and (contract.document['identity']['version'] == '1.0.0' or binding == semantic_owner_contract('File2')) and (plan['mechanism']['id'] == 'mechanism.exclusive_create_v2') and (plan['mechanism']['version'] == '1.0.0'), 'ntfs.original_file2_effect_required')
         if _bundle:
             from .bundle_execution import _BUNDLE1_CONTRACT, _BUNDLE1_MECHANISM, _BUNDLE2_CONTRACT, _BUNDLE2_CONTRACT_V2, _BUNDLE2_MECHANISM
-            _require((binding==_BUNDLE1_CONTRACT and plan['mechanism']==_BUNDLE1_MECHANISM)
-                or (binding in (_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2) and plan['mechanism']==_BUNDLE2_MECHANISM),
-                'ntfs.original_bundle_effect_required')
-        _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
-            and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
-            and effect['lock_scope'] is None and effect['durability_policy_id']=='file_data_synced'
-            and effect['on_failure']=='stop_and_classify','ntfs.original_single_effect_required')
-    candidate=intent['candidate']
-    _require(candidate['input_mode']=='structured_json' and candidate['storage']['mode']=='inline'
-        and candidate['storage']['attachment_digest'] is None,'ntfs.original_inline_candidate_required')
-    value=candidate['storage']['value'];candidate_raw=canonical_bytes(value)
-    Draft202012Validator(registry.schema_document(contract.document['candidate']['schema_ref'],contract.document['candidate']['schema_digest']),
-        registry=registry.schema_registry(),format_checker=FormatChecker()).validate(value)
-    _require(candidate['digest']==profile_digest('candidate',value) and candidate['length']==len(candidate_raw),
-        'ntfs.original_candidate_digest_mismatch')
-    _require(effect['target']['relative_locator']==safe_relative_locator(value['target_locator'])
-        and effect['target']['root_binding']==contract.document['canonical_result']['root_binding']
-        and (_version2 or effect['input_binding']==value['input_binding'])
-        and intent['idempotency']['key']==value['idempotency_key'],
-        'ntfs.original_candidate_effect_mismatch')
+            _require((binding == _BUNDLE1_CONTRACT or binding == semantic_owner_contract('Bundle1')) and plan['mechanism'] == _BUNDLE1_MECHANISM or ((binding in (_BUNDLE2_CONTRACT, _BUNDLE2_CONTRACT_V2) or binding == semantic_owner_contract('Bundle2')) and plan['mechanism'] == _BUNDLE2_MECHANISM), 'ntfs.original_bundle_effect_required')
+        _require(set(effect) == _EFFECT_FIELDS and effect['kind'] == 'exclusive_create' and (effect['preconditions'] == {'existence': 'absent', 'expected_digest': None, 'expected_head': None, 'concurrency_token': None}) and (effect['lock_scope'] is None) and (effect['durability_policy_id'] == 'file_data_synced') and (effect['on_failure'] == 'stop_and_classify'), 'ntfs.original_single_effect_required')
+    candidate = intent['candidate']
+    _require(candidate['input_mode'] == 'structured_json' and candidate['storage']['mode'] == 'inline' and (candidate['storage']['attachment_digest'] is None), 'ntfs.original_inline_candidate_required')
+    value = candidate['storage']['value']
+    candidate_raw = canonical_bytes(value)
+    Draft202012Validator(registry.schema_document(contract.document['candidate']['schema_ref'], contract.document['candidate']['schema_digest']), registry=registry.schema_registry(), format_checker=FormatChecker()).validate(value)
+    _require(candidate['digest'] == profile_digest('candidate', value) and candidate['length'] == len(candidate_raw), 'ntfs.original_candidate_digest_mismatch')
+    _require(effect['target']['relative_locator'] == safe_relative_locator(value['target_locator']) and effect['target']['root_binding'] == contract.document['canonical_result']['root_binding'] and (_version2 or effect['input_binding'] == value['input_binding']) and (intent['idempotency']['key'] == value['idempotency_key']), 'ntfs.original_candidate_effect_mismatch')
     if _version1:
         from ...contracts.publish_new_version_v1 import archive_locator
         archive = archive_locator(value['expected_current_digest'])
-        _require(value['input_binding']=='payload' and effect['target']['relative_locator']!=archive
-            and effect['archive_target']=={'root_binding':effect['target']['root_binding'],'relative_locator':archive}
-            and effect['archive_digest']==value['expected_current_digest']
-            and type(effect['archive_length']) is int and 0<=effect['archive_length']<=16*1024**2
-            and effect['operation_identity']==value['operation_id']
-            and effect['preconditions']=={'existence':'present','expected_digest':effect['archive_digest'],
-                'expected_head':None,'concurrency_token':effect['archive_digest']}
-            and effect['lock_scope']=='publish.'+digest_bytes(value['target_locator'].encode('utf-8')).removeprefix('sha256:')
-            and effect['durability_policy_id']=='file_data_synced' and effect['on_failure']=='stop_and_classify',
-            'ntfs.original_version1_effect_mismatch')
+        _require(value['input_binding'] == 'payload' and effect['target']['relative_locator'] != archive and (effect['archive_target'] == {'root_binding': effect['target']['root_binding'], 'relative_locator': archive}) and (effect['archive_digest'] == value['expected_current_digest']) and (type(effect['archive_length']) is int) and (0 <= effect['archive_length'] <= 16 * 1024 ** 2) and (effect['operation_identity'] == value['operation_id']) and (effect['preconditions'] == {'existence': 'present', 'expected_digest': effect['archive_digest'], 'expected_head': None, 'concurrency_token': effect['archive_digest']}) and (effect['lock_scope'] == 'publish.' + digest_bytes(value['target_locator'].encode('utf-8')).removeprefix('sha256:')) and (effect['durability_policy_id'] == 'file_data_synced') and (effect['on_failure'] == 'stop_and_classify'), 'ntfs.original_version1_effect_mismatch')
     if _version2:
-        _version2_content_binding(intent,plan)
+        _version2_content_binding(intent, plan)
     else:
-        inputs=intent['inputs']
-        _require(len(inputs)==1 and inputs[0]['binding_id']==value['input_binding']
-            and inputs[0]['freeze_strategy']==('manifest_and_hash' if _bundle else 'copy_and_hash'),'ntfs.original_frozen_input_required')
-    return intent,plan,contract
+        inputs = intent['inputs']
+        _require(len(inputs) == 1 and inputs[0]['binding_id'] == value['input_binding'] and (inputs[0]['freeze_strategy'] == ('manifest_and_hash' if _bundle else 'copy_and_hash')), 'ntfs.original_frozen_input_required')
+    return (intent, plan, contract)
 
 
 def _original_content_binding(intent: dict, plan: dict, digest: str, length: int) -> None:
@@ -180,56 +125,41 @@ def _verify_original_blob_bytes(intent: dict, plan: dict, blob_bytes: bytes,
     _original_content_binding(intent,plan,digest,len(blob_bytes))
 
 
-def _original_control_suffix(*, intent: dict, plan: dict, contract,
-    registry: RegistrySnapshot, pre_validator_bytes: bytes,
-    installed_root_grants: bytes, expected_intent_digest: str,
-    _version1: bool, _file2: bool = False, _version2: bool = False, _bundle: bool = False) -> _OriginalControlProjection:
+def _original_control_suffix(*, intent: dict, plan: dict, contract, registry: RegistrySnapshot, pre_validator_bytes: bytes, installed_root_grants: bytes, expected_intent_digest: str, _version1: bool, _file2: bool=False, _version2: bool=False, _bundle: bool=False) -> _OriginalControlProjection:
     """Existing checks AFTER the payload slot; no actual-content proof here."""
-    effect=plan['effects'][0];candidate=intent['candidate'];value=candidate['storage']['value']
-    inputs=intent['inputs'];binding=intent['contract']
-    implementation=intent['implementation_binding']
-    operation='publish_new_version' if _version1 or _version2 else 'create'
-    root_records=intent['idempotency']['root_identities']
+    effect = plan['effects'][0]
+    candidate = intent['candidate']
+    value = candidate['storage']['value']
+    inputs = intent['inputs']
+    binding = intent['contract']
+    implementation = intent['implementation_binding']
+    operation = 'publish_new_version' if _version1 or _version2 else 'create'
+    root_records = intent['idempotency']['root_identities']
     _canonical(installed_root_grants)
-    _require(canonical_bytes(root_records)==installed_root_grants
-        and len(root_records)==(2 if _version2 else 1),'ntfs.original_installed_roots_mismatch')
-    grants=[_grant(row) for row in root_records]
-    _require({grant.binding for grant in grants}=={root['binding_id'] for root in contract.document['write_scope']['roots']}
-        and len({grant.binding for grant in grants})==len(grants)
-        and not {grant.binding for grant in grants}.intersection(contract.document['write_scope']['forbidden_root_bindings'])
-        and grants[0].binding==effect['target']['root_binding'],'ntfs.original_root_binding_mismatch')
+    _require(canonical_bytes(root_records) == installed_root_grants and len(root_records) == (2 if _version2 else 1), 'ntfs.original_installed_roots_mismatch')
+    grants = [_grant(row) for row in root_records]
+    _require({grant.binding for grant in grants} == {root['binding_id'] for root in contract.document['write_scope']['roots']} and len({grant.binding for grant in grants}) == len(grants) and (not {grant.binding for grant in grants}.intersection(contract.document['write_scope']['forbidden_root_bindings'])) and (grants[0].binding == effect['target']['root_binding']), 'ntfs.original_root_binding_mismatch')
     if _version2:
         from .version2_observation import _version2_grants
         _version2_grants(root_records)
-    root_digest=profile_digest('native-root-identity-v1',root_records)
-    id_scope={'contract':binding,'result_locator':value['target_locator'],'root_identity_digest':root_digest,'operation_intent':operation}
-    _require(intent['idempotency']['root_identity_digest']==root_digest
-        and intent['idempotency']['scope_digest']==profile_digest('idempotency-scope',id_scope)
-        and intent['idempotency']['request_digest']==request_identity_digest(
-            policy=contract.document['idempotency']['request_digest_policy_id'],
-            scope=id_scope,candidate_digest=candidate['digest'],input_records=inputs),
-        'ntfs.original_idempotency_binding_mismatch')
-    _require(type(pre_validator_bytes) is bytes and len(pre_validator_bytes)<=_CONTROL_LIMIT,
-        'ntfs.original_precondition_bytes_required')
-    verify_saved_precondition_results(registry,contract,intent,plan,pre_validator_bytes)
-    native=intent['native_binding']
-    bundle_worker_version='1.4'
+    root_digest = profile_digest('native-root-identity-v1', root_records)
+    id_scope = {'contract': binding, 'result_locator': value['target_locator'], 'root_identity_digest': root_digest, 'operation_intent': operation}
+    _require(intent['idempotency']['root_identity_digest'] == root_digest and intent['idempotency']['scope_digest'] == profile_digest('idempotency-scope', id_scope) and (intent['idempotency']['request_digest'] == request_identity_digest(policy=contract.document['idempotency']['request_digest_policy_id'], scope=id_scope, candidate_digest=candidate['digest'], input_records=inputs)), 'ntfs.original_idempotency_binding_mismatch')
+    _require(type(pre_validator_bytes) is bytes and len(pre_validator_bytes) <= _CONTROL_LIMIT, 'ntfs.original_precondition_bytes_required')
+    verify_saved_precondition_results(registry, contract, intent, plan, pre_validator_bytes)
+    native = intent['native_binding']
+    bundle_worker_version = '1.4'
     if _bundle:
         from .bundle_execution import _BUNDLE2_CONTRACTS
-        if binding in _BUNDLE2_CONTRACTS:bundle_worker_version='1.5'
-    context={'worker_protocol':'phase.native.file-worker','worker_version':bundle_worker_version if _bundle else '1.3' if _version2 else '1.2' if _file2 else '1.1' if _version1 else '1.0','run_id':intent['run_id'],
-        'intent_digest':expected_intent_digest,'effect_plan_digest':intent['effect_plan_digest'],
-        'native_binding_digest':digest_bytes(canonical_bytes(native)),
-        'installation_digest':native['installation']['descriptor_digest'],
-        'implementation_artifact_digest':implementation['authority']['provider']['artifact_digest'],
-        'operation_nonce':native['operation_nonce']}
+        if binding in _BUNDLE2_CONTRACTS or binding == semantic_owner_contract('Bundle2'):
+            bundle_worker_version = '1.5'
+    context = {'worker_protocol': 'phase.native.file-worker', 'worker_version': bundle_worker_version if _bundle else '1.3' if _version2 else '1.2' if _file2 else '1.1' if _version1 else '1.0', 'run_id': intent['run_id'], 'intent_digest': expected_intent_digest, 'effect_plan_digest': intent['effect_plan_digest'], 'native_binding_digest': digest_bytes(canonical_bytes(native)), 'installation_digest': native['installation']['descriptor_digest'], 'implementation_artifact_digest': implementation['authority']['provider']['artifact_digest'], 'operation_nonce': native['operation_nonce']}
     if _bundle:
         from .bundle_execution import _bundle_context
-        checked_context=_bundle_context(context)
-    else:checked_context=_version2_context(context) if _version2 else _file2_context(context) if _file2 else _version1_context(context) if _version1 else _context(context)
-    return _OriginalControlProjection(canonical_bytes(checked_context),canonical_bytes(root_records if _version2 else grants[0].as_dict()),
-        canonical_bytes(effect),intent['created_at'],effect['input_binding'],effect['content_digest'],
-        effect['content_length'])
+        checked_context = _bundle_context(context)
+    else:
+        checked_context = _version2_context(context) if _version2 else _file2_context(context) if _file2 else _version1_context(context) if _version1 else _context(context)
+    return _OriginalControlProjection(canonical_bytes(checked_context), canonical_bytes(root_records if _version2 else grants[0].as_dict()), canonical_bytes(effect), intent['created_at'], effect['input_binding'], effect['content_digest'], effect['content_length'])
 
 
 def _parse_original_controls(*, intent_bytes: bytes, plan_bytes: bytes,

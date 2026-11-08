@@ -208,7 +208,11 @@ def _verify_file2_original_blob(*, evidence_root: Path,
 
 def _frozen_bundle_digest(intent):
     from .bundle_execution import _BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2
-    _require(intent['contract'] in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2) and len(intent['inputs'])==1,
+    from .owner_semantic_contracts import semantic_owner_contract
+    # Content-role recognition only. Existing installed/admitted binding and
+    # full parser/blob checks remain mandatory before any accepted handoff.
+    _require(intent['contract'] in (_BUNDLE1_CONTRACT,_BUNDLE2_CONTRACT,_BUNDLE2_CONTRACT_V2,
+        semantic_owner_contract('Bundle1'),semantic_owner_contract('Bundle2')) and len(intent['inputs'])==1,
         'ntfs.original_bundle_effect_required')
     frozen=intent['inputs'][0]
     _require(frozen['binding_id']=='payload' and frozen['freeze_strategy']=='manifest_and_hash'

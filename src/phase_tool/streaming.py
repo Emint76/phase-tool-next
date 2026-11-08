@@ -158,18 +158,36 @@ def copy_and_hash_stream(binding_id: str, input_root: Path, relative_locator: st
 
 @contextmanager
 def _verified_blob_snapshot(blob: Path, expected: tuple[str, int]):
-    """Borrow one verified anonymous Linux input FD for this context only.
+    """Borrow one fully verified private copy, capped at its trusted length.
 
-    The trusted caller resolves the frozen blob and expected binding. This
-    helper authenticates neither its caller nor an installation. It copies
-    using the existing fixed file2 cap, verifies the PRIVATE copy completely
-    before yielding, and never reopens the shared blob during consumption.
-    No target, evidence record, wire message or native admission is created.
+    This authenticates neither caller nor installation. FILE_LIMIT remains
+    unchanged; an invalid/mismatched expected binding cannot authorize I/O.
+    The shared source is never reopened during snapshot consumption.
     """
+    if (type(expected) is not tuple or len(expected) != 2
+            or type(expected[0]) is not str or len(expected[0]) != 71
+            or not expected[0].startswith("sha256:")
+            or any(c not in "0123456789abcdef" for c in expected[0][7:])
+            or type(expected[1]) is not int or not 0 <= expected[1] <= FILE_LIMIT):
+        raise PhaseError("mechanism.content_binding_mismatch")
     with TemporaryFile(dir=blob.parent) as snapshot:
         source = os.open(blob, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            captured = transfer(source, FILE_LIMIT, snapshot.fileno())
+            opened = os.fstat(source)
+            if not stat.S_ISREG(opened.st_mode):
+                raise PhaseError("stream.not_regular_file")
+            if opened.st_size != expected[1]:
+                raise PhaseError("mechanism.content_binding_mismatch")
+            try:
+                captured = transfer(source, expected[1], snapshot.fileno())
+            except PhaseError as error:
+                # Preserve the existing ordinary-drift classification. A
+                # growing source now reaches its trusted cap earlier, before
+                # transfer's final fingerprint comparison could run.
+                if (error.code == "stream.limit_exceeded"
+                        and fingerprint(opened) != fingerprint(os.fstat(source))):
+                    raise PhaseError("freeze.source_changed_during_capture") from error
+                raise
         finally:
             os.close(source)
         if captured != expected:

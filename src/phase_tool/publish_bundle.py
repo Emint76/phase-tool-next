@@ -75,6 +75,20 @@ def _require_bundle_projection(reference, projection, *, binding, target_locator
     return manifest, digest
 
 
+def _bundle_publication_candidate(request_id, target_locator, members):
+    """One pure Host/native candidate formula, never an authority selector."""
+    if (type(request_id) is not str or len(request_id)>128
+        or re.fullmatch(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*",request_id) is None):
+        raise PhaseError('bundle.invalid_request_id')
+    members=validate_members(members)
+    target_locator=safe_relative_locator(target_locator)
+    candidate={'operation_id':request_id,'idempotency_key':request_id,'input_binding':'payload',
+        'target_locator':target_locator,'members':members}
+    raw=encode_structured_input(candidate)
+    if len(raw)>REQUEST_LIMIT:raise PhaseError('bundle.request_too_large')
+    return candidate,raw
+
+
 def publish_bundle(application, *, source_root: Path, members: list[str], target_root: Path,
                    target_locator: str, preparation_root: Path, evidence_root: Path,
                    request_id: str, run_id: str, publication_version: str = '1.0'):
@@ -130,9 +144,7 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
             result.publish_bundle_result_version = "1.1"
             result.execution_disposition = "not_executed"
         result.contract_digest = binding["package_digest"]
-        candidate = {"operation_id":request_id,"idempotency_key":request_id,
-                     "input_binding":"payload","target_locator":target_locator,"members":members}
-        candidate_bytes = encode_structured_input(candidate)
+        candidate,candidate_bytes = _bundle_publication_candidate(request_id,target_locator,members)
         # Candidate only; Core fixes all input bytes and creates the bound manifest.
         with TemporaryDirectory(prefix="phase-bundle-",dir=preparation_root) as temporary:
             from tempfile import NamedTemporaryFile
@@ -223,3 +235,38 @@ def publish_bundle(application, *, source_root: Path, members: list[str], target
                 result.status,result.success,result.exit_code = "indeterminate",False,40
                 result.error,result.inspection_required = "bundle.lock_finalization_failed",True
     return ApplicationResponse(result.model_dump(),result.exit_code)
+
+
+def _native_bundle_publication_ack(result,ack):
+    """Project one validated actual ACK; no evidence, provider or target I/O."""
+    for field in ('receipt_digest','intent_digest','effect_plan_digest','execution_disposition','mutation_attempted'):
+        result[field]=ack[field]
+    if (ack.get('stage3_command_result_version')=='1.2' or ack.get('inspection_required')is True
+        or ack['exit_code']==40 or ack['mutation_attempted']is None):
+        result.update(status='indeterminate',exit_code=40,inspection_required=True,
+            error=ack['error']or'bundle.execution_unknown');return False
+    if ack['success']is not True:
+        uncertain=ack['mutation_attempted']is not False
+        result.update(status='indeterminate'if uncertain else'rejected_before_write',
+            exit_code=40 if uncertain else 10,inspection_required=uncertain or (ack['error']or'').startswith('idempotency.'),
+            error=ack['error']or'bundle.execution_failed');return False
+    result.update(status='committed_unverified',exit_code=30,inspection_required=True)
+    if not(ack['command']=='execute'and ack['run_id']==result['run_id']and ack['exit_code']==0
+        and ack['error']is None and ack['blockers']==[] and ack['terminal_status']=='succeeded_verified'
+        and ack['receipt_digest']and ack['execution_disposition']in{'executed','reused_existing'}):
+        raise PhaseError('bundle.evidence_mismatch')
+    return True
+
+
+def _native_bundle_publication_inspected(result,ack,inspected,reference,projection,*,binding,members):
+    """Same inspector projection/receipt correlation as Host, no original traversal."""
+    fields=('run_id','terminal_status','execution_disposition','mutation_attempted',
+        'receipt_digest','intent_digest','effect_plan_digest')
+    if (inspected['success']is not True or inspected['target_verified']is not True
+        or inspected['exit_code']!=0 or inspected['error']is not None or inspected['blockers']!=[]
+        or inspected['terminal_status']!='succeeded_verified'
+        or any(ack[field]!=inspected[field]for field in fields)):
+        raise PhaseError(inspected['error']or'bundle.inspection_mismatch')
+    manifest,digest=_require_bundle_projection(reference,projection,binding=binding,
+        target_locator=result['target_locator'],members=members)
+    result.update(bundle_digest=digest,member_count=len(manifest['members']),total_length=manifest['total_length'])

@@ -9,3 +9,4 @@ include ROLLBACK.md
 include tests/fixtures/native_phase_prepared_ack_test_launcher_v1.py.in
 include tests/fixtures/native_phase_mcp_sdk_test_launcher_v2.py.in
 include tests/fixtures/native_phase_mcp_prepared_sdk_test_launcher_v3.py.in
+recursive-include tests/fixtures *.py.in *.json

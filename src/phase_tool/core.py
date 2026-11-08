@@ -1,4 +1,6 @@
 from __future__ import annotations
+from .mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
+from .mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 
 import base64
 import errno
@@ -986,7 +988,9 @@ class PhaseCore:
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
                 from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
                 from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
-                native_bundle = type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3)
+                native_bundle = (type(native_ctx.native_authority) in (_ExperimentalBundle1Authority,_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3)
+                    or is_semantic_owner_authority(native_ctx.native_authority,'Bundle1')
+                    or is_semantic_owner_authority(native_ctx.native_authority,'Bundle2'))
             if native_bundle:
                 frozen = native_ctx.native_authority.freeze_inputs(
                     contract, request, parse_json_bytes(candidate.canonical_bytes),
@@ -1288,7 +1292,8 @@ class PhaseCore:
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
                 from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
                 from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
-                if type(native_authority) in (_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3):
+                if (type(native_authority) in (_ExperimentalBundle2Authority,_ExperimentalBundle2AuthorityV2,_ExperimentalBundle2AuthorityV3)
+                        or is_semantic_owner_authority(native_authority,'Bundle2')):
                     # Pass the existing Core store and receipt attachment list;
                     # checkpointing never creates another evidence owner.
                     native_authority.bind_prepared_checkpoint(store,contract,plan,intent_path,
@@ -1638,7 +1643,7 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
                         prepared_control=(original.get('phase_intent_version')=='1.2'
                             and original.get('execution_requested') is True
                             and original.get('contract') in tuple(dict(zip(('id','version','package_digest'),b))
-                                for b in (NATIVE_BOUND_CONTRACT,NATIVE_BOUND_CONTRACT_V2)))
+                                for b in (NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2, tuple(semantic_owner_contract('Bundle2')[key] for key in ('id','version','package_digest')))))
                     _require(entry.name in {'intent.json','receipt.json'} or prepared_control,
                         'ntfs.original_evidence_name_unsafe')
         return names,attachments
@@ -1675,7 +1680,7 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
         if admission is not None:
             admission.verify_attachment(selected, run_id, receipt)
             allowed.add('experimental-admission.json')
-            if planned and admission.document().get('experimental_admission_version')=='2.0':
+            if planned and admission.document().get('experimental_admission_version')in {'2.0','3.0'}:
                 allowed.add('experimental-attempt.json')
         _require(set(attachments)<=allowed, 'ntfs.original_history_unresolved')
         actual={digest_bytes(control(path)[1]) for path in attachments.values()}

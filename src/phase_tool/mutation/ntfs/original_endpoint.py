@@ -134,13 +134,60 @@ def _require_publication_original(*,intent,plan,parsed,query,binding):
         'publish_file.source_digest_mismatch')
 
 
+
+def _original_query_bundle_publication(query):
+    """Closed query1.3 extends the SAME reader, not a new parser or authority."""
+    _require(type(query) is dict and type(query.get('native_original_query_version'))is str,
+        'ntfs.original_query_binding_mismatch')
+    if query['native_original_query_version']!='1.3':return None
+    _require(set(query)==_QUERY_FIELDS|{'bundle_publication_request'}and query['action']=='read_executing'
+        and query['intent_digest']is not None,'ntfs.original_query_binding_mismatch')
+    value=query['bundle_publication_request']
+    _require(type(value)is dict and set(value)=={'request_id','target_locator','members'},
+        'ntfs.original_query_binding_mismatch')
+    from ...publish_bundle import _bundle_publication_candidate
+    candidate,_=_bundle_publication_candidate(value['request_id'],value['target_locator'],value['members'])
+    _require(candidate['members']==value['members'],'ntfs.original_query_binding_mismatch')
+    return value
+
+
+def _require_bundle_publication_original(*,intent,plan,parsed,query,binding):
+    """Literal request correlation AFTER the existing complete Original parser."""
+    from .handoff import _BundleControlProjection
+    from .bundle_execution import _bundle_projection_value
+    from ...bundle import parse_manifest
+    from ...publish_bundle import _bundle_publication_candidate
+    request=_original_query_bundle_publication(query)
+    _require(request is not None and type(parsed)is _BundleControlProjection,'ntfs.original_query_binding_mismatch')
+    value=_bundle_projection_value(parsed)
+    candidate,_=_bundle_publication_candidate(request['request_id'],request['target_locator'],request['members'])
+    manifest=parse_manifest(parsed.manifest_bytes)
+    _require(value['context']['run_id']==query['run_id']
+        and value['context']['intent_digest']==query['intent_digest']
+        and value['contract']==binding and intent['contract']==binding
+        and plan['effects']==[value['effect']]
+        and canonical_bytes(intent['candidate']['storage']['value'])==canonical_bytes(candidate)
+        and intent['idempotency']['key']==request['request_id']
+        and [item['path']for item in manifest['members']]==request['members'],
+        'ntfs.original_bundle_publication_mismatch')
+
+
 def native_original_query(launch,query):
     from .bootstrap import _NativeAcceptedLaunch
     from ...evidence import _confirm_native_original_absent
     _require(type(launch) is _NativeAcceptedLaunch,'ntfs.accepted_launch_binding_required')
     launch.check_runtime()
-    version1_publication=_original_query_version1_publication(query)
-    publication=None if version1_publication is not None else _original_query_publication(query)
+    staged=None
+    if type(query)is dict and query.get('native_original_query_version')=='1.4':
+        _require(set(query)==_QUERY_FIELDS|{'staged_publication_request'}
+            and query['action']=='read_executing'and query['intent_digest']is not None,
+            'ntfs.original_query_binding_mismatch')
+        from .input_stage import _scope_for_launch,_require_staged_publication_request
+        scope,role,scope_digest=_scope_for_launch(launch)
+        staged=_require_staged_publication_request(query['staged_publication_request'],role=role)
+    bundle_publication=None if staged is not None else _original_query_bundle_publication(query)
+    version1_publication=None if staged is not None or bundle_publication is not None else _original_query_version1_publication(query)
+    publication=None if staged is not None or bundle_publication is not None or version1_publication is not None else _original_query_publication(query)
     _require(type(query['run_id']) is str
         and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',query['run_id']) is not None
         and query['run_id'] not in {'.','..'}
@@ -154,6 +201,7 @@ def native_original_query(launch,query):
         'ntfs.original_query_binding_mismatch')
     _require(publication is None or (not launch._version1 and not launch._file2 and not launch._version2 and not getattr(launch,'_bundle',False)),'ntfs.original_query_binding_mismatch')
     _require(version1_publication is None or launch._version1,'ntfs.original_query_binding_mismatch')
+    _require(bundle_publication is None or getattr(launch,'_bundle',False),'ntfs.original_query_binding_mismatch')
     from ...installation import _native_read_binding_for_launch
     binding=_native_read_binding_for_launch(launch)
     registry=binding.registry
@@ -186,12 +234,19 @@ def native_original_query(launch,query):
                 'prepared':checked['prepared'],'original_failure_digest':checked['files']['attachments/native-parent-failure.json'][0]}
         elif query['action']=='read_executing':
             parsed=binding.read(run_id=query['run_id'],intent_digest=digest)
+            if staged is not None:
+                from .input_stage import _require_staged_original
+                _require_staged_original(launch=launch,request=staged,intent=intent,
+                    plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),parsed=parsed,binding=binding)
             if publication is not None:
                 _require_publication_original(intent=intent,plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
                     parsed=parsed,query=query,binding=launch.manifest['contract'])
             if version1_publication is not None:
                 _require_version1_publication_original(intent=intent,
                     plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
+                    parsed=parsed,query=query,binding=launch.manifest['contract'])
+            if bundle_publication is not None:
+                _require_bundle_publication_original(intent=intent,plan=parse_json_bytes(plan_raw,maximum_bytes=2*1024**2),
                     parsed=parsed,query=query,binding=launch.manifest['contract'])
             if getattr(launch,'_bundle',False):
                 from .bundle_execution import _bundle_projection_value

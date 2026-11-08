@@ -1,6 +1,6 @@
 from __future__ import annotations
-
 from contextlib import contextmanager
+
 import ctypes
 import hashlib
 import json
@@ -1616,6 +1616,336 @@ def _snapshot_regular_file_tree(root, *, expected_files, maximum_files, maximum_
         'operation_counts': dict(io.counts),
         'all_opened_file_descriptors_closed': io.counts['open_read'] == io.counts['close'],
         'deadline_ns': deadline_ns, 'cross_run_cache': False}
+
+
+"""Generic ext4 input staging IO; inserted in the existing Evidence owner."""
+
+class _InputStagePosixIO:
+    """Only this existing IO-owner module performs physical staging writes."""
+    def lstat(self,path):return path.lstat()
+    def fstat(self,fd):return os.fstat(fd)
+    def open_root(self,path):return os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    def child_stat(self,parent,name):return os.stat(name,dir_fd=parent,follow_symlinks=False)
+    def mkdir(self,parent,name):os.mkdir(name,0o700,dir_fd=parent)
+    def directory(self,parent,name):return os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
+    def file(self,parent,name):return os.open(name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+    def write(self,fd,raw):return os.write(fd,raw)
+    def rewind(self,fd):return os.lseek(fd,0,os.SEEK_SET)
+    def read(self,fd,count):return os.read(fd,count)
+    def flush(self,fd):os.fsync(fd)
+    def close(self,fd):os.close(fd)
+    def uid(self):return os.geteuid()
+
+
+class _OwnedInputStageSink:
+    """One owned generic preparation subtree, never a receipt or write grant.
+
+    Policy/contract/input-scope validation stays in input_stage.py. The sink
+    owns exclusive descriptor-relative files, complete readback, flush/close,
+    and the existing installed preparation directory identity. No deletion.
+    """
+    def __init__(self,root,expected_identity,stage_name,deadline_ns,*,_io=None):
+        import time,threading
+        self.owner=(os.getpid(),threading.get_ident())
+        self._clock=time.monotonic_ns;self.deadline=deadline_ns
+        self.io=_InputStagePosixIO()if _io is None else _io
+        self.root=Path(root);self.name=stage_name;self.opened=[];self.directories={};self.current=None
+        self.rows=[];self.consumed=False;self.close_attempted=False;self.root_state=None
+        self.primary=None;self.ancestors=[]
+        if (not self.root.is_absolute()or type(stage_name)is not str
+            or re.fullmatch('phase-native-input-[0-9a-f]{32}',stage_name)is None
+            or type(expected_identity)is not dict or set(expected_identity)!={'device','inode'}
+            or type(expected_identity['device'])is not int or expected_identity['device']<0
+            or type(expected_identity['inode'])is not int or expected_identity['inode']<=0):
+            raise PhaseError('input_stage.invalid_preparation_binding')
+        self.expected=(expected_identity['device'],expected_identity['inode'])
+        try:
+            self._time()
+            for path in (*reversed(self.root.parents),self.root):
+                info=self.io.lstat(path)
+                if not stat.S_ISDIR(info.st_mode)or stat.S_ISLNK(info.st_mode):raise PhaseError('input_stage.preparation_link')
+                self.ancestors.append((path,self._ancestor_identity(info)))
+            before=self.io.lstat(self.root)
+            if self._identity(before)!=self.expected or before.st_uid!=self.io.uid()or before.st_mode&0o022:
+                raise PhaseError('input_stage.preparation_identity')
+            fd=self.io.open_root(self.root)
+            self.rootfd=self._owned(fd,None,None,True)
+            if self._identity(self.io.fstat(fd))!=self.expected:raise PhaseError('input_stage.preparation_identity')
+            self.io.mkdir(self.rootfd,self.name)
+            self.stagefd=self._owned(self.io.directory(self.rootfd,self.name),self.rootfd,self.name,True)
+            self.directories['']=self.stagefd
+        except BaseException as primary:
+            self.abort(primary)
+
+    @staticmethod
+    def _identity(info):return info.st_dev,info.st_ino
+
+    @staticmethod
+    def _ancestor_identity(info):return info.st_dev,info.st_ino,info.st_mode,info.st_uid
+
+    def _check_ancestors(self):
+        for path,expected in self.ancestors:
+            info=self.io.lstat(path)
+            if (not stat.S_ISDIR(info.st_mode)or stat.S_ISLNK(info.st_mode)
+                or self._ancestor_identity(info)!=expected):raise PhaseError('input_stage.preparation_ancestor_changed')
+
+    def _time(self):
+        import threading
+        if self.owner!=(os.getpid(),threading.get_ident()):raise PhaseError('input_stage.preparation_owner_changed')
+        if type(self.deadline)is not int or self._clock()>=self.deadline:raise PhaseError('input_stage.deadline')
+
+    def _owned(self,fd,parent,name,directory):
+        # Retain first, query second. Cleanup can never lose a successful open.
+        record={'fd':fd,'parent':parent,'name':name,'directory':directory,'identity':None,'closed':False,'close_attempted':False}
+        self.opened.append(record)
+        record['path']=self.root if parent is None else self._record(parent)['path']/name
+        info=self.io.fstat(fd);record['identity']=self._identity(info)
+        if (not(stat.S_ISDIR(info.st_mode)if directory else stat.S_ISREG(info.st_mode))
+            or info.st_uid!=self.io.uid()or info.st_mode&0o022
+            or(not directory and info.st_nlink!=1)):
+            raise PhaseError('input_stage.preparation_object')
+        self._time();self._check(record);return fd
+
+    def _record(self,fd):
+        found=[r for r in self.opened if r['fd']==fd and not r['closed']]
+        if len(found)!=1:raise PhaseError('input_stage.owned_descriptor_required')
+        return found[0]
+
+    def _owned_descriptor(self,record):
+        # Namespace drift does not make an unchanged owned descriptor foreign.
+        # A foreign/reused number must never be closed by this owner.
+        info=self.io.fstat(record['fd'])
+        if record['identity']is not None and self._identity(info)!=record['identity']:
+            raise PhaseError('input_stage.descriptor_changed')
+        return info
+
+    def _check(self,record):
+        info=self._owned_descriptor(record)
+        if (not(stat.S_ISDIR(info.st_mode)if record['directory']else stat.S_ISREG(info.st_mode))
+            or info.st_uid!=self.io.uid()or info.st_mode&0o022
+            or(not record['directory']and info.st_nlink!=1)):
+            raise PhaseError('input_stage.preparation_object_changed')
+        if record['parent']is not None:
+            self._check(self._record(record['parent']))
+            named=self.io.child_stat(record['parent'],record['name'])
+            if self._identity(named)!=record['identity']or stat.S_ISLNK(named.st_mode):
+                raise PhaseError('input_stage.preparation_name_changed')
+        else:
+            self._check_ancestors()
+            if self._identity(self.io.lstat(self.root))!=self.expected:
+                raise PhaseError('input_stage.preparation_identity')
+        return info
+
+    def _check_closed_names(self):
+        self._check_ancestors()
+        for record in self.opened:
+            self._time();info=self.io.lstat(record['path'])
+            if (self._identity(info)!=record['identity']or stat.S_ISLNK(info.st_mode)
+                or not(stat.S_ISDIR(info.st_mode)if record['directory']else stat.S_ISREG(info.st_mode))
+                or info.st_uid!=self.io.uid()or info.st_mode&0o022
+                or(not record['directory']and info.st_nlink!=1)):
+                raise PhaseError('input_stage.preparation_name_changed')
+
+    def _directory(self,relative):
+        if relative in self.directories:return self.directories[relative]
+        parts=relative.split('/');parent_relative='/'.join(parts[:-1]);parent=self._directory(parent_relative)
+        self._time();self._check(self._record(parent));self.io.mkdir(parent,parts[-1])
+        fd=self._owned(self.io.directory(parent,parts[-1]),parent,parts[-1],True)
+        self.directories[relative]=fd;return fd
+
+    def begin_member(self,index,path,length):
+        from pathlib import PurePosixPath
+        self._time()
+        value=PurePosixPath(path)
+        if (self.consumed or self.current is not None or type(index)is not int or index!=len(self.rows)
+            or type(path)is not str or str(value)!=path or value.is_absolute()
+            or any(p in {'','.','..'}or'\\'in p or':'in p or'\x00'in p for p in value.parts)
+            or type(length)is not int or not 0<=length<=2*1024**3):
+            raise PhaseError('input_stage.invalid_member')
+        # All payloads are below one new owned subtree; policy selected paths
+        # already passed the closed bundle/file grammar before sink creation.
+        relative='payload/'+path;parent_relative='/'.join(relative.split('/')[:-1])
+        parent=self._directory(parent_relative);leaf=value.name
+        self._check(self._record(parent));fd=self._owned(self.io.file(parent,leaf),parent,leaf,False)
+        self.current={'fd':fd,'index':index,'path':path,'length':length,'offset':0,'hash':hashlib.sha256()}
+
+    def write(self,raw):
+        self._time();current=self.current
+        if (self.consumed or current is None or type(raw)is not bytes or not 0<len(raw)<=256*1024
+            or current['offset']+len(raw)>current['length']):raise PhaseError('input_stage.write_bound')
+        offset=0
+        while offset<len(raw):
+            self._time();self._check(self._record(current['fd']))
+            count=self.io.write(current['fd'],raw[offset:])
+            if type(count)is not int or not 0<count<=len(raw)-offset:raise PhaseError('input_stage.write_no_progress')
+            offset+=count;self._time()
+        current['hash'].update(raw);current['offset']+=len(raw)
+
+    def _close_one(self,record):
+        # Consume before close. Never retry an ambiguous close. A changed
+        # descriptor is not ours to close; retain failure for the caller.
+        if record['close_attempted']:raise PhaseError('input_stage.descriptor_close_consumed')
+        if record['identity']is not None:self._owned_descriptor(record)
+        record['close_attempted']=True
+        self.io.close(record['fd'])
+        record['closed']=True
+
+    def finish_member(self,expected):
+        self._time();current=self.current
+        if current is None or current['offset']!=current['length']:raise PhaseError('input_stage.member_incomplete')
+        actual={'path':current['path'],'length':current['offset'],'digest':'sha256:'+current['hash'].hexdigest()}
+        if actual!=expected:raise PhaseError('input_stage.member_digest')
+        record=self._record(current['fd']);self._check(record);self.io.flush(current['fd']);self._time()
+        if self.io.rewind(current['fd'])!=0:raise PhaseError('input_stage.readback_seek')
+        observed=hashlib.sha256();length=0
+        while True:
+            self._time();raw=self.io.read(current['fd'],min(256*1024,current['length']-length+1))
+            if not raw:break
+            length+=len(raw)
+            if length>current['length']:raise PhaseError('input_stage.readback_length')
+            observed.update(raw)
+        if length!=current['length']or'sha256:'+observed.hexdigest()!=actual['digest']:
+            raise PhaseError('input_stage.readback_digest')
+        self._check(record);self._close_one(record);self._time()
+        self.rows.append(actual);self.current=None
+
+    def finish(self,header_digest,rows,payload_kind,preparation_binding=None):
+        self._time()
+        if self.consumed or self.current is not None or rows!=self.rows or payload_kind not in{'file','bundle'}:
+            raise PhaseError('input_stage.finish_binding')
+        self.consumed=True
+        manifest={'bundle_version':'1.0','members':rows,'total_length':sum(row['length']for row in rows)}
+        raw_manifest=canonical_bytes(manifest)
+        if payload_kind=='file':
+            if len(rows)!=1 or rows[0]['path']!='payload':raise PhaseError('input_stage.file_binding')
+            locator=self.name+'/payload/payload';expected_digest=rows[0]['digest'];expected_length=rows[0]['length']
+        else:
+            locator=self.name+'/payload';expected_digest=digest_bytes(raw_manifest);expected_length=len(raw_manifest)
+        result={'native_prepared_input_version':'1.0','header_digest':header_digest,'payload_kind':payload_kind,
+            'source_locator':locator,'expected_digest':expected_digest,'expected_length':expected_length,
+            'member_count':len(rows),'total_length':manifest['total_length'],'members':rows,
+            'source_header':preparation_binding}
+        # This marker binds prepared input only. It never preclaims its own
+        # close, process exit, authoritative completion or Phase acceptance.
+        marker=canonical_bytes(dict(result,telemetry_stage='PRE_RETURN_PREPARATION_DATA',final_acceptance=None))
+        if len(marker)>4*1024**2:raise PhaseError('input_stage.marker_bound')
+        fd=self._owned(self.io.file(self.stagefd,'input-stage.json'),self.stagefd,'input-stage.json',False)
+        offset=0
+        while offset<len(marker):
+            self._time();self._check(self._record(fd));count=self.io.write(fd,marker[offset:offset+65536])
+            if type(count)is not int or count<=0 or count>min(65536,len(marker)-offset):raise PhaseError('input_stage.marker_write')
+            offset+=count
+        self.io.flush(fd);self._close_one(self._record(fd))
+        for fd in reversed(list(self.directories.values())):
+            self._time();self._check(self._record(fd));self.io.flush(fd)
+        self.io.flush(self.rootfd);self._time();self._close_all();self._time()
+        self._check_closed_names();self._time()
+        # The sender already retains its exact header. Do not duplicate that
+        # full inventory in a <=2MiB ACK alongside 1024 long member paths.
+        return dict({key:value for key,value in result.items()if key!='source_header'},
+            owned_preparation_descriptors_closed=True)
+
+    def _close_all(self):
+        if self.close_attempted:raise PhaseError('input_stage.close_consumed')
+        self.close_attempted=True;errors=[]
+        for record in reversed(self.opened):
+            if record['close_attempted']:continue
+            try:self._close_one(record)
+            except BaseException as error:errors.append(error)
+        if errors:raise BaseExceptionGroup('input staging descriptor finalization failed',errors)
+
+    def abort(self,primary):
+        try:
+            if not self.close_attempted:self._close_all()
+        except BaseException as finalization:
+            raise BaseExceptionGroup('input staging and finalization failed',[primary,finalization])
+        raise primary
+
+
+class _InputStageFrames:
+    """Finite raw-byte stdio framing owned by the existing Evidence IO module.
+
+    This is separate from control-only NativeChannel. Inherited 0/1 are already
+    made nonblocking by their fixed entrypoint; they are borrowed, never closed,
+    duplicated, reopened or switched to another mode here.
+    """
+    def __init__(self,deadline_ns):
+        import time,threading
+        self.owner=(os.getpid(),threading.get_ident());self.deadline=deadline_ns
+        self.failed=False;self.sealed=False;self.busy=False;self.identities=tuple(self._pipe(fd)for fd in(0,1))
+        self._time()
+
+    @staticmethod
+    def _pipe(fd):
+        import fcntl
+        info=os.fstat(fd);flags=fcntl.fcntl(fd,fcntl.F_GETFL)
+        if (not stat.S_ISFIFO(info.st_mode)or os.isatty(fd)
+            or flags&os.O_ACCMODE!=(os.O_RDONLY if fd==0 else os.O_WRONLY)
+            or not flags&os.O_NONBLOCK):raise PhaseError('input_stage.owned_stdio_required')
+        return info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode)
+
+    def _time(self):
+        import time,threading
+        if self.owner!=(os.getpid(),threading.get_ident())or type(self.deadline)is not int or time.monotonic_ns()>=self.deadline:
+            raise PhaseError('input_stage.deadline')
+
+    def _fd(self,fd):
+        self._time()
+        if self.failed or self.sealed or self._pipe(fd)!=self.identities[fd]:raise PhaseError('input_stage.stdio_changed')
+        return fd
+
+    def _ready(self,fd,writing):
+        import select,time
+        poll=select.poll();poll.register(self._fd(fd),select.POLLOUT if writing else select.POLLIN)
+        while True:
+            self._time();left=self.deadline-time.monotonic_ns()
+            if poll.poll(min(100,max(1,left//1_000_000))):return
+
+    def _read(self,count):
+        out=bytearray()
+        while len(out)<count:
+            self._ready(0,False)
+            try:part=os.read(self._fd(0),min(65536,count-len(out)))
+            except BlockingIOError:continue
+            if not part:raise PhaseError('input_stage.truncated_stream')
+            out.extend(part);self._time()
+        return bytes(out)
+
+    def receive_frame(self,maximum_bytes):
+        if self.busy:raise PhaseError('input_stage.frame_reentrant')
+        self.busy=True
+        try:
+            if type(maximum_bytes)is not int or not 0<maximum_bytes<=2*1024**2:raise PhaseError('input_stage.frame_bound')
+            header=self._read(9)
+            if re.fullmatch(b'[0-9a-f]{8}\n',header)is None:raise PhaseError('input_stage.frame_header')
+            length=int(header[:8],16)
+            if not 0<length<=maximum_bytes:raise PhaseError('input_stage.frame_bound')
+            raw=self._read(length)
+            if self._read(1)!=b'\n':raise PhaseError('input_stage.frame_terminator')
+            self._time();return raw
+        except BaseException:
+            self.failed=True;raise
+        finally:self.busy=False
+
+    def send_frame(self,raw):
+        if self.busy:raise PhaseError('input_stage.frame_reentrant')
+        self.busy=True
+        try:
+            if type(raw)is not bytes or not 0<len(raw)<=2*1024**2:raise PhaseError('input_stage.frame_bound')
+            data=f'{len(raw):08x}\n'.encode()+raw+b'\n';offset=0
+            while offset<len(data):
+                self._ready(1,True)
+                try:count=os.write(self._fd(1),data[offset:offset+65536])
+                except BlockingIOError:continue
+                if count<=0:raise PhaseError('input_stage.frame_no_progress')
+                offset+=count;self._time()
+        except BaseException:
+            self.failed=True;raise
+        finally:self.busy=False
+
+    def seal(self):
+        if self.sealed:raise PhaseError('input_stage.frame_consumed')
+        self.sealed=True
 
 
 @contextmanager

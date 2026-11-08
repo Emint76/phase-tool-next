@@ -39,7 +39,7 @@ class _ExperimentalVersion1Admission(_ExperimentalFile1Admission):
         # deterministic archive. Real before/after identities are observed by
         # the existing hook and worker, never asserted by this capability.
         doc = self.document()
-        if doc['experimental_admission_version']=='2.0':
+        if doc['experimental_admission_version']in {'2.0','3.0'}:
             from .owner_directory_fixture import original_binding_view
             doc=original_binding_view(self,intent,plan)
         value = intent['candidate']['storage']['value']

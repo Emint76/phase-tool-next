@@ -29,7 +29,7 @@ def mixed_history_buffers(raw, expected_digest, *, active_bytes, active_digest):
         and type(expected_digest) is str and digest_bytes(raw) == expected_digest,
         'ntfs.accepted_history_binding_mismatch')
     value = parse_json_bytes(raw, maximum_bytes=2*1024**2)
-    if type(value) is dict and value.get('history_manifest_set_version')=='2.0':
+    if type(value) is dict and value.get('history_manifest_set_version')in {'2.0','3.0'}:
         from .owner_directory_fixture import owner_history_buffers
         return owner_history_buffers(raw,expected_digest,active_bytes=active_bytes,active_digest=active_digest)
     _require(type(value) is dict and canonical_bytes(value) == raw

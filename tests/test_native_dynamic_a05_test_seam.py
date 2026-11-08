@@ -136,12 +136,12 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     fixed_functions = {n.name: n for n in fixed.body if isinstance(n, ast.FunctionDef)}
     assert normal_functions.keys() == fixed_functions.keys()
     # The historical A05 launcher stays byte-pinned at startup1.1/1.2.
-    # Owner-directory startup2.0 deliberately changed exactly these three
+    # Closed owner3/input startup deliberately changed exactly these four
     # helpers. Pin both complete ASTs, including every admission check;
     # compare every other helper directly. Empty type_params is the
     # sole AST serialization difference between CPython3.11 and3.12.
     from hashlib import sha256
-    reviewed_owner_delta = {'fixed_admission': {'ordinary': 'd082dbeed29c14761a76a535d3e344e41490efdfc6c067b6b345d834b8548953', 'historical_a05': 'b0ec48f145a99e1e5f2b77885212a799a2f3def65afd1e3cb6c5fde2a2742f49'}, 'fixed_startup': {'ordinary': '757c02fc6e32ee8743d16e74ec10dfbfacc4bafe84993dc3b23d18619bbd2112', 'historical_a05': 'a3a96a44d8ecc92ec55350fc4aed159ab838a2ac29f99005aec36d5f3592c53d'}, 'fixed_startup_version': {'ordinary': 'b42849d5d27d35b4fd1837013dc8e4a2ede3bf0538d69b52018e197d0ce3bc76', 'historical_a05': '0ab49cbb580624cd803b3d29a6729ca3a02f2be71b068bf688f8eed241bd2f7d'}}
+    reviewed_owner_delta = {'fixed_admission': {'ordinary': 'c2558cdb925497f1c9397a831c080baaf2a2d45b8a507e1ba6c31bb5db7791dd', 'historical_a05': 'b0ec48f145a99e1e5f2b77885212a799a2f3def65afd1e3cb6c5fde2a2742f49'}, 'fixed_windows_mcp_sdk_bootstrap': {'ordinary': '07839a3dc19a095a215fbe440994058835a4394516f8511f4c059f365ca48f67', 'historical_a05': '9c160d04f16c3253f0b422606f9d2e57b55faa3d898bd6ecce33bf62de2e9d25'}, 'fixed_startup': {'ordinary': '3ad0bdad5f7b3e9a90fd05196ab8ef4f21594769c628ae014c08aea7eaf9d11b', 'historical_a05': 'a3a96a44d8ecc92ec55350fc4aed159ab838a2ac29f99005aec36d5f3592c53d'}, 'fixed_startup_version': {'ordinary': '37178615a01255c24adff4910a2be007a34e1bd4b2e2e435a17fa982330c2777', 'historical_a05': '0ab49cbb580624cd803b3d29a6729ca3a02f2be71b068bf688f8eed241bd2f7d'}}
     def stable_ast(node):
         normalized = deepcopy(node)
         for part in ast.walk(normalized):

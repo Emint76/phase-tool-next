@@ -328,11 +328,11 @@ class OwnerFixtureSourceTests(unittest.TestCase):
             contract=first['contract'],core=first['core']) # malformed Original never becomes no-effect exception
 
     def test_new_fixed_admission_six_roles_old_startup_fixture_refusal(self):
-        import ast,hashlib
+        import ast,hashlib,json
         path=HERE.parent/'src/phase_tool/data/native/native_phase_candidate_launcher_v1.py.in'
         tree=ast.parse(path.read_bytes());names={'fixed_startup_version','fixed_admission','need'}
         nodes=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names]
-        scope={'hashlib':hashlib};exec(compile(ast.Module(body=nodes,type_ignores=[]),str(path),'exec'),scope)
+        scope={'hashlib':hashlib,'json':json};exec(compile(ast.Module(body=nodes,type_ignores=[]),str(path),'exec'),scope)
         raw=canonical_bytes(fixture())
         for row in rows(raw):
             manifest=parse_json_bytes(row.manifest_bytes)

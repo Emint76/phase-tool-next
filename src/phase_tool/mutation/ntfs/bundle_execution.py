@@ -4,6 +4,7 @@ One existing owner/process/GO, unchanged representation, finite stream. This is
 not installed admission or a qualified storage route. Core remains evidence owner.
 """
 from __future__ import annotations
+from .owner_semantic_contracts import semantic_owner_contract
 import os
 import base64
 import re
@@ -43,39 +44,19 @@ def _bundle_context(value):
 
 
 def _bundle_projection_value(projection):
-    _require(type(projection) is _BundleControlProjection,'ntfs.original_bundle_projection_required')
-    context=_bundle_context(parse_json_bytes(projection.context_bytes))
-    grant=_grant(parse_json_bytes(projection.grant_bytes))
-    effect=parse_json_bytes(projection.effect_bytes)
-    contract=parse_json_bytes(projection.contract_bytes)
-    _require(canonical_bytes(context)==projection.context_bytes
-        and canonical_bytes(grant.as_dict())==projection.grant_bytes
-        and canonical_bytes(effect)==projection.effect_bytes
-        and canonical_bytes(contract)==projection.contract_bytes
-        and ((contract==_BUNDLE1_CONTRACT and context['worker_version']=='1.4')
-             or (contract in _BUNDLE2_CONTRACTS and context['worker_version']=='1.5')),
-        'ntfs.original_bundle_projection_binding')
-    manifest=parse_manifest(projection.manifest_bytes)
-    _require(set(effect)==_EFFECT_FIELDS and effect['kind']=='exclusive_create'
-        and type(effect['effect_id']) is str and bool(effect['effect_id'])
-        and type(effect['target']) is dict and set(effect['target'])=={'root_binding','relative_locator'}
-        and effect['target']['root_binding']==grant.binding
-        and effect['input_binding']==projection.input_binding=='payload'
-        and type(effect['content_length']) is int and effect['content_length']==projection.content_length==len(projection.manifest_bytes)
-        and effect['content_digest']==projection.content_digest==digest_bytes(projection.manifest_bytes)
-        and effect['content_source']=={'kind':'frozen_input','binding_id':'payload','source_digest':projection.content_digest}
-        and effect['preconditions']=={'existence':'absent','expected_digest':None,'expected_head':None,'concurrency_token':None}
-        and effect['lock_scope'] is None and effect['durability_policy_id']=='file_data_synced'
-        and effect['on_failure']=='stop_and_classify'
-        and type(projection.timestamp) is str and 0<len(projection.timestamp)<=128,
-        'ntfs.original_bundle_effect_required')
+    _require(type(projection) is _BundleControlProjection, 'ntfs.original_bundle_projection_required')
+    context = _bundle_context(parse_json_bytes(projection.context_bytes))
+    grant = _grant(parse_json_bytes(projection.grant_bytes))
+    effect = parse_json_bytes(projection.effect_bytes)
+    contract = parse_json_bytes(projection.contract_bytes)
+    _require(canonical_bytes(context) == projection.context_bytes and canonical_bytes(grant.as_dict()) == projection.grant_bytes and (canonical_bytes(effect) == projection.effect_bytes) and (canonical_bytes(contract) == projection.contract_bytes) and ((contract == _BUNDLE1_CONTRACT or contract == semantic_owner_contract('Bundle1')) and context['worker_version'] == '1.4' or ((contract in _BUNDLE2_CONTRACTS or contract == semantic_owner_contract('Bundle2')) and context['worker_version'] == '1.5')), 'ntfs.original_bundle_projection_binding')
+    manifest = parse_manifest(projection.manifest_bytes)
+    _require(set(effect) == _EFFECT_FIELDS and effect['kind'] == 'exclusive_create' and (type(effect['effect_id']) is str) and bool(effect['effect_id']) and (type(effect['target']) is dict) and (set(effect['target']) == {'root_binding', 'relative_locator'}) and (effect['target']['root_binding'] == grant.binding) and (effect['input_binding'] == projection.input_binding == 'payload') and (type(effect['content_length']) is int) and (effect['content_length'] == projection.content_length == len(projection.manifest_bytes)) and (effect['content_digest'] == projection.content_digest == digest_bytes(projection.manifest_bytes)) and (effect['content_source'] == {'kind': 'frozen_input', 'binding_id': 'payload', 'source_digest': projection.content_digest}) and (effect['preconditions'] == {'existence': 'absent', 'expected_digest': None, 'expected_head': None, 'concurrency_token': None}) and (effect['lock_scope'] is None) and (effect['durability_policy_id'] == 'file_data_synced') and (effect['on_failure'] == 'stop_and_classify') and (type(projection.timestamp) is str) and (0 < len(projection.timestamp) <= 128), 'ntfs.original_bundle_effect_required')
     safe_relative_locator(effect['target']['relative_locator'])
     for item in manifest['members']:
-        for part in item['path'].split('/'):_leaf(part)
-    return {'context':context,'grant':grant.as_dict(),'effect':effect,'contract':contract,
-        'timestamp':projection.timestamp,'input_binding':'payload',
-        'content_digest':projection.content_digest,'content_length':projection.content_length,
-        'manifest_base64':base64.b64encode(projection.manifest_bytes).decode('ascii')}
+        for part in item['path'].split('/'):
+            _leaf(part)
+    return {'context': context, 'grant': grant.as_dict(), 'effect': effect, 'contract': contract, 'timestamp': projection.timestamp, 'input_binding': 'payload', 'content_digest': projection.content_digest, 'content_length': projection.content_length, 'manifest_base64': base64.b64encode(projection.manifest_bytes).decode('ascii')}
 
 
 def _bundle_projection_from_value(value):

@@ -1,6 +1,6 @@
 """Stdlib-only caller for one accepted fixed native Phase installation.
 
-Usage: accepted-python -I -S -B -u cli.py execute|inspect REQUEST_JSON|- NEW_CAPTURE_DIR
+Usage: accepted-python -I -S -B -u cli.py execute|inspect|publish-bundle REQUEST_JSON|- NEW_CAPTURE_DIR
 Install beside the accepted launcher.py and native-phase.json. Requests use the
 existing {run_id,request} envelope and prepared execute or unary known-run inspect.
 Operational delivery captures are separate from Core receipts and evidence.
@@ -53,12 +53,12 @@ def bindings():
     need(os.name=='nt'and sys.version_info[:3]==(3,12,10)and sys.flags.isolated
         and sys.flags.no_site and not sys.flags.optimize and sys.dont_write_bytecode,'fixed isolated Windows CPython3.12.10 required')
     outer=strict(ordinary(HERE/'native-phase.json',2*1024**2))
-    need(outer['native_fixed_startup_version'] in {'1.1','1.2','2.0'},'fixed startup version')
+    need(outer['native_fixed_startup_version'] in {'1.1','1.2','2.0','3.0'},'fixed startup version')
     raw=base64.b64decode(outer['config_base64'],validate=True)
     manifest=base64.b64decode(outer['manifest_base64'],validate=True)
     need(sha(raw)==outer['config_digest']and sha(manifest)==outer['manifest_digest'],'fixed config/manifest bytes')
     config=strict(raw);need(canon(config)==raw and canon(strict(manifest))==manifest,'canonical fixed configuration')
-    need((outer['native_fixed_startup_version']=='2.0')==(config.get('native_launch_version')=='2.0'),'fixture startup and launch version must match')
+    need(((outer['native_fixed_startup_version']in {'2.0','3.0'} and config.get('native_launch_version')==outer['native_fixed_startup_version']) or (outer['native_fixed_startup_version']not in {'2.0','3.0'} and config.get('native_launch_version')not in {'2.0','3.0'})),'fixture startup and launch version must match')
     launcher=HERE/'launcher.py';need(Path(config['windows_launcher']).is_absolute()
         and Path(config['windows_launcher']).absolute()==launcher,'only sibling fixed launcher')
     need(sha(ordinary(launcher,2*1024**2))==config['artifact_graph']['launcher_digest'],'exact installed launcher')
@@ -112,15 +112,16 @@ def exchange(process,frame):
         'initial_complete':offset==len(frame),'bytes_sent':offset,'stdin_close_failed':close_failed}
 
 def main():
-    need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect'},'usage: cli.py execute|inspect REQUEST_JSON|- NEW_CAPTURE_DIR')
+    need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect','publish-bundle','publish-input'},'usage: cli.py execute|inspect|publish-bundle REQUEST_JSON|- NEW_CAPTURE_DIR')
     action,source,destination=sys.argv[1:];launcher,outer=bindings()
     raw=stdin_request()if source=='-'else ordinary(Path(source),MAX_REQUEST)
     value=strict(raw);need(type(value)is dict and set(value)=={'run_id','request'}
         and type(value['run_id'])is str and type(value['request'])is dict,'existing request envelope required')
-    request=value['request'];need(request.get('operation')==action,'command/action mismatch')
-    expected={'operation'}if action=='inspect'else{
-        'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'}
-    need(set(request)==expected,'only existing prepared execute/unary inspect request')
+    request=value['request'];need(request.get('operation')==('publish_input'if action=='publish-input'else'publish_bundle'if action=='publish-bundle'else action),
+        'command/action mismatch')
+    expected=({'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}if action=='publish-input'else{'operation','source_locator','target_locator','request_id','members'}if action=='publish-bundle'else
+        {'operation'}if action=='inspect'else{'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'})
+    need(set(request)==expected,'closed fixed CLI request required')
     body=canon(value);need(0<len(body)<=MAX_REQUEST,'bounded canonical request')
     requested_capture=Path(destination).absolute()
     need(requested_capture.name not in ('','.','..'),'ordinary new capture leaf required')
@@ -139,7 +140,7 @@ def main():
         'scope':'operational outer delivery only; not receipt/evidence, worker proof or caller ACK'}
     try:
         process=subprocess.Popen([sys.executable,'-I','-S','-B','-u',str(launcher),
-            'inspect-parent'if action=='inspect'else'parent'],cwd=str(HERE),
+            'publish-input'if action=='publish-input'else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action=='inspect'else'parent'],cwd=str(HERE),
             env={'SYSTEMROOT':os.environ['SYSTEMROOT'],'WINDIR':os.environ['WINDIR'],'PYTHONDONTWRITEBYTECODE':'1'},
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
             creationflags=subprocess.CREATE_NO_WINDOW)
@@ -160,19 +161,41 @@ def main():
             and report['outer_owner_finalization']=='closed','outer capture incomplete; inspect known run')
         need(re.fullmatch(b'[0-9a-f]{8}\n',out[:9])is not None and out[-1:]==b'\n'
             and len(out)==int(out[:8],16)+10,'incomplete native delivery frame')
-        native=strict(out[9:-1]);need(canon(native)==out[9:-1]and type(native)is dict
-            and set(native)=={'protocol','version','channel_id','run_id','result','exit_code'}
-            and native['protocol']=='phase.native.command'and native['version']=='1.0'
-            and native['run_id']==value['run_id']and type(native['channel_id'])is str
-            and re.fullmatch('[0-9a-f]{32}',native['channel_id'])is not None,'native envelope correlation')
-        candidate=native['result'];need(type(candidate)is dict and candidate.get('command')==action
-            and candidate.get('run_id')in (None,value['run_id'])
-            and type(native['exit_code'])is int and type(candidate.get('exit_code'))is int
+        native=strict(out[9:-1]);need(canon(native)==out[9:-1]and type(native)is dict,
+            'canonical delivery object required')
+        if action=='publish-input':
+            need(set(native)=={'protocol','version','run_id','installation_digest','result','exit_code'}
+                and native['protocol']=='phase.native.input.publication'and native['version']=='1.0'
+                and native['run_id']==value['run_id']and native['installation_digest']==outer['manifest_digest'],
+                'native input publication envelope correlation')
+            candidate=native['result']
+            need(type(candidate)is dict and candidate.get('native_input_publication_result_version')=='1.0'
+                and candidate.get('run_id')==value['run_id']and candidate.get('request_id')==request['request_id']
+                and candidate.get('input_scope')==request['input_scope']
+                and candidate.get('target_locator')==request['target_locator'],'native input caller correlation')
+        elif action=='publish-bundle':
+            need(set(native)=={'protocol','version','run_id','installation_digest','result','exit_code'}
+                and native['protocol']=='phase.native.publication'and native['version']=='1.0'
+                and native['run_id']==value['run_id']and native['installation_digest']==outer['manifest_digest'],
+                'native publication envelope correlation')
+            candidate=native['result']
+            need(type(candidate)is dict and candidate.get('publish_bundle_result_version')=='1.1'
+                and candidate.get('run_id')==value['run_id']and candidate.get('request_id')==request['request_id']
+                and candidate.get('target_locator')==request['target_locator'],'native publication caller correlation')
+        else:
+            need(set(native)=={'protocol','version','channel_id','run_id','result','exit_code'}
+                and native['protocol']=='phase.native.command'and native['version']=='1.0'
+                and native['run_id']==value['run_id']and type(native['channel_id'])is str
+                and re.fullmatch('[0-9a-f]{32}',native['channel_id'])is not None,'native envelope correlation')
+            candidate=native['result'];need(type(candidate)is dict and candidate.get('command')==action
+                and candidate.get('run_id')in (None,value['run_id']),'native command correlation')
+        need(type(native['exit_code'])is int and type(candidate.get('exit_code'))is int
             and 0<=native['exit_code']<=255 and native['exit_code']==candidate['exit_code']==report['process_exit'],
             'native command/exit correlation')
-        # Existing parent/Core owns schema and scientific/domain semantics.
-        # Never replace nullable/negative/uncertain fields or synthesize success.
-        result=candidate;report['child_delivery']='COMPLETE_NATIVE_COMMAND_FRAME'
+        # The trusted owner validated the result before releasing its call gate.
+        # This outer transport preserves nullable/negative/uncertain fields.
+        result=candidate;report['child_delivery']=('COMPLETE_NATIVE_PUBLICATION_FRAME'if action=='publish-bundle'
+            else'COMPLETE_NATIVE_COMMAND_FRAME')
     except BaseException as error:report['error']={'type':type(error).__name__,'message':str(error)}
     report.update(stdout_bytes=len(out),stderr_bytes=len(err),stdout_sha256=sha(out),stderr_sha256=sha(err))
     try:

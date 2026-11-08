@@ -1,4 +1,5 @@
 """Thin fixed native adapter for the existing phase_recover_publication API."""
+from .owner_semantic_fixture import is_semantic_owner_authority
 from pathlib import Path
 
 from ...canonical import canonical_bytes,parse_json_bytes,digest_bytes,profile_digest
@@ -90,35 +91,23 @@ def run_recovery_core(launch):
     return response.exit_code
 
 
-def inspect_recovered_native(authority,*,evidence_root,run_id):
+def inspect_recovered_native(authority, *, evidence_root, run_id):
     """Fresh physical bytes/owner/FID; saved recovery is immutable lineage only."""
     from .experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
     from .bundle_recovery_original import verify_original
     from .bundle_recovery import verify_saved_recovery
-    from .bundle_execution import _bundle_projection_value,validate_bundle_observation
-    _require(type(authority) is _ExperimentalBundle2AuthorityV3 and authority._inspection_only,
-        'recovery.closed_native_inspection_required')
-    binding=authority.read_binding;root=binding.check_evidence_root()
-    _require(Path(evidence_root)==root,'recovery.native_request_mismatch')
+    from .bundle_execution import _bundle_projection_value, validate_bundle_observation
+    _require((type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2')) and authority._inspection_only, 'recovery.closed_native_inspection_required')
+    binding = authority.read_binding
+    root = binding.check_evidence_root()
+    _require(Path(evidence_root) == root, 'recovery.native_request_mismatch')
     from .bundle_recovery_original import _record
-    intent=_record(root/'.phase/runs'/run_id/'intent.json')
-    original=verify_original(binding,run_id,intent['idempotency']['key'],
-        profile_digest('intent',intent))
-    proof,previous=verify_saved_recovery(binding,original)
-    projected=_bundle_projection_value(original['projection'])
-    observation=authority.observe(run_id=run_id,root_binding='phase_result_root',
-        locator=projected['effect']['target']['relative_locator'],expected_identity=previous['native_identity'])
-    current=validate_bundle_observation(observation,projected['grant'],projected['effect']['target']['relative_locator'],
-        projection=original['projection'])
-    _require(current['native']['native_identity']==previous['native_identity']
-        and current['native']['stat_identity']==previous['stat_identity'],'recovery.preparation_mismatch')
-    receipt=original['original_receipt']
-    return {'run_id':run_id,
-        'terminal_status':None if receipt is None else receipt['terminal_status'],
-        'execution_disposition':None if receipt is None else receipt['execution_disposition'],
-        'mutation_attempted':None if receipt is None else receipt['mutation_attempted'],
-        'intent_digest':profile_digest('intent',intent),'effect_plan_digest':intent['effect_plan_digest'],
-        'receipt_digest':None if receipt is None else profile_digest('receipt',receipt),
-        'receipt_present':receipt is not None,'target_verified':True,
-        'native_recovery':{'native_bundle_recovery_proof_version':'1.0','operation':proof['operation'],
-            'proof_digest':digest_bytes(canonical_bytes(proof)),'original_receipt_preserved':True}}
+    intent = _record(root / '.phase/runs' / run_id / 'intent.json')
+    original = verify_original(binding, run_id, intent['idempotency']['key'], profile_digest('intent', intent))
+    proof, previous = verify_saved_recovery(binding, original)
+    projected = _bundle_projection_value(original['projection'])
+    observation = authority.observe(run_id=run_id, root_binding='phase_result_root', locator=projected['effect']['target']['relative_locator'], expected_identity=previous['native_identity'])
+    current = validate_bundle_observation(observation, projected['grant'], projected['effect']['target']['relative_locator'], projection=original['projection'])
+    _require(current['native']['native_identity'] == previous['native_identity'] and current['native']['stat_identity'] == previous['stat_identity'], 'recovery.preparation_mismatch')
+    receipt = original['original_receipt']
+    return {'run_id': run_id, 'terminal_status': None if receipt is None else receipt['terminal_status'], 'execution_disposition': None if receipt is None else receipt['execution_disposition'], 'mutation_attempted': None if receipt is None else receipt['mutation_attempted'], 'intent_digest': profile_digest('intent', intent), 'effect_plan_digest': intent['effect_plan_digest'], 'receipt_digest': None if receipt is None else profile_digest('receipt', receipt), 'receipt_present': receipt is not None, 'target_verified': True, 'native_recovery': {'native_bundle_recovery_proof_version': '1.0', 'operation': proof['operation'], 'proof_digest': digest_bytes(canonical_bytes(proof)), 'original_receipt_preserved': True}}

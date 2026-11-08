@@ -5,6 +5,7 @@ The Windows worker retains its mutex/stage lease until the same Core confirms
 both existing ext4 records. These messages never confer storage qualification.
 """
 from __future__ import annotations
+from .owner_semantic_contracts import semantic_owner_contract
 
 import os
 import re
@@ -23,10 +24,10 @@ _LIMIT = 32768
 def prepared_locator(projection):
     from .bundle_execution import _bundle_projection_value, _BUNDLE2_CONTRACTS
     value = _bundle_projection_value(projection)
-    _require(value['contract'] in _BUNDLE2_CONTRACTS, 'ntfs.bundle2_projection_required')
+    _require(value['contract'] in _BUNDLE2_CONTRACTS or value['contract'] == semantic_owner_contract('Bundle2'), 'ntfs.bundle2_projection_required')
     target = value['effect']['target']['relative_locator']
-    parent = target.rsplit('/',1)[0]+'/' if '/' in target else ''
-    return parent+stage_name(value['context']['run_id'],value['effect'])
+    parent = target.rsplit('/', 1)[0] + '/' if '/' in target else ''
+    return parent + stage_name(value['context']['run_id'], value['effect'])
 
 
 def prepared_message(projection, channel_id, pid, stage_native):
@@ -42,24 +43,11 @@ def prepared_message(projection, channel_id, pid, stage_native):
 def validate_prepared_message(message, *, projection, channel_id, expected_pid=None):
     from .bundle_execution import _bundle_projection_value, _validate_bundle_content, _BUNDLE2_CONTRACTS
     value = _bundle_projection_value(projection)
-    _require(value['contract'] in _BUNDLE2_CONTRACTS
-        and type(channel_id) is str and _CHANNEL.fullmatch(channel_id) is not None,
-        'ntfs.bundle2_projection_required')
-    _require(type(message) is dict and set(message) == {'bundle_prepared_version','context',
-        'channel_id','pid','stage_locator','root_mutex_state','stage_lease','native'}
-        and message['bundle_prepared_version'] == '1.0'
-        and canonical_bytes(message['context']) == canonical_bytes(value['context'])
-        and message['channel_id'] == channel_id and type(message['pid']) is int and message['pid'] > 0
-        and (expected_pid is None or type(expected_pid) is int and message['pid'] == expected_pid)
-        and message['stage_locator'] == prepared_locator(projection)
-        and message['root_mutex_state'] == 'held' and message['stage_lease'] == 'retained',
-        'ntfs.bundle_prepared_binding_mismatch')
+    _require((value['contract'] in _BUNDLE2_CONTRACTS or value['contract'] == semantic_owner_contract('Bundle2')) and type(channel_id) is str and (_CHANNEL.fullmatch(channel_id) is not None), 'ntfs.bundle2_projection_required')
+    _require(type(message) is dict and set(message) == {'bundle_prepared_version', 'context', 'channel_id', 'pid', 'stage_locator', 'root_mutex_state', 'stage_lease', 'native'} and (message['bundle_prepared_version'] == '1.0') and (canonical_bytes(message['context']) == canonical_bytes(value['context'])) and (message['channel_id'] == channel_id) and (type(message['pid']) is int) and (message['pid'] > 0) and (expected_pid is None or (type(expected_pid) is int and message['pid'] == expected_pid)) and (message['stage_locator'] == prepared_locator(projection)) and (message['root_mutex_state'] == 'held') and (message['stage_lease'] == 'retained'), 'ntfs.bundle_prepared_binding_mismatch')
     native = message['native']
-    state = {'known':True,'exists':True,'digest':projection.content_digest,
-        'length':projection.content_length,'head_token':None}
-    # Byte/identity validation does not falsely claim the retained stage HANDLE
-    # is finalized. Finished-observer closure belongs to its separate wrapper.
-    _validate_bundle_content(state,native,value['grant'],projection=projection)
+    state = {'known': True, 'exists': True, 'digest': projection.content_digest, 'length': projection.content_length, 'head_token': None}
+    _validate_bundle_content(state, native, value['grant'], projection=projection)
     raw = canonical_bytes(message)
     _require(len(raw) <= _LIMIT, 'ntfs.bundle_prepared_frame_limit')
     return parse_json_bytes(raw)
@@ -90,30 +78,19 @@ class _CoreBundleCheckpoint:
     It writes only prepared-stage.json and preparation-binding.json in the
     original run. It cannot publish a target, receipt, new intent or recovery.
     """
-    def __init__(self, binding, store, contract, plan, intent_path, expected_intent_digest, operation_nonce,
-                 attachment_digests):
+    def __init__(self, binding, store, contract, plan, intent_path, expected_intent_digest, operation_nonce, attachment_digests):
         from ...installation import _NativeFileCreateReadBinding
         from ...evidence import EvidenceStore
         from .bundle_execution import _BUNDLE2_CONTRACT, _BUNDLE2_CONTRACT_V2, _BUNDLE2_CONTRACTS
-        _require(type(binding) is _NativeFileCreateReadBinding and type(store) is EvidenceStore
-            and type(attachment_digests) is list
-            and all(type(d) is str and _DIGEST.fullmatch(d) is not None for d in attachment_digests)
-            and type(expected_intent_digest) is str and _DIGEST.fullmatch(expected_intent_digest) is not None,
-            'ntfs.original_closed_checkpoint_required')
-        exact={'id':contract.document['identity']['id'],'version':contract.document['identity']['version'],
-            'package_digest':contract.package_digest}
-        _require(exact in _BUNDLE2_CONTRACTS and plan['contract'] == exact, 'ntfs.bundle2_projection_required')
-        manifest = parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
-        _require(((manifest['native_read_installation_version']=='1.7' and exact==_BUNDLE2_CONTRACT)
-            or (manifest['native_read_installation_version'] in {'1.8','1.9'} and exact==_BUNDLE2_CONTRACT_V2))
-            and intent_path == Path(manifest['evidence_root'])/'.phase'/'runs'/plan['run_id']/'intent.json'
-            and store.run_root == intent_path.parent and store.evidence_root == Path(manifest['evidence_root'])
-            and type(operation_nonce) is str and _CHANNEL.fullmatch(operation_nonce) is not None,
-            'ntfs.original_evidence_path_mismatch')
-        self._owner = os.getpid(),threading.get_ident()
-        self._binding,self._store,self._contract = binding,store,contract
-        self._attachment_digests=attachment_digests  # The original Core receipt's list, not another owner.
-        self._plan_bytes,self._intent_path = canonical_bytes(plan),intent_path
+        _require(type(binding) is _NativeFileCreateReadBinding and type(store) is EvidenceStore and (type(attachment_digests) is list) and all((type(d) is str and _DIGEST.fullmatch(d) is not None for d in attachment_digests)) and (type(expected_intent_digest) is str) and (_DIGEST.fullmatch(expected_intent_digest) is not None), 'ntfs.original_closed_checkpoint_required')
+        exact = {'id': contract.document['identity']['id'], 'version': contract.document['identity']['version'], 'package_digest': contract.package_digest}
+        _require((exact in _BUNDLE2_CONTRACTS or exact == semantic_owner_contract('Bundle2')) and plan['contract'] == exact, 'ntfs.bundle2_projection_required')
+        manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2 * 1024 ** 2)
+        _require((manifest['native_read_installation_version'] == '1.7' and exact == _BUNDLE2_CONTRACT or (manifest['native_read_installation_version'] in {'1.8', '1.9'} and (exact == _BUNDLE2_CONTRACT_V2 or exact == semantic_owner_contract('Bundle2')))) and intent_path == Path(manifest['evidence_root']) / '.phase' / 'runs' / plan['run_id'] / 'intent.json' and (store.run_root == intent_path.parent) and (store.evidence_root == Path(manifest['evidence_root'])) and (type(operation_nonce) is str) and (_CHANNEL.fullmatch(operation_nonce) is not None), 'ntfs.original_evidence_path_mismatch')
+        self._owner = (os.getpid(), threading.get_ident())
+        self._binding, self._store, self._contract = (binding, store, contract)
+        self._attachment_digests = attachment_digests
+        self._plan_bytes, self._intent_path = (canonical_bytes(plan), intent_path)
         self._intent_digest = expected_intent_digest
         self._nonce = operation_nonce
         self._attempted = False

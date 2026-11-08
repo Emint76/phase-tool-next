@@ -94,6 +94,31 @@ def _version1_publication_inspection_request(request_id, target_locator,
     return request
 
 
+def _bundle_publication_inspection_request(request_id,target_locator,members,expected_receipt_digest):
+    from .parent_result import _native_bundle_inspection_expectations
+    request={'operation':'inspect','native_bundle_publication_inspection_request_version':'1.0',
+        'request_id':request_id,'target_locator':target_locator,'members':members,
+        'expected_receipt_digest':expected_receipt_digest}
+    _native_bundle_inspection_expectations(request)
+    return request
+
+
+def _native_bundle_cli_request(value):
+    """Closed fixed frontend grammar shared by launcher and owner builder."""
+    from .parent_result import _native_bundle_publication_request
+    _require(type(value)is dict and set(value)=={'run_id','request'}
+        and type(value['run_id'])is str and type(value['request'])is dict,
+        'ntfs.fixed_native_request_required')
+    validate_run_id(value['run_id']);request=value['request']
+    _require(set(request)=={'operation','source_locator','target_locator','request_id','members'}
+        and request['operation']=='publish_bundle','ntfs.fixed_native_request_required')
+    checked=_native_bundle_publication_request(request['source_locator'],request['target_locator'],
+        request['request_id'],request['members'])
+    _require(request['members']==checked['members'],'ntfs.fixed_native_request_required')
+    return {'run_id':value['run_id'],'source_locator':checked['source_locator'],
+        'target_locator':checked['target_locator'],'request_id':checked['request_id'],'members':checked['members']}
+
+
 class _InspectionMCPCallOwner:
     """One shared finite call owner; legacy read-only entry stays read-only.
 
@@ -127,19 +152,21 @@ class _InspectionMCPCallOwner:
         self._unavailable=False
         self._publication_ack=None  # One transient ACK, never a durable journal or retry record.
 
-    def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False):
-        from .parent_result import _native_file_result_mode
-        _require(type(_include_canonical_result) is bool
+    def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False):
+        from .parent_result import _native_file_result_mode,_native_bundle_result_mode
+        _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
+            and not(_include_canonical_result and _include_bundle_manifest)
             and _include_canonical_result is _native_file_result_mode(request)
-            and (not _include_canonical_result or inspection_only is True),
-            'ntfs.file_result_request_version_required')
+            and _include_bundle_manifest is _native_bundle_result_mode(request)
+            and(not(_include_canonical_result or _include_bundle_manifest)or inspection_only is True),
+            'ntfs.fixed_result_request_version_required')
         validate_run_id(run_id)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None
         value=None
         try:
             value=self._call_locked(run_id,request,inspection_only=inspection_only,
-                _include_canonical_result=_include_canonical_result)
+                _include_canonical_result=_include_canonical_result,_include_bundle_manifest=_include_bundle_manifest)
         except BaseException as error:
             self._unavailable=True
             primary=error
@@ -154,13 +181,15 @@ class _InspectionMCPCallOwner:
         if primary is not None:raise primary
         return value
 
-    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_retain_launch=False):
-        from .parent_result import _native_file_result_mode
+    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,_retain_launch=False):
+        from .parent_result import _native_file_result_mode,_native_bundle_result_mode
         from .bootstrap import _is_bundle_recovery_launch
-        _require(type(_include_canonical_result) is bool
+        _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
+            and not(_include_canonical_result and _include_bundle_manifest)
             and _include_canonical_result is _native_file_result_mode(request)
-            and (not _include_canonical_result or inspection_only is True),
-            'ntfs.file_result_request_version_required')
+            and _include_bundle_manifest is _native_bundle_result_mode(request)
+            and(not(_include_canonical_result or _include_bundle_manifest)or inspection_only is True),
+            'ntfs.fixed_result_request_version_required')
         validate_run_id(run_id)
         _require(type(_retain_launch)is bool and (not _retain_launch
             or (inspection_only is False and not _include_canonical_result
@@ -168,6 +197,7 @@ class _InspectionMCPCallOwner:
             'ntfs.publication_retention_required')
         result=None
         reference=None
+        projection=None
         try:
             _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
             import secrets
@@ -180,7 +210,7 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
-            if _is_bundle_recovery_launch(launch):
+            if _is_bundle_recovery_launch(launch) and not _include_bundle_manifest:
                 from ...installation import _native_registry_for_launch
                 registry=_native_registry_for_launch(launch)
                 if request.get('operation')=='recover_publication':
@@ -200,9 +230,13 @@ class _InspectionMCPCallOwner:
                     _require_command_run_binding(result,run_id)
                 if result.get('inspection_required') is True or result['exit_code']!=0:
                     self._unavailable=True
-                else:self._held_launch=None
+                elif not _retain_launch:self._held_launch=None
                 return result
-            if self._startup.get('_experimental_admission_context') is not None:
+            if _include_bundle_manifest:
+                from ...installation import _native_read_binding_for_launch
+                bundle_binding=_native_read_binding_for_launch(launch)
+                registry=bundle_binding.registry
+            elif self._startup.get('_experimental_admission_context') is not None:
                 from ...installation import _native_registry_for_launch
                 registry=_native_registry_for_launch(launch)
             else:
@@ -216,13 +250,19 @@ class _InspectionMCPCallOwner:
             from .parent_result import _require_version1_inspection_delivery
             _require_version1_inspection_delivery(result, request=request,
                 run_id=run_id, inspection_only=inspection_only)
-            if _include_canonical_result:
+            if _include_bundle_manifest:
+                from .parent_result import validate_native_bundle_result_delivery
+                reference,projection=validate_native_bundle_result_delivery(response,request=request,run_id=run_id,
+                    channel_id=invocation['channel_id'],read_binding=bundle_binding,
+                    expected_manifest_digest=launch.installation_digest,registry=registry)
+            elif _include_canonical_result:
                 from .parent_result import validate_native_file_result_delivery
                 reference=validate_native_file_result_delivery(response,request=request,run_id=run_id,
                     channel_id=invocation['channel_id'],manifest_bytes=self._startup['manifest_bytes'],
                     expected_manifest_digest=self._startup['expected_manifest_digest'],registry=registry)
             else:
-                _require('canonical_result' not in response and response.get('version','1.0')=='1.0',
+                _require('canonical_result' not in response and 'bundle_manifest'not in response
+                    and response.get('version','1.0')=='1.0',
                     'ntfs.parent_command_binding_mismatch')
             if (result.get('stage3_command_result_version')=='1.2'
                     or result.get('inspection_required') is True or result['exit_code']==40):
@@ -237,7 +277,60 @@ class _InspectionMCPCallOwner:
         except BaseException:
             self._unavailable=True
             raise
+        if _include_bundle_manifest:return result,reference,projection
         return (result,reference) if _include_canonical_result else result
+
+    def publish_input(self,run_id,input_scope,source_locator,target_locator,request_id,members=None,expected_current_digest=None,*,_operation_deadline=None):
+        """One Windows input stage, genuine execute and fresh unary inspection.
+
+        A transient delivery pairs actual native results; it is never a receipt.
+        All data paths are Windows-relative under one installed input scope.
+        """
+        from .input_stage import (_InputOperationDeadline,_input_operation_scope,_left,
+            _stage_request,run_windows_input_stage,_staged_publication_request)
+        validate_run_id(run_id);_stage_request(input_scope,source_locator,members)
+        _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
+        primary=None;result=None
+        try:
+            _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
+            _require(_operation_deadline is None or type(_operation_deadline)is _InputOperationDeadline,
+                'input_stage.deadline_owner_required')
+            token=_InputOperationDeadline()if _operation_deadline is None else _operation_deadline
+            with _input_operation_scope(token):
+                prepared,role,scope,content=run_windows_input_stage(self,run_id,input_scope,source_locator,members,token.deadline_ns,
+                    request_id=request_id,target_locator=target_locator,expected_current_digest=expected_current_digest)
+                request=_staged_publication_request(role=role,prepared=prepared,input_scope=input_scope,
+                    request_id=request_id,target_locator=target_locator,members=members,
+                    expected_current_digest=expected_current_digest,content_utf8=content)
+                _left(token.deadline_ns)
+                ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
+                self._publication_ack=ack
+                result={'native_input_publication_result_version':'1.0','run_id':run_id,'input_scope':input_scope,
+                    'role':role,'source_digest':prepared['expected_digest'],'source_length':prepared['expected_length'],
+                    'request_id':request_id,'target_locator':target_locator,'command_ack':ack,'independent_inspection':None,
+                    'exit_code':ack['exit_code'],'retry_authorized':False}
+                if ack['exit_code']==0 and not self._unavailable:
+                    _require(ack.get('inspection_required')is False,'input_stage.execute_uncertain')
+                    self._held_launch=None  # Actual known finalized execute only.
+                    inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True)
+                    for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
+                        _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
+                            'input_stage.inspect_ack_mismatch')
+                    _require(inspected['exit_code']==0 and inspected.get('inspection_required')is False,
+                        'input_stage.inspect_unverified')
+                    result['independent_inspection']=inspected
+                _left(token.deadline_ns)
+                _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
+        except BaseException as error:
+            self._unavailable=True;primary=error
+        finally:
+            try:self._gate.release()
+            except BaseException as error:
+                self._unavailable=True
+                primary=error if primary is None else BaseExceptionGroup('input publication and gate failed',[primary,error])
+        if primary is not None:raise primary
+        return result
+
 
     def inspect(self,run_id:StrictStr)->dict:
         """Inspect a known run using only fixed read-only installation bindings."""
@@ -403,6 +496,84 @@ class _InspectionMCPCallOwner:
         return verified if verified is not None and not self._unavailable else result
 
 
+    def _bundle_frontdoor_binding(self,run_id):
+        """Accepted no-dispatch probe; same fixed admission/runtime/history checks."""
+        import secrets
+        from ...installation import _native_read_binding_for_launch
+        from .parent_result import _native_bundle_result_binding
+        probe=_NativeAcceptedLaunch(**self._startup,_inspection_only=True,
+            invocation_bytes=canonical_bytes({'run_id':run_id,'request':{'operation':'inspect'},
+                'channel_id':secrets.token_hex(16),'operation_nonce':secrets.token_hex(16)}))
+        probe.check_runtime()
+        _require(probe._bundle,'ntfs.original_bundle_effect_required')
+        binding=_native_read_binding_for_launch(probe)
+        manifest,exact=_native_bundle_result_binding(binding,probe.installation_digest,binding.registry)
+        probe.check_runtime()
+        return manifest,exact
+
+    def execute_bundle_publication(self,run_id:StrictStr,source_locator:StrictStr,
+            target_locator:StrictStr,request_id:StrictStr,members:list[StrictStr])->dict:
+        """Raw Core ACK; fixed installation owns all roots and admission."""
+        from .parent_result import _native_bundle_publication_request
+        request=_native_bundle_publication_request(source_locator,target_locator,request_id,members)
+        return self._call(run_id,request,inspection_only=False)
+
+    def publish_bundle(self,run_id:StrictStr,source_locator:StrictStr,
+            target_locator:StrictStr,request_id:StrictStr,members:list[StrictStr])->dict:
+        """Existing finite owner: one Core execute then fresh sealed inspection."""
+        from ...publish_bundle import (PublishBundleResult,_native_bundle_publication_ack,
+            _native_bundle_publication_inspected)
+        from .parent_result import _native_bundle_publication_request
+        request=_native_bundle_publication_request(source_locator,target_locator,request_id,members)
+        validate_run_id(run_id)
+        _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
+        primary=None;handed_off=False;verified=None;result=None
+        try:
+            _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
+            manifest,exact=self._bundle_frontdoor_binding(run_id)
+            result=PublishBundleResult(publish_bundle_result_version='1.1',
+                request_id=request_id,run_id=run_id,evidence_root=manifest['evidence_root'],
+                target_locator=request['target_locator'],contract_binding=exact['id']+'@'+exact['version'],
+                contract_digest=exact['package_digest'],execution_disposition='not_executed').model_dump()
+            self._publication_ack=None
+            result.update(status='indeterminate',mutation_attempted=None,exit_code=40,inspection_required=True)
+            handed_off=True
+            ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
+            self._publication_ack=ack
+            can_inspect=_native_bundle_publication_ack(result,ack)
+            if result['status']=='indeterminate':self._unavailable=True
+            elif not self._unavailable:self._held_launch=None
+            if can_inspect:
+                inspection_request=_bundle_publication_inspection_request(request_id,request['target_locator'],
+                    request['members'],ack['receipt_digest'])
+                inspected,reference,projection=self._call_locked(run_id,inspection_request,
+                    inspection_only=True,_include_bundle_manifest=True)
+                _native_bundle_publication_inspected(result,ack,inspected,reference,projection,
+                    binding=exact,members=request['members'])
+                candidate=dict(result,success=True,status='verified',target_verified=True,
+                    inspection_required=False,error=None,exit_code=0)
+                verified=PublishBundleResult.model_validate(candidate).model_dump()
+                canonical_bytes(verified)
+        except BaseException as error:
+            self._unavailable=True;primary=error
+            if handed_off:
+                result.update(success=False,target_verified=False,inspection_required=True,
+                    error=error.code if type(error)is PhaseError else 'bundle.failure')
+        finally:
+            try:self._gate.release()
+            except BaseException as error:
+                self._unavailable=True;verified=None
+                if primary is not None:
+                    try:primary.add_note('Native MCP call gate: '+type(error).__name__)
+                    except BaseException:pass
+                else:
+                    primary=error
+                    if handed_off:result.update(success=False,target_verified=False,inspection_required=True,
+                        error=result['error'] if result['error'] is not None else 'bundle.gate_finalization_failed')
+        if primary is not None and not handed_off:raise primary
+        return verified if verified is not None and not self._unavailable else result
+
+
 
 def _closed_arguments(server):
     # Same SDK validation pattern as the ordinary MCP adapter. Do not import
@@ -450,6 +621,12 @@ def _prepared_server(*,config_bytes,expected_config_digest,manifest_bytes,expect
     else:
         # Exact installed capability is validated by the same owner/accepted launch.
         # No request field can select it or expose unrelated file/version tools.
+        from .experimental_bundle1 import _ExperimentalBundle1Admission
+        from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+        if type(_experimental_admission_context)in (_ExperimentalBundle1Admission,_ExperimentalBundle2AdmissionV3):
+            # Exposure grants no authority. Each call passes the exact accepted launch.
+            server.tool(name='phase_execute_bundle_publication')(owner.execute_bundle_publication)
+            server.tool(name='phase_publish_bundle')(owner.publish_bundle)
         server.tool(name='phase_inspect')(owner.inspect)
     return _closed_arguments(server)
 
@@ -474,3 +651,52 @@ def run_native_prepared_mcp(*,config_bytes,expected_config_digest,manifest_bytes
     server=_prepared_server(**startup)
     server.run(transport='stdio')
     return 0
+
+
+class _InputScopeSession:
+    """One fixed contract scope; fresh one-shot native owners on every tool.
+
+    A session never resets or reuses consumed execution authority. Uncertain
+    calls retain their actual finite owner and poison later tool dispatch.
+    Six statically configured endpoints expose the six installed contracts.
+    """
+    def __init__(self,**startup):
+        self.startup=dict(startup);self.gate=threading.Lock();self.unknown=False;self.held=[]
+    def _invoke(self,method,arguments):
+        _require(self.gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
+        owner=None
+        try:
+            _require(not self.unknown,'ntfs.inspection_mcp_unavailable')
+            owner=_InspectionMCPCallOwner(**self.startup);self.held.append(owner)
+            result=owner.publish_input(**arguments)if method=='publish_input'else owner.inspect(**arguments)
+            _require(not owner._unavailable,'input_stage.session_unknown')
+            self.held.remove(owner)
+            return result
+        except BaseException:
+            self.unknown=True;raise
+        finally:self.gate.release()
+    def publish_input(self,run_id:StrictStr,input_scope:StrictStr,source_locator:StrictStr,target_locator:StrictStr,
+            request_id:StrictStr,members:list[StrictStr]|None=None,expected_current_digest:StrictStr|None=None)->dict:
+        return self._invoke('publish_input',dict(run_id=run_id,input_scope=input_scope,source_locator=source_locator,
+            target_locator=target_locator,request_id=request_id,members=members,expected_current_digest=expected_current_digest))
+    def inspect(self,run_id:StrictStr)->dict:
+        return self._invoke('inspect',dict(run_id=run_id))
+
+
+def run_native_input_mcp(**startup):
+    owner=_InputScopeSession(**startup)
+    server=FastMCP('phase-native-input')
+    server.tool(name='phase_publish_input')(owner.publish_input)
+    server.tool(name='phase_inspect')(owner.inspect)
+    server.run(transport='stdio');return 0
+
+
+def _native_input_cli_request(value):
+    _require(type(value)is dict and set(value)=={'run_id','request'}and type(value['request'])is dict,
+        'ntfs.fixed_native_request_required')
+    validate_run_id(value['run_id']);request=value['request']
+    fields={'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}
+    _require(set(request)==fields and request['operation']=='publish_input','ntfs.fixed_native_request_required')
+    from .input_stage import _stage_request
+    _stage_request(request['input_scope'],request['source_locator'],request['members'])
+    return dict(run_id=value['run_id'],**{key:request[key]for key in fields-{'operation'}})

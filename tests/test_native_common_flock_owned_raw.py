@@ -349,7 +349,7 @@ def test_real_parent_close_fault_preserves_primary_and_never_retries_close(tmp_p
     secondary=OSError(errno.EIO,'injected API failure after actual close');closed=[];real_close=os.close;target=None
     def close(fd):
         real_close(fd)
-        if fd==target:closed.append(fd);raise secondary
+        if fd==target and not closed:closed.append(fd);raise secondary
     with pytest.raises(BaseExceptionGroup)as caught:
         with evidence._opened_owned_private_directory(parent,(info.st_dev,info.st_ino))as fd:
             target=fd;monkeypatch.setattr(evidence.os,'close',close);raise primary

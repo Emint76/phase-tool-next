@@ -4,6 +4,7 @@ The controlled run record is outside the replaceable stage and its local proof.
 This is the installation's existing evidence trust boundary, not a signature or
 protection against a privileged actor rewriting every independent record.
 """
+from .mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +39,7 @@ class PreparationBinding(BaseModel):
 def requires_preparation_binding(intent):
     binding = intent['contract']
     return ((binding['id'], binding['version']) == BOUND_CONTRACT
-        or (binding['id'], binding['version'], binding['package_digest']) in (NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2))
+        or (binding['id'], binding['version'], binding['package_digest']) in (NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2) or binding==semantic_owner_contract('Bundle2'))
 
 
 def binding_value(intent, effect, prepared):

@@ -19,7 +19,7 @@ class _ExperimentalBundle1Admission(_ExperimentalFile1Admission):
 
     def check_original(self,intent,plan):
         doc=self.document();value=intent['candidate']['storage']['value'];inputs=intent['inputs']
-        if doc['experimental_admission_version']=='2.0':
+        if doc['experimental_admission_version']in {'2.0','3.0'}:
             from .owner_directory_fixture import original_binding_view
             doc=original_binding_view(self,intent,plan)
         _require(intent['run_id']==plan['run_id']==doc['run_id']

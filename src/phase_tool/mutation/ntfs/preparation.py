@@ -136,3 +136,91 @@ def _prepare_version1_publication(application, *, source_locator, target_locator
         candidate_path = Path(temporary.name)
     return (candidate_path, {'payload': frozen.blob_path},
         {'payload': (frozen.digest, frozen.length)}, candidate_bytes)
+
+
+def _prepare_bundle_publication(application,*,source_locator,target_locator,request_id,members):
+    """Prepare only a candidate under accepted ext4; Core captures bundle bytes."""
+    from ...installation import _NativeFileCreateInstallation
+    from ...paths import contained_read_path
+    from ...publish_bundle import _bundle_publication_candidate
+    from .parent_result import _native_bundle_result_binding
+    from .native import _require
+    installation=application.installation
+    _require(type(installation) is _NativeFileCreateInstallation
+        and application.registry is installation.read_binding.registry,'ntfs.closed_native_installation_required')
+    installation.authority._execution_required()
+    binding=installation.read_binding
+    manifest,_=_native_bundle_result_binding(binding,binding.manifest_digest,application.registry)
+    roots={key:Path(value)for key,value in manifest['root_projections'].items()}
+    manifest=installation._check_preparation_namespace(root_bindings=roots,
+        evidence_root=Path(manifest['evidence_root']),maximum_candidate_bytes=1024**2)
+    validate_run_id(installation.authority._run_id)
+    source_locator=safe_relative_locator(source_locator)
+    _,candidate_bytes=_bundle_publication_candidate(request_id,target_locator,members)
+    preparation=Path(manifest['preparation_root'])
+    source=contained_read_path(preparation,source_locator)
+    _require(source.is_dir()and not source.is_symlink(),'ntfs.bundle_preparation_directory_required')
+    scratch=Path(mkdtemp(prefix='phase-native-bundle-',dir=preparation))
+    with NamedTemporaryFile(mode='wb',suffix='.json',dir=scratch,delete=False)as temporary:
+        temporary.write(candidate_bytes);candidate_path=Path(temporary.name)
+    installation._check_preparation_namespace(root_bindings=roots,
+        evidence_root=Path(manifest['evidence_root']),maximum_candidate_bytes=1024**2)
+    return candidate_path,{'payload':source},None,candidate_bytes
+
+
+def _prepare_staged_publication(application,launch,request):
+    """Materialize only existing Core arguments inside admitted preparation.
+
+    Prepared-input data is verified again; only Core captures/freeze/intents and
+    existing native mechanisms may publish. No catch extends over Core.run.
+    """
+    from ...installation import _NativeFileCreateInstallation
+    from .native import _require
+    from .input_stage import _read_staged_input_marker,_publication_candidate
+    from ...paths import contained_read_path
+    from ...bundle import freeze_bundle
+    installation=application.installation
+    _require(type(installation)is _NativeFileCreateInstallation
+        and application.registry is installation.read_binding.registry,
+        'ntfs.closed_native_installation_required')
+    installation.authority._execution_required()
+    scope,role,marker=_read_staged_input_marker(launch,request)
+    manifest=launch.manifest;roots={key:Path(value)for key,value in manifest['root_projections'].items()}
+    checked=installation._check_preparation_namespace(root_bindings=roots,
+        evidence_root=Path(manifest['evidence_root']),maximum_candidate_bytes=1024**2)
+    _require(checked==manifest,'input_stage.preparation_manifest_mismatch')
+    candidate,raw=_publication_candidate(role,request['request_id'],request['target_locator'],
+        request['members'],request['expected_current_digest'],request['content_utf8'])
+    preparation=Path(scope['preparation_root']);source=contained_read_path(preparation,request['source_locator'])
+    scratch=Path(mkdtemp(prefix='phase-native-staged-',dir=preparation))
+    if role in{'Bundle1','Bundle2'}:
+        # Existing manifest capture owns member nofollow/hash/membership. Core
+        # will independently capture again against this exact digest+length.
+        frozen=freeze_bundle('payload',source,request['members'],scratch,
+            frozen_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'))
+        _require(frozen.digest==request['source_digest']and frozen.length==request['source_length'],
+            'input_stage.preparation_digest_mismatch')
+        inputs={'payload':source};expected={'payload':(frozen.digest,frozen.length)}
+    elif role=='Version2':
+        # Contract deliberately has no FrozenInput. Read independently staged
+        # bytes with the normal bounded frozen reader, compare to candidate.
+        frozen=copy_and_hash('payload',preparation,request['source_locator'],scratch,
+            frozen_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),maximum_bytes=512*1024)
+        _require(frozen.digest==request['source_digest']and frozen.length==request['source_length'],
+            'input_stage.preparation_digest_mismatch')
+        revalidate_frozen(frozen);inputs={};expected={}
+    else:
+        from .input_stage import _role_bounds
+        from ...streaming import copy_and_hash_stream
+        capture=copy_and_hash_stream if role=='File2'else copy_and_hash
+        frozen=capture('payload',preparation,request['source_locator'],scratch,
+            frozen_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),maximum_bytes=_role_bounds(role)[1])
+        _require(frozen.digest==request['source_digest']and frozen.length==request['source_length'],
+            'input_stage.preparation_digest_mismatch')
+        revalidate_frozen(frozen);_require(frozen.blob_path is not None,'freeze.blob_missing')
+        inputs={'payload':frozen.blob_path};expected={'payload':(frozen.digest,frozen.length)}
+    with NamedTemporaryFile(mode='wb',suffix='.json',dir=scratch,delete=False)as temporary:
+        temporary.write(raw);candidate_path=Path(temporary.name)
+    installation._check_preparation_namespace(root_bindings=roots,
+        evidence_root=Path(manifest['evidence_root']),maximum_candidate_bytes=1024**2)
+    return candidate_path,inputs,expected,raw

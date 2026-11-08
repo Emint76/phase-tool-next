@@ -4,6 +4,7 @@ Accepted-launch shells isolate the refusal branch; they do not establish G01.
 The actual qualification guard stays unmocked. No positive native operation,
 channel, target/evidence I/O or receipt is authorized by these tests.
 """
+from ._native_startup_shell import legacy_negative_launch
 from types import SimpleNamespace
 import unittest
 from ._native_startup_shell import startup_shell
@@ -22,7 +23,7 @@ from phase_tool.mutation.ntfs.channel_v2 import LinuxNativeChannelV2
 
 class NativeCurrentStartupRegistryTests(unittest.TestCase):
     def test_core_refuses_with_current_registry_before_channel_evidence_or_application(self):
-        launch=SimpleNamespace(_inspection_only=False,check_runtime=Mock(),
+        launch=legacy_negative_launch(_inspection_only=False,check_runtime=Mock(),
             invocation={'request':{'operation':'execute','candidate_path':'/synthetic/unused.json',
                 'input_paths':{},'expected_inputs':None,'maximum_candidate_bytes':1024**2}},
             _manifest_bytes=startup_shell()[0],installation_digest=startup_shell()[1],run_id='synthetic-unqualified',

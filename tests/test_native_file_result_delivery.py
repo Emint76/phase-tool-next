@@ -5,6 +5,7 @@ The separate Host tests use real Core/receipts on already qualified Linux/ext4.
 Accepted launcher/OS/framed process facts are synthetic in composed tests; the
 real native qualification guard remains closed and is never replaced.
 """
+from ._native_startup_shell import legacy_negative_launch
 from copy import deepcopy
 from types import SimpleNamespace
 import sys,threading,unittest
@@ -142,7 +143,7 @@ class NativeFileResultDeliveryTests(unittest.TestCase):
     def test_unpatched_qualification_refusal_delivers_new_frame_with_explicit_null(self):
         from phase_tool.mutation.ntfs.channel_v3 import LinuxNativeChannelV3
         p=protocol()
-        launch=SimpleNamespace(_inspection_only=True,check_runtime=Mock(),
+        launch=legacy_negative_launch(_inspection_only=True,check_runtime=Mock(),
             invocation={'request':p.request},_manifest_bytes=p.raw,
             installation_digest=digest_bytes(p.raw),run_id=RUN,
             operation_nonce='b'*32,channel_id=CHANNEL)

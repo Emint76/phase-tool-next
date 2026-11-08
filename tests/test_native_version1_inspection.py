@@ -4,6 +4,7 @@ Protocol success tokens are synthetic, never receipts or NTFS proof. Host tests
 use actual qualified Core and stored receipts. No native admission guard is
 patched. No new journal, recovery, retry or timestamp repair is exercised.
 """
+from ._native_startup_shell import legacy_negative_launch
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
@@ -177,7 +178,7 @@ class NativeVersion1InspectionTests(unittest.TestCase):
         exact=registry.contract_bindings()['publish_new_version.v1@1.0.0']
         raw=canonical_bytes({'native_read_installation_version':'1.2',
             'registry_snapshot_digest':registry.digest,'contract':exact})
-        launch=SimpleNamespace(_inspection_only=True,check_runtime=Mock(),
+        launch=legacy_negative_launch(_inspection_only=True,check_runtime=Mock(),
             invocation={'request':request},_manifest_bytes=raw,installation_digest=digest_bytes(raw),
             run_id=RUN,operation_nonce='a'*32,channel_id='b'*32)
         with (patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
@@ -195,7 +196,7 @@ class NativeVersion1InspectionTests(unittest.TestCase):
             bad=canonical_bytes({'native_read_installation_version':version,
                 'registry_snapshot_digest':reg.digest,
                 'contract':reg.contract_bindings()['file_create.v1@1.0.0']})
-            launch._manifest_bytes=bad;launch.installation_digest=digest_bytes(bad)
+            launch._manifest_bytes=bad;launch._manifest_digest=digest_bytes(bad)
             with (self.subTest(version=version),
                     patch.object(entrypoint,'_linux_stdio_identity',return_value='synthetic-pipes'),
                     patch.object(installation,'_native_installation_for_manifest',

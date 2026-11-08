@@ -37,3 +37,26 @@ def legacy_data_launch(*,manifest_bytes,invocation,inspection_only=False):
     launch._experimental_admission_context=None
     launch.check_runtime=Mock()  # Explicit modeled immutable-runtime boundary.
     return launch
+
+
+def legacy_negative_launch(**fields):
+    """Canonical exact-class data shell for existing early-refusal tests only.
+
+    Preserve every original selector/token/request/history and modeled runtime
+    check. This never constructs an accepted installation or mocks a guard.
+    """
+    required={'_inspection_only','check_runtime','invocation','_manifest_bytes',
+        'installation_digest','run_id','operation_nonce','channel_id'}
+    if not (required <= set(fields) <= required|{'history_manifest_set'}):
+        raise AssertionError('fixed negative launch fields required')
+    if digest_bytes(fields['_manifest_bytes']) != fields['installation_digest']:
+        raise AssertionError('negative manifest digest mismatch')
+    invocation=dict(fields['invocation'])
+    if set(invocation) not in ({'request'},{'request','run_id','operation_nonce','channel_id'}):
+        raise AssertionError('fixed negative request wrapper required')
+    invocation.update({key:fields[key] for key in ('run_id','operation_nonce','channel_id')})
+    launch=legacy_data_launch(manifest_bytes=fields['_manifest_bytes'],
+        invocation=invocation,inspection_only=fields['_inspection_only'])
+    launch.check_runtime=fields['check_runtime']
+    launch._history_manifest_set=fields.get('history_manifest_set',(None,None))
+    return launch

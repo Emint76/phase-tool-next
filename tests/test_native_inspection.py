@@ -4,6 +4,7 @@ Object shells isolate negative branches without constructing an installation.
 Synthetic peer ACKs are protocol data, not receipts or physical proof. Real
 pipes and negative MCP transport run only in approved Linux CI.
 """
+from ._native_startup_shell import legacy_negative_launch
 import asyncio
 from copy import deepcopy
 from importlib import resources
@@ -100,7 +101,7 @@ class NativeInspectionSelectionTests(unittest.TestCase):
             channel.assert_not_called(); store.assert_not_called(); binding.assert_not_called()
 
     def test_entrypoint_delivers_only_actual_preinstallation_refusal(self):
-        launch = SimpleNamespace(_inspection_only=True, check_runtime=Mock(),
+        launch = legacy_negative_launch(_inspection_only=True, check_runtime=Mock(),
             invocation={'request': {'operation': 'inspect'}}, _manifest_bytes=startup_shell()[0],
             installation_digest=startup_shell()[1], run_id='synthetic-known-run', operation_nonce='a'*32, channel_id='b'*32)
         with (patch.object(entrypoint, '_linux_stdio_identity', return_value='synthetic-pipes'),

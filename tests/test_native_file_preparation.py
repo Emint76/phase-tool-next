@@ -3,6 +3,7 @@
 Static selector shells establish no accepted launcher, G01 or positive native
 operation. Delivery/stdio shells only expose the exact early refusal result.
 """
+from ._native_startup_shell import legacy_negative_launch
 from copy import deepcopy
 from types import SimpleNamespace
 import unittest
@@ -31,7 +32,7 @@ class NativeFilePreparationTests(unittest.TestCase):
         raw = canonical_bytes({'native_read_installation_version': version,
             'registry_snapshot_digest': registry.digest,
             'contract': {'id': 'file_create.v1'}})
-        return SimpleNamespace(_inspection_only=False, check_runtime=Mock(),
+        return legacy_negative_launch(_inspection_only=False, check_runtime=Mock(),
             invocation={'request': request}, _manifest_bytes=raw,
             installation_digest=digest_bytes(raw), run_id='synthetic-unqualified',
             operation_nonce='a'*32, channel_id='b'*32)

@@ -4,6 +4,7 @@ No native qualification guard is replaced. The process/factory boundary is
 synthetic; Host receipts are real only for the explicitly qualified Linux roots.
 Nothing here qualifies Windows, NTFS, A05/G01 or a supported native release.
 """
+from ._native_startup_shell import legacy_negative_launch
 import asyncio
 from copy import deepcopy
 import os
@@ -253,7 +254,7 @@ class NativeFilePublicationCorrelatorTests(unittest.TestCase):
         from phase_tool.mutation.ntfs import preparation
         p=delivery.protocol();owner=self.owner(p)
         def launch(**kwargs):
-            return SimpleNamespace(invocation=parse_json_bytes(kwargs['invocation_bytes']),
+            return legacy_negative_launch(invocation=parse_json_bytes(kwargs['invocation_bytes']),
                 _manifest_bytes=p.raw,installation_digest=digest_bytes(p.raw),
                 run_id=delivery.RUN,channel_id='a'*32,operation_nonce='b'*32,
                 check_runtime=Mock(),_inspection_only=False)

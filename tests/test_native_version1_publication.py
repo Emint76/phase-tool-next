@@ -4,6 +4,7 @@ Native OS/process shells are explicit. The actual native qualification guard
 is never patched to produce success. New preparation cannot be positively
 executed until admission is qualified. No retry, key rotation or clock repair.
 """
+from ._native_startup_shell import legacy_negative_launch
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
@@ -202,7 +203,7 @@ class NativeVersion1PublicationTests(unittest.TestCase):
                 else installation._native_lifecycle_registry())
             raw=canonical_bytes({'native_read_installation_version':version,
                 'registry_snapshot_digest':registry.digest,'contract':{'id':contract_id}})
-            launch=SimpleNamespace(_inspection_only=False,check_runtime=Mock(),
+            launch=legacy_negative_launch(_inspection_only=False,check_runtime=Mock(),
                 invocation={'request':self.request()},_manifest_bytes=raw,
                 installation_digest=digest_bytes(raw),run_id='synthetic-version',
                 operation_nonce='a'*32,channel_id='b'*32)

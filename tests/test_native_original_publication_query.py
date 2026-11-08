@@ -143,6 +143,8 @@ class NativeOriginalPublicationQueryTests(unittest.TestCase):
 
     def reader_shell(self,parsed):
         launch=object.__new__(bootstrap._NativeAcceptedLaunch)
+        from ._native_startup_shell import legacy_config_bytes
+        launch._config_bytes=legacy_config_bytes()
         launch._inspection_only=False;launch._original_query_attempted=False
         launch._manifest_bytes=canonical_bytes({'native_read_installation_version':'1.1'})
         launch._manifest_digest=self.intent['native_binding']['installation']['descriptor_digest']

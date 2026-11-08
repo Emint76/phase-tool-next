@@ -2,6 +2,7 @@
 
 No positive native authority, worker, Windows API, target operation or G01 claim.
 """
+from ._native_startup_shell import legacy_negative_launch
 import base64
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
@@ -165,7 +166,7 @@ def test_current_core_dispatch_refuses_all_roles_before_preparation_application_
     registry,leaves=manifests();selected=binding(registry,leaves[index])
     request={'operation':'execute','candidate_path':'/synthetic/unused.json','input_paths':{},
         'expected_inputs':None,'maximum_candidate_bytes':1024**2}
-    launch=SimpleNamespace(_inspection_only=False,check_runtime=Mock(),
+    launch=legacy_negative_launch(_inspection_only=False,check_runtime=Mock(),
         invocation={'request':request},_manifest_bytes=selected.manifest_bytes,
         installation_digest=selected.manifest_digest,run_id='synthetic-refused',
         operation_nonce='a'*32,channel_id='b'*32,history_manifest_set=(set_bytes(leaves),digest_bytes(set_bytes(leaves))))

@@ -144,3 +144,31 @@ component tests, not an actual Native publication. Original RED results and
 the first nonportable test revision remain preserved. New complete CI,
 exact-build Windows staging, mandatory MIX acceptance and Native return
 remain pending. No ordinary profile or registry has been activated.
+
+CI154 on exact `f3674551` completed all three jobs successfully. Both Python
+matrices recorded 2,669 passed, five explicit skips and no failures. The eleven
+new genuine-formatter ACK tests therefore also ran on Linux without platform
+skips. Installed Host CLI/MCP checks and the Python 3.11 old/new/old Host return
+passed; resource regressions passed. This is not Native qualification or return.
+Official logs and distribution artifact metadata are preserved; full new-build
+artifact verification remains separate from these job conclusions.
+
+The subsequent real-SDK frontend audit exposed another genuine input-MCP
+defect before Native dispatch: `run_native_input_mcp` omitted the existing
+`_closed_arguments` step. Its two SDK argument models silently allowed extra
+fields. The only runtime change applies that same existing validator before
+`server.run`. All other bytes, finite owner, staging/session and clocks remain
+unchanged. There is no per-contract exception or request-selected authority.
+
+Seven new SDK component methods passed in the author run and independent Root
+run with no skips. Actual tool metadata and real tool invocation cover all six
+typed input shapes; 96 extra-selector variants across both tools fail before
+the modeled owner. CLI grammar/candidates/staged requests and all six genuine
+schema-valid ACK/inspect pairs are checked, along with the other finite MCP
+server families. StdIO server execution, staging and transport are explicitly
+modeled; this establishes no actual Windows publication. Root report SHA-256
+`db5253b5a511c5bf500a67be83f92de184a7ff3fb08fc2340092bd525fb0a52d`.
+The original RED (96 failing subtests and six schema errors) remains retained.
+The next exact full CI and audited artifact are required before Small6 Windows
+acceptance. Mandatory MIX, ordinary qualified admission, recovery and Native
+old/new/old return remain open; no registry or profile is activated.

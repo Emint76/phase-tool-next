@@ -704,7 +704,7 @@ def run_native_input_mcp(**startup):
     server=FastMCP('phase-native-input')
     server.tool(name='phase_publish_input')(owner.publish_input)
     server.tool(name='phase_inspect')(owner.inspect)
-    server.run(transport='stdio');return 0
+    _closed_arguments(server).run(transport='stdio');return 0
 
 
 def _native_input_cli_request(value):

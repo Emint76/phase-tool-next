@@ -94,19 +94,23 @@ class NativeInstalledMCPAdmissionTests(unittest.TestCase):
                             factory(**self.startup(value))
             launch.assert_not_called(); server.assert_not_called(); nonce.assert_not_called()
 
-    def test_admitted_servers_expose_only_prepared_execute_and_unary_read(self):
+    def test_admitted_servers_expose_exact_role_bound_tools_and_unary_read(self):
         with patch.object(inspection_mcp, '_NativeAcceptedLaunch') as launch:
             for kind, _ in self.rows():
                 with self.subTest(kind=kind.__name__):
                     startup=self.startup(kind(b'{}'))
                     prepared=inspection_mcp._prepared_server(**startup)._tool_manager.list_tools()
                     reader=inspection_mcp._inspection_server(**startup)._tool_manager.list_tools()
-                    self.assertEqual([tool.name for tool in prepared],
-                        ['phase_execute_prepared', 'phase_inspect'])
+                    expected=['phase_execute_prepared']
+                    if kind in (_ExperimentalBundle1Admission,_ExperimentalBundle2AdmissionV3):
+                        expected+=['phase_execute_bundle_publication','phase_publish_bundle']
+                    expected+=['phase_inspect']
+                    self.assertEqual([tool.name for tool in prepared],expected)
                     self.assertEqual([tool.name for tool in reader], ['phase_inspect'])
                     self.assertEqual(set(prepared[0].parameters['properties']),
                         {'run_id', 'candidate_path', 'input_paths', 'expected_inputs', 'maximum_candidate_bytes'})
-                    self.assertEqual(set(prepared[1].parameters['properties']), {'run_id'})
+                    inspect_tool=next(tool for tool in prepared if tool.name=='phase_inspect')
+                    self.assertEqual(set(inspect_tool.parameters['properties']), {'run_id'})
                     self.assertEqual(set(reader[0].parameters['properties']), {'run_id'})
                     for tool in (*prepared, *reader):
                         self.assertIs(tool.parameters['additionalProperties'], False)

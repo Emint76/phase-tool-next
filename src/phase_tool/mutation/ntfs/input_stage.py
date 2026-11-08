@@ -124,7 +124,7 @@ def _input_scope_document(raw,*,config,manifest,scope_path,fixture_raw):
         and volume['filesystem']=='NTFS'and type(volume['device'])is str
         and re.fullmatch(r'\\Device\\HarddiskVolume[0-9]+',volume['device'])is not None
         and type(volume['volume_guid'])is str
-        and re.fullmatch(r'\\\\\?\\Volume\{[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\}\\',volume['volume_guid'])is not None
+        and re.fullmatch(r'\\\\\?\\volume\{[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\}\\',volume['volume_guid'])is not None
         and type(volume['volume_serial32'])is int and 0<=volume['volume_serial32']<2**32
         and type(volume['flags'])is int and 0<=volume['flags']<2**32,
         'input_stage.local_ntfs_scope_required')

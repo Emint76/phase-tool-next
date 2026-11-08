@@ -745,13 +745,15 @@ class NativeBundle2PreparedMCPRouteTests(unittest.TestCase):
                     owner.inspect(args['run_id'])
                 factory.assert_called_once()
 
-    def test_b2_prepared_server_has_only_prepared_execute_and_unary_inspect(self):
+    def test_b2_prepared_server_has_exact_prepared_bundle_and_unary_inspect_tools(self):
         _,_,_,_,_,startup=self.setup_route()
         with patch.object(inspection_mcp,'_NativeAcceptedLaunch')as factory:
             server=inspection_mcp._prepared_server(**startup)
             tools=server._tool_manager.list_tools()
-            self.assertEqual([t.name for t in tools],['phase_execute_prepared','phase_inspect'])
-            self.assertEqual(set(tools[1].parameters['properties']),{'run_id'})
+            self.assertEqual([t.name for t in tools],['phase_execute_prepared',
+                'phase_execute_bundle_publication','phase_publish_bundle','phase_inspect'])
+            inspect_tool=next(tool for tool in tools if tool.name=='phase_inspect')
+            self.assertEqual(set(inspect_tool.parameters['properties']),{'run_id'})
             self.assertTrue(all(t.parameters['additionalProperties']is False for t in tools))
             self.assertNotIn('_experimental_admission_context',tools[0].parameters['properties'])
             factory.assert_not_called()

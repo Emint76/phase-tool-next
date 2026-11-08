@@ -28,7 +28,7 @@ root=Path(os.environ['PHASE_NATIVE_CHANNEL_SOURCE_ROOT']).resolve(strict=True)
 loaded={}
 for name,module,sha in (
  ('channel',channel_source,'7a294a29fb5c586d193f3253c4ac0bb066f5b55b910978fdd04a76bf54c6acec'),
- ('native',native_source,'f1db9c948b94a83755456e78a3333b0ce93b0109f733201bae7667e6b686fb30')):
+ ('native',native_source,'922c99c2f5b6e3270fab12be6522a56b0bdda10b4448fb5a352cd805f1e928e4')):
  p=Path(module.__file__).resolve(strict=True)
  if p!=root/'phase_tool/mutation/ntfs'/(name+'.py') or hashlib.sha256(p.read_bytes()).hexdigest()!=sha:
   raise RuntimeError('wrong child module origin or bytes')
@@ -92,7 +92,7 @@ class NativeChannelTests(unittest.TestCase):
         self.loaded = {name: {'path': str(self.source_root/'phase_tool/mutation/ntfs'/(name+'.py')), 'sha256': sha}
             for name, sha in (
                 ('channel', '7a294a29fb5c586d193f3253c4ac0bb066f5b55b910978fdd04a76bf54c6acec'),
-                ('native', 'f1db9c948b94a83755456e78a3333b0ce93b0109f733201bae7667e6b686fb30'))}
+                ('native', '922c99c2f5b6e3270fab12be6522a56b0bdda10b4448fb5a352cd805f1e928e4'))}
 
     def tearDown(self):
         errors = []

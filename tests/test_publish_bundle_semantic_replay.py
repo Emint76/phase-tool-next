@@ -88,7 +88,7 @@ def test_manifest_projection_rejects_non_boolean_before_evidence_io(tmp_path,fla
 
 
 def test_host_manifest_projection_is_not_a_native_capability(tmp_path):
-    with pytest.raises(PhaseError,match='inspection.bundle_projection_unsupported'):
+    with pytest.raises(PhaseError,match='ntfs.closed_native_installation_required'):
         inspect_run(tmp_path/'missing','run',_native_authority=object(),_include_bundle_manifest=True)
 
 

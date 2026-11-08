@@ -127,8 +127,16 @@ class Bundle2PreparedTests(unittest.TestCase):
             with self.subTest(key=key),self.assertRaises(PhaseError):
                 _verify_native_bundle_projection(contract,receipt,value['context']['run_id'],authority,wrong,'bundle')
         authority.read_binding.read.reset_mock()
+        with self.assertRaisesRegex(PhaseError,'inspection.native_bundle_original_required'):
+            _verify_native_bundle_projection(contract,{'execution_disposition':'reused_existing'},
+                'new-reuse-run',authority,observation,'bundle')
         _verify_native_bundle_projection(contract,{'execution_disposition':'reused_existing'},
-            'new-reuse-run',authority,observation,'bundle')
+            'new-reuse-run',authority,observation,'bundle',_original_projection=project)
+        for key,changed in [('run_id','another-valid-run'),('plan_digest','sha256:'+'0'*64)]:
+            wrong=deepcopy(observation);wrong['native']['owner'][key]=changed
+            with self.subTest(reused_owner_field=key),self.assertRaises(PhaseError):
+                _verify_native_bundle_projection(contract,{'execution_disposition':'reused_existing'},
+                    'new-reuse-run',authority,wrong,'bundle',_original_projection=project)
         authority.read_binding.read.assert_not_called()
 
     def test_native_registry_preserves_historical_entries_and_ordinary_guard_refuses(self):

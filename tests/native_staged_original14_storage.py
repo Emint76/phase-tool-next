@@ -38,7 +38,7 @@ class Original14Storage:
             scope={'native_input_scope_version':'1.0','scope_id':'original14-'+role.lower(),
                 'owner_scope_id':self.doc['owner_scope_id'],'fixture_digest':digest_bytes(self.raw),'installation_id':m['installation_id'],
                 'contract':m['contract'],'windows_root':r'C:\Original14-Model-Input',
-                'volume':{'device':r'\Device\HarddiskVolume6','volume_guid':'\\\\?\\Volume{ba5c2916-eefe-46a6-aabc-b23fe12c95b4}\\',
+                'volume':{'device':r'\Device\HarddiskVolume6','volume_guid':'\\\\?\\volume{ba5c2916-eefe-46a6-aabc-b23fe12c95b4}\\',
                     'volume_serial32':714582050,'filesystem':'NTFS','flags':0},
                 'root_identity':{'volume_serial':m['root_grants'][0]['native_identity']['volume_serial'],'file_id':'f'*32},
                 'preparation_root':str(self.preparation),'preparation_identity':self.doc['preparation_identity']}

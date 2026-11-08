@@ -49,15 +49,32 @@ def test_legacy_policy_retains_full_record_and_historical_request_domain(policy)
     assert records == original
 
 
-def test_all_bundled_contract_resources_keep_exact_legacy_policy_ids():
-    policies = set()
+def test_bundled_legacy_policies_and_six_exact_semantic_candidate_resources():
+    expected_semantic = {
+        'contracts/file_create.v1-owner3-semantic-1.0.1.json': ('file_create.v1','1.0.1'),
+        'contracts/file_create.v2-owner3-semantic-1.0.1.json': ('file_create.v2','1.0.1'),
+        'contracts/publish_new_version.v1-owner3-semantic-1.0.1.json': ('publish_new_version.v1','1.0.1'),
+        'contracts/publish_new_version.v2-owner3-semantic-1.0.1.json': ('publish_new_version.v2','1.0.1'),
+        'contracts/bundle_create.v1-owner3-semantic-1.1.1.json': ('bundle_create.v1','1.1.1'),
+        'contracts/bundle_create.v2-owner3-semantic-1.2.2.json': ('bundle_create.v2','1.2.2'),
+    }
+    policies = set(); observed_semantic = set()
     for name, raw in BundledRegistry.resources().items():
         if name.startswith(('contracts/', 'history/contracts/')) and name.endswith('.json'):
             value = parse_json_bytes(raw)
             if type(value) is dict and 'phase_contract_version' in value:
-                policies.add(value['idempotency']['request_digest_policy_id'])
+                policy=value['idempotency']['request_digest_policy_id']
+                if name in expected_semantic:
+                    assert (value['identity']['id'],value['identity']['version'])==expected_semantic[name]
+                    assert policy==SEMANTIC_REQUEST_POLICY
+                    observed_semantic.add(name)
+                else:
+                    policies.add(policy)
+    assert observed_semantic==set(expected_semantic)
     assert policies == LEGACY_REQUEST_POLICIES == {
         'digest.canonical_request_v1', 'digest.admission_canonical_request_v1'}
+    active=BundledRegistry.load().contract_bindings()
+    assert all(contract+'@'+version not in active for contract,version in expected_semantic.values())
 
 
 def test_semantic_policy_omits_only_frozen_at_without_mutating_original_record():

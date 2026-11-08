@@ -64,3 +64,46 @@ programme cases, supported recovery/common history, exact-build CI and checked
 native return to the supported predecessor. The system-wide resource policy is
 under independent review; no universal 64 GiB free-space exemption or unverified
 large-case admission is asserted here. FULL is outside this work.
+
+The first integrated full CI152 (f814b953) completed FAILURE on both Python
+matrices: 2,637 passed, 18 failed and five explicit skips (2,660 collected).
+No distribution was built; installed/rollback/resource jobs were skipped.
+Both original job logs and official diagnostic ZIPs are retained. A separate
+bounded stdlib audit matched their Git head/tree and complete XMLs, including
+the same 18 failures: SHA-256
+`9751e4b8ce479a13a65182296a2897e242c138d0b27332ea9b0883b3ccd875c3`.
+
+The correction preserves production guards. Thirteen protocol tests update
+their two literal source pins to the exact reviewed Native input-reader bytes;
+child origin/hash checks remain mandatory. The Bundle MCP tests assert the
+exact role-bound tools and select the unary inspector by name. Reuse testing
+now requires its original typed projection and rejects changed owner fields.
+Counterfeit Native authority must fail at the earlier closed-type guard. All
+legacy policy resources keep their old policies; exactly six named semantic
+candidate resources have their exact new versions/policy and remain absent
+from the default registry.
+
+A separate source defect prevented genuine staged input: NativeIO returns
+the existing canonical lowercase volume GUID, while the scope parser required
+uppercase `Volume`. The parser now requires the same lowercase form. Actual
+observed facts are never rewritten and the sender's full mapping equality
+is unchanged. The current synthetic Original fixture follows that same form;
+historical CI148 JSON and retained evidence remain byte-identical. Three new
+pure parser tests cover all six roles, inconsistent uppercase and malformed
+forms; these are not actual Windows volume queries.
+
+The exact nine-module Linux/ext4 regression recorded 186 passed, one failed
+and one Windows-only skip in 227.17 seconds. Its remaining failure exposed
+a second old indexed MCP inspector assertion missed by the first source
+review. The original failure and limited review are preserved. A one-file
+successor changed only that selector and its affected module passed all eight
+tests in 4.99 seconds; the other eight modules were not repeated. Separate
+all-RO stdlib readers verified all 915 source files, nine correction refs,
+three complete controls and full XML for each exact snapshot. Readback hashes:
+`1a19d5125e46ea4a7b9628da1438b39f64e25bc602062f41a601690dc28e9b5d`
+and `b41b2732739a9495cf82cc7729dfe7cd71c714a976cd2af566871aa07d56b1ec`.
+Both temporary runtimes/readers are gone, all data volumes retained. These
+results do not constitute a completed all-green nine-module run or Native
+qualification. Full new CI, actual Windows staging and the mandatory MIX
+programme remain required. Later source/results await the next approved
+Evidence/Raw checkpoint after Source252's immutable cutoff.

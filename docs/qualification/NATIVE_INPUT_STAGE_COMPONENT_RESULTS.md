@@ -107,3 +107,40 @@ results do not constitute a completed all-green nine-module run or Native
 qualification. Full new CI, actual Windows staging and the mandatory MIX
 programme remain required. Later source/results await the next approved
 Evidence/Raw checkpoint after Source252's immutable cutoff.
+
+CI153 on exact `9ebbe961` completed all three jobs successfully. Both Python
+matrices recorded 2,658 passed, five explicit skips and no failures. Installed
+CLI/MCP checks passed; the Python 3.11 Host/ext4 1.1 -> rc1 -> 1.1 return
+preserved all 67 original snapshot entries and verified 11 expected additions.
+That return is not Native rollback qualification. Resource regressions passed
+for 64 MiB/1 GiB/2 GiB files and the 256-member/256 MiB bundle on Host/ext4.
+They do not establish B08 NTFS MIX.
+
+Separate bounded artifact audits verified all 361 packaged product files and
+367 wheel RECORD entries against the exact Git source, plus 656 matching Git
+files in the source distributions. Required qualification fixtures are now
+included. The original CI151 missing-fixture result remains retained. Selected
+Python 3.11 wheel SHA-256:
+`23933a8cab27ea341fdb4e6821f8b736add112cb06b1c8b0f709b0c6179f6a60`.
+Combined scoped CI153 report SHA-256:
+`dcd56f059edc12c45009b23c6ced5eb91042c7c89e248f853d88b3cca87661f7`.
+
+Before any new Windows publication, source review exposed a distinct real ABI
+defect: `publish_input` demanded `inspection_required=false`, but the genuine
+validated CommandResult 1.0 formatter does not contain that field. The repair
+accepts only exact version 1.0 without the field, a verified successful terminal
+and non-null run/receipt/intent/plan. It still performs a fresh independent
+inspection and checks all four evidence bindings and target verification.
+The shared schema, `_call_locked`, deadlines and uncertain lifecycle are
+unchanged. New versions or explicit flags, including false, remain refused.
+Actual unknown acknowledgments are retained without inspection or retry.
+
+Eleven genuine-formatter/schema/finite-owner tests exercise those paths and
+tampered evidence, partial results and transport uncertainty. Root independently
+verified that only `publish_input` changed and recorded all 11 passing on Windows
+with no skips. Staging, accepted launch and parent IO are modeled; only this
+module's OS boundary is proxied, while real clocks remain active. These are
+component tests, not an actual Native publication. Original RED results and
+the first nonportable test revision remain preserved. New complete CI,
+exact-build Windows staging, mandatory MIX acceptance and Native return
+remain pending. No ordinary profile or registry has been activated.

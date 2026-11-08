@@ -310,13 +310,29 @@ class _InspectionMCPCallOwner:
                     'request_id':request_id,'target_locator':target_locator,'command_ack':ack,'independent_inspection':None,
                     'exit_code':ack['exit_code'],'retry_authorized':False}
                 if ack['exit_code']==0 and not self._unavailable:
-                    _require(ack.get('inspection_required')is False,'input_stage.execute_uncertain')
+                    # The unchanged validated CommandResult1.0 has NO
+                    # inspection_required member. New/uncertain generations
+                    # cannot be treated as a legacy completed execute ACK.
+                    _require(ack.get('stage3_command_result_version')=='1.0'
+                        and 'inspection_required'not in ack and ack.get('success')is True
+                        and ack.get('terminal_status')=='succeeded_verified'
+                        and ack.get('execution_disposition')in {'executed','reused_existing'}
+                        and ack.get('error')is None and ack.get('blockers')==[]
+                        and all(ack.get(field)is not None for field in
+                            ('run_id','receipt_digest','intent_digest','effect_plan_digest')),
+                        'input_stage.execute_uncertain')
                     self._held_launch=None  # Actual known finalized execute only.
                     inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True)
                     for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
                         _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
                             'input_stage.inspect_ack_mismatch')
-                    _require(inspected['exit_code']==0 and inspected.get('inspection_required')is False,
+                    _require(inspected['exit_code']==0
+                        and inspected.get('stage3_command_result_version')=='1.0'
+                        and 'inspection_required'not in inspected and inspected.get('success')is True
+                        and inspected.get('terminal_status')=='succeeded_verified'
+                        and inspected.get('execution_disposition')in {'executed','reused_existing'}
+                        and inspected.get('target_verified')is True
+                        and inspected.get('error')is None and inspected.get('blockers')==[],
                         'input_stage.inspect_unverified')
                     result['independent_inspection']=inspected
                 _left(token.deadline_ns)

@@ -12,7 +12,7 @@ from pathlib import Path
 from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from ...errors import PhaseError
 
-_LAUNCHER = 'sha256:fed74851bdf3ba0e86059fe5765ecc61926d387503f627b2f166030fe46cba31'
+_LAUNCHER = 'sha256:c13f905261304fc7c9b7089043b521bac6b7f10f3ffcd1436f62ea26800b2931'
 _SELECTED=ContextVar('phase_closed_c01_flock_test',default=None)
 _PROTOCOL='phase.test.common-core-flock/1'
 _STAGES={'hello','bound','acquire_return','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish'}
@@ -84,7 +84,7 @@ class _CommonCoreFlockTest:
     __slots__=('_initialized','_owner','_launch','_selected','_taken','_bound','_fd','_acquired',
         '_history','_unlock','_closed','_guard','_finished','events','errors','_sequence','_ipc',
         '_initial','_mode','_case','_campaign','_fixture_digest','_run','_manifest_digest','_nonce',
-        '_evidence_identity','_deadline','_lock_deadline','_ipc_closed')
+        '_evidence_identity','_deadline','_lock_deadline','_ipc_closed','_snapshot_write_attempted')
     def __init__(self,launch,*,_initial_deadline):
         from .bootstrap import _NativeAcceptedLaunch
         from .owner_directory_fixture import fixture_document,_kinds
@@ -95,7 +95,7 @@ class _CommonCoreFlockTest:
         self._initialized=True;self._owner=(os.getpid(),threading.get_ident());self._launch=launch
         self._selected=False;self._taken=False;self._bound=False;self._fd=None;self._acquired=False
         self._history=False;self._unlock=False;self._closed=False;self._guard=False;self._finished=False
-        self.events=[];self.errors=[];self._sequence=0;self._ipc=None
+        self.events=[];self.errors=[];self._sequence=0;self._ipc=None;self._snapshot_write_attempted=False
         _need(type(_initial_deadline) is float and 0<_initial_deadline-time.monotonic()<=30,
             'ntfs.c01_flock_test_deadline')
         self._initial=_initial_deadline
@@ -247,6 +247,90 @@ class _CommonCoreFlockTest:
         raw=canonical_bytes(self.snapshot())+b'\n'
         _need(len(raw)<=128*1024,'ntfs.c01_flock_test_snapshot_limit')
         _write_owned_stderr_bytes(raw,self._deadline)
+
+
+    def write_snapshot_to_owned_ext4_raw(self):
+        """Fixed qualification RAW only, after actual scope/socket finalization.
+
+        The record does not claim its own write/fsync completion or final Phase
+        success. Caller exit, native proof, external clocks and RO readback are
+        independently required. A late/failed write remains consumed forever.
+        """
+        from .bootstrap import _NativeAcceptedLaunch
+        from ...streaming import read_bounded_file
+        from ...evidence import _write_bytes_exclusive_atomic,_opened_owned_private_directory
+        _need(type(self) is _CommonCoreFlockTest and self._initialized
+            and self._owner==(os.getpid(),threading.get_ident()) and self._finished,
+            'ntfs.c01_raw_snapshot_owner')
+        _need(not getattr(self,'_snapshot_write_attempted',False),'ntfs.c01_raw_snapshot_consumed')
+        self._snapshot_write_attempted=True
+        _remaining(self._deadline)
+        launch=self._launch
+        _need(type(launch) is _NativeAcceptedLaunch and not launch._inspection_only
+            and launch.run_id==self._run and launch.installation_digest==self._manifest_digest,
+            'ntfs.c01_raw_snapshot_binding')
+        config=launch._config
+        _need(config['native_launch_version']=='2.0' and config['artifact_graph']['launcher_digest']==_LAUNCHER
+            and digest_bytes(read_bounded_file(Path(config['linux_launcher']),2*1024**2))==_LAUNCHER,
+            'ntfs.c01_flock_test_launcher')
+        _remaining(self._deadline)
+        fixture=parse_json_bytes(launch._experimental_admission_context.raw,maximum_bytes=32768)
+        _need(fixture['experimental_admission_version']=='2.0'
+            and re.fullmatch('[a-z0-9-]{1,64}',self._campaign) is not None
+            and type(self._case) is int and 0<=self._case<100 and self._mode in {'holder','contender'}
+            and self._run==fixture['request_limits']['run_prefix']+'c01-'+self._mode+'-'+str(self._case).zfill(3),
+            'ntfs.c01_raw_snapshot_binding')
+        preparation=Path(launch.manifest['preparation_root'])
+        _need(preparation.is_absolute(),'ntfs.c01_raw_snapshot_parent')
+        parent_pins=[]
+        for ancestor in reversed(preparation.parents):
+            info=ancestor.lstat()
+            _need(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and not getattr(info,'st_file_attributes',0)&0x400 and not info.st_mode&0o022,
+                'ntfs.c01_raw_snapshot_parent')
+            parent_pins.append((ancestor,(info.st_dev,info.st_ino),False))
+            _remaining(self._deadline)
+        expected=launch.manifest['preparation_identity'];info=preparation.lstat()
+        _need((info.st_dev,info.st_ino)==(expected['device'],expected['inode']),
+            'ntfs.c01_raw_snapshot_parent_identity')
+        directory=preparation
+        for name in (None,'qualification-c01',self._campaign,'observations'):
+            if name is not None:directory=directory/name
+            info=directory.lstat()
+            _need(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and not getattr(info,'st_file_attributes',0)&0x400
+                and info.st_uid==os.geteuid() and not info.st_mode&0o077,
+                'ntfs.c01_raw_snapshot_parent')
+            parent_pins.append((directory,(info.st_dev,info.st_ino),True))
+            _remaining(self._deadline)
+        parent_identity=(info.st_dev,info.st_ino)
+        value=self.snapshot()
+        value.update(raw_snapshot_version='2.0',raw_io_phase='PRE_RETURN_BEFORE_RAW_IO',
+            raw_io_completion_claimed=False,observation_authoritative=False,
+            owner_manifest_digest=self._manifest_digest,controller_fixture_digest=self._fixture_digest,
+            owner_fixture_digest=digest_bytes(launch._experimental_admission_context.raw))
+        raw=canonical_bytes(value)
+        _need(len(raw)<=128*1024,'ntfs.c01_flock_test_snapshot_limit')
+        _remaining(self._deadline)
+        with _opened_owned_private_directory(directory,parent_identity) as parent_descriptor:
+            _remaining(self._deadline)
+            _write_bytes_exclusive_atomic(directory/(self._run+'.json'),raw,'C01 qualification RAW observation',
+                    _parent_descriptor=parent_descriptor)
+            _remaining(self._deadline)
+            after=directory.lstat()
+            _need((after.st_dev,after.st_ino)==parent_identity and stat.S_ISDIR(after.st_mode)
+                and not stat.S_ISLNK(after.st_mode) and after.st_uid==os.geteuid()
+                and not after.st_mode&0o077,'ntfs.c01_raw_snapshot_parent_identity')
+            for path,expected_identity,private in parent_pins:
+                after=path.lstat()
+                _need((after.st_dev,after.st_ino)==expected_identity and stat.S_ISDIR(after.st_mode)
+                    and not stat.S_ISLNK(after.st_mode) and not getattr(after,'st_file_attributes',0)&0x400
+                    and not after.st_mode&0o022 and (not private or after.st_uid==os.geteuid() and not after.st_mode&0o077),
+                    'ntfs.c01_raw_snapshot_parent_identity')
+                _remaining(self._deadline)
+            _remaining(self._deadline)
+        _remaining(self._deadline)  # Parent fstat/close may return late; no clock renewal.
+
 
 
 @contextmanager

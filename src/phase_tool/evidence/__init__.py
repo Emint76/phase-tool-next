@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import json
@@ -1615,3 +1616,62 @@ def _snapshot_regular_file_tree(root, *, expected_files, maximum_files, maximum_
         'operation_counts': dict(io.counts),
         'all_opened_file_descriptors_closed': io.counts['open_read'] == io.counts['close'],
         'deadline_ns': deadline_ns, 'cross_run_cache': False}
+
+
+@contextmanager
+def _opened_owned_private_directory(path, expected_identity):
+    """Own one checked POSIX parent FD; caller borrows it, never closes it.
+
+    Identity is verified BEFORE publication. A substituted name cannot select
+    a different directory inode for the borrowed-fd writer. Later name drift
+    can still reject a publication into the original owned directory; it does
+    not mean that publication never happened. No pathname write or retry here.
+    """
+    def require(value, code):
+        if not value:raise PhaseError(code)
+    require(os.name=='posix' and type(expected_identity) is tuple
+        and len(expected_identity)==2 and all(type(value) is int and value>=0 for value in expected_identity),
+        'evidence.private_directory_binding')
+    path=Path(path)
+    require(path.is_absolute(),'evidence.private_directory_binding')
+    descriptor=None;opened_identity=None;yielded=False;primary=None;finalization=[]
+    def identity(info):return info.st_dev,info.st_ino
+    def private(info):
+        return (stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and not getattr(info,'st_file_attributes',0)&0x400 and info.st_uid==os.geteuid()
+            and not info.st_mode&0o077)
+    try:
+        before=path.lstat()
+        require(private(before) and identity(before)==expected_identity,'evidence.private_directory_identity')
+        descriptor=_open_pinned_directory(path)
+        # Ownership is retained before any fstat, type or binding check fails.
+        opened=os.fstat(descriptor);opened_identity=identity(opened)
+        named=path.lstat()
+        require(private(opened) and private(named)
+            and identity(before)==opened_identity==identity(named)==expected_identity,
+            'evidence.private_directory_identity')
+        yielded=True
+        yield descriptor
+    except BaseException as error:
+        primary=error
+    finally:
+        if descriptor is not None:
+            owned,descriptor=descriptor,None
+            same=True
+            if opened_identity is not None:
+                same=False
+                try:
+                    current=os.fstat(owned);same=identity(current)==opened_identity
+                    require(same,'evidence.private_directory_descriptor_changed')
+                    if yielded:require(private(current),'evidence.private_directory_identity')
+                except BaseException as error:finalization.append(error)
+            # A replaced borrowed fd must never cause closure of a foreign fd.
+            # Before yielding, even an unexpected opened inode is our own open.
+            if same:
+                try:os.close(owned)
+                except BaseException as error:finalization.append(error)
+    if primary is not None and finalization:
+        raise BaseExceptionGroup('owned parent operation and finalization failed',[primary,*finalization])
+    if primary is not None:raise primary
+    if len(finalization)==1:raise finalization[0]
+    if finalization:raise BaseExceptionGroup('owned parent finalization failed',finalization)

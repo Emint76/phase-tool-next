@@ -222,6 +222,8 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     owner=owners[0]
     methods={}
     signatures={'_spawn':['self','args'],'_pipe':['self','process'],
+        '_file2_input_pipes':['self','child_role'], 'worker_pipe':['self','process'],
+        '_require_private_stdio_ready':['self','process'],
         '_finalize_exited':['self','process','pipe'],'_check_linux_contours':['self'],
         '_linux_command':['self','role'],'spawn_core':['self'],'spawn_worker':['self'],
         'spawn_inspection':['self'],'spawn_input_stage':['self'],
@@ -250,7 +252,7 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
         if isinstance(n,(ast.MatchAs,ast.MatchStar)) and n.name=='subprocess':return False
         if isinstance(n,ast.MatchMapping) and n.rest=='subprocess':return False
     parents={id(child):n for n in ast.walk(tree) for child in ast.iter_child_nodes(n)}
-    allowed_refs={'_spawn':{'Popen','PIPE','CREATE_NO_WINDOW'},'_pipe':{'Popen'},
+    allowed_refs={'_spawn':{'Popen','PIPE','CREATE_NO_WINDOW','STARTUPINFO','STARTF_USESTDHANDLES','Handle'},'_pipe':{'Popen'},
         '_finalize_exited':{'Handle'},'_check_linux_contours':{'run','DEVNULL','PIPE','CREATE_NO_WINDOW'}}
     for n in [n for n in ast.walk(tree) if isinstance(n,ast.Name) and n.id=='subprocess']:
         parent=parents.get(id(n))
@@ -260,8 +262,11 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and _call_name(n).startswith('subprocess.')]
     expected={
       'subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)':methods['_spawn'],
+      'subprocess.Popen.__new__(subprocess.Popen)':methods['_spawn'],
+      "subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESTDHANDLES, hStdInput=handles[0], hStdOutput=handles[1], hStdError=handles[2], lpAttributeList={'handle_list': handles})":methods['_spawn'],
+      'subprocess.Popen.__init__(process, args, bufsize=0, close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW, startupinfo=startup)':methods['_spawn'],
       "subprocess.run([config['docker_executable'], 'inspect', '--format', template, *declared_by_id], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=True, creationflags=subprocess.CREATE_NO_WINDOW)":methods['_check_linux_contours']}
-    if len(calls)!=2 or {ast.unparse(n) for n in calls}!=set(expected):return False
+    if len(calls)!=5 or {ast.unparse(n) for n in calls}!=set(expected):return False
     if any(n not in ast.walk(expected[ast.unparse(n)]) for n in calls):return False
     inspect_call=next(n for n in calls if n in ast.walk(methods['_check_linux_contours']))
     inspect_path=parents[id(parents[id(inspect_call)])]
@@ -298,15 +303,25 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
         containing=next(name for name,f in methods.items() if n in ast.walk(f))
         attribute=parents[id(n)]
         if containing in {'_spawn','_check_linux_contours'}:
-            call=next(c for c in calls if c in ast.walk(methods[containing]))
-            if n not in ast.walk(call):return False
+            scoped=[c for c in calls if c in ast.walk(methods[containing])]
+            if not any(n in ast.walk(call) for call in scoped):
+                comparison=parents.get(id(attribute))
+                if containing!='_spawn' or not isinstance(comparison,ast.Compare) or ast.unparse(comparison)!='type(handle) is subprocess.Handle':return False
         else:
             comparison=parents.get(id(attribute))
             exact=("type(process) is subprocess.Popen" if containing=='_pipe'
                 else "type(handle) is subprocess.Handle")
             if not isinstance(comparison,ast.Compare) or ast.unparse(comparison)!=exact:return False
-    refs=[n for n in ast.walk(methods['_spawn']) if isinstance(n,ast.Name) and n.id=='args']
-    if len(refs)!=1 or not isinstance(refs[0].ctx,ast.Load):return False
+    from copy import deepcopy
+    from hashlib import sha256
+    # Pin the sole new spawn branch, the closed File2 selector and the no-ingress error gate.
+    pinned_methods = {'_spawn': '494ee913cee4981a5db3c8e76a5e8aa804b82b4ce18198c3d3d81dc451a182b6', '_file2_input_pipes': '97ca780dbda3df602736903b33e13ab2dd460424b4adf37fb986c077cad7c107', '_pipe': 'ee3988adf248519db4f05bc2d3fd84e4d43ae05b61f2b21bbd4688d1368cea5d', '_require_private_stdio_ready': '684a619ca332dbb634256812e573fb87977731609c01ff27d28976b8006afbe0', 'worker_pipe': '308d934c91104a0dabd73fc6d79be3758c631c546356e44698656f49556b7f15'}
+    for name, expected_digest in pinned_methods.items():
+        node = deepcopy(methods[name])
+        for part in ast.walk(node):
+            if isinstance(part,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)) and getattr(part,'type_params',None)==[]:
+                delattr(part,'type_params')
+        if sha256(ast.dump(node,include_attributes=False).encode()).hexdigest()!=expected_digest:return False
     spawn_expected={
       "self._spawn(self._linux_command('core'))":methods['spawn_core'],
       "self._spawn(self._linux_command('prepare-input'))":methods['spawn_input_stage'],
@@ -514,7 +529,10 @@ def test_windows_pipe_inventory_rejects_nested_or_duplicate_write(body):
 
 def test_no_shell_exec_subprocess_or_dynamic_module_loading() -> None:
     forbidden_imports = {"subprocess", "runpy"}
+    owned_subprocess_calls = {'subprocess.Popen', 'subprocess.run', 'subprocess.Popen.__new__',
+        'subprocess.Popen.__init__', 'subprocess.STARTUPINFO'}
     forbidden_calls = {"eval", "exec", "compile", "builtins.eval", "builtins.exec", "builtins.compile", "__import__", "builtins.__import__", "importlib.import_module", "subprocess.Popen", "subprocess.run", "runpy.run_path", "runpy.run_module", "os.system"}
+    forbidden_calls |= owned_subprocess_calls | {'_winapi.CreateProcess'}
     hits: list[tuple[str, int, str]] = []
     for path in sorted(PACKAGE.rglob("*.py")):
         relative = path.relative_to(PACKAGE).as_posix()
@@ -528,7 +546,7 @@ def test_no_shell_exec_subprocess_or_dynamic_module_loading() -> None:
                 hits.append((relative, node.lineno, node.module or ""))
             elif isinstance(node, ast.Call):
                 name = _call_name(node)
-                if name in forbidden_calls and not (name in {'subprocess.Popen','subprocess.run'}
+                if name in forbidden_calls and not (name in owned_subprocess_calls
                     and _native_launch_process_inventory(relative,tree)):
                     hits.append((relative, node.lineno, name))
     assert hits == []

@@ -527,6 +527,11 @@ class _NativeAcceptedLaunch:
         from .process_witness import _require_direct_windows_interpreter
         _require_direct_windows_interpreter()
 
+    def _require_private_stdio_ready(self, process):
+        private_stdio = getattr(process, '_phase_private_stdio', None)
+        if private_stdio is not None and private_stdio.failure is not None:
+            raise private_stdio.failure
+
     def _pipe(self,process):
         from .windows_pipe import WindowsPipeFrames
         _require(type(process) is subprocess.Popen and type(process.stdin) is io.FileIO
@@ -534,14 +539,66 @@ class _NativeAcceptedLaunch:
             'ntfs.exact_open_fileio_required')
         _require(id(process) not in self._pipe_created,'ntfs.process_pipe_setup_consumed')
         self._pipe_created.add(id(process))
+        self._require_private_stdio_ready(process)
         # Own fresh streams before lending them. Never change borrowed flags.
         for stream in (process.stdin,process.stdout,process.stderr):os.set_blocking(stream.fileno(),False)
         return WindowsPipeFrames(process.stdout,process.stdin)
 
+    def _file2_input_pipes(self, child_role):
+        if child_role not in {'prepare-input', 'core', 'worker'} or self._inspection_only or not self._file2:
+            return False
+        from .input_stage import _active_input_deadline_ns, _require_staged_publication_request
+        if _active_input_deadline_ns() is None:
+            return False
+        request = self.invocation['request']
+        _require(type(request) is dict, 'ntfs.private_pipe_request_scope')
+        if child_role == 'prepare-input':
+            header = request.get('header')
+            _require(set(request) == {'operation', 'native_input_stage_request_version', 'header'}
+                and request['operation'] == 'stage_input' and request['native_input_stage_request_version'] == '1.0'
+                and type(header) is dict and header.get('role') == 'File2', 'ntfs.private_pipe_request_scope')
+        else:
+            _require_staged_publication_request(request, role='File2')
+        return True
+
     def _spawn(self,args):
         self._windows_required()
         self._check_linux_contours()
-        _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)  # Fail BEFORE spawn after fallible static/contour IO.
+        deadline = _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)
+        if self._file2_input_pipes(args[-1]):
+            from .private_stdio import _PrivateSizedStdio, _private_stdio_failure
+            stdio = _PrivateSizedStdio()
+            process = subprocess.Popen.__new__(subprocess.Popen)
+            process._phase_private_stdio = stdio
+            self._held.append(process)  # Retain the exact Popen before any endpoint or process creation.
+            primary = None
+            try:
+                handles = stdio.prepare()
+                startup = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESTDHANDLES,
+                    hStdInput=handles[0], hStdOutput=handles[1], hStdError=handles[2],
+                    lpAttributeList={'handle_list': handles})
+                _cap_input_deadline(deadline)
+                stdio.enable_child_inheritance()
+                _cap_input_deadline(deadline)
+                # An explicit allowlist makes CPython inherit only these three
+                # child ends. No PIPE arguments leave its pipe-close step empty.
+                subprocess.Popen.__init__(process, args, bufsize=0, close_fds=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW, startupinfo=startup)
+            except BaseException as error:
+                primary = error
+            secondary = stdio.close_child_copies()
+            handle = getattr(process, '_handle', None)
+            started = (getattr(process, '_child_created', False) is True
+                and type(handle) is subprocess.Handle and handle.closed is False)
+            if not started:
+                secondary.extend(stdio.close_unattached_parent_streams())
+                failure = _private_stdio_failure(primary, secondary)
+                if failure is not None:
+                    raise failure
+                raise PhaseError('ntfs.private_stdio_creation_handle_unavailable')
+            stdio.attach(process)
+            stdio.failure = _private_stdio_failure(primary, secondary)
+            return process  # Existing caller witnesses creation; _pipe refuses any pending failure before I/O.
         process=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
             bufsize=0,close_fds=True,creationflags=subprocess.CREATE_NO_WINDOW)
         self._held.append(process)  # Retain actual owner BEFORE later fallible setup.
@@ -605,6 +662,7 @@ class _NativeAcceptedLaunch:
     def worker_pipe(self,process):
         _require(process is self._worker,'ntfs.owned_creation_process_required')
         _require(self._worker_job is None,'ntfs.worker_job_initialization_consumed')
+        self._require_private_stdio_ready(process)  # A pending spawn fault never arms a kill-on-close Job.
         from .worker_job import WindowsWorkerJob
         # Parent already owns the returned creation process and its witness.
         # Retain BEFORE fallible setup, still before pipe/original/READY/GO.

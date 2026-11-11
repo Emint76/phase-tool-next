@@ -13,6 +13,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import struct
 import sys
 
 from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
@@ -30,6 +31,35 @@ _MAX_FRAME = 2*_CHUNK
 _CONTEXT = {'run_id','intent_digest','installation_digest','operation_nonce'}
 _COMMON = {'protocol','version','kind','header_digest','pass'}
 _DIGEST = re.compile('sha256:[0-9a-f]{64}')
+_BINARY_CHUNK_TAG = b'PHF2\x01'
+# Fixed big-endian fields. Tag, header SHA-256, pass, ordinal, offset, length.
+_BINARY_CHUNK = struct.Struct('!5s32sBIQI')
+
+
+def _file2_binary_chunks_for_contract(contract: dict) -> bool:
+    """Call only with the exact accepted installation contract binding."""
+    from .owner_semantic_contracts import semantic_owner_contract
+    return type(contract) is dict and contract == semantic_owner_contract('File2')
+
+
+def _binary_chunk_frame(header_digest: bytes, phase: int, index: int, offset: int, chunk: bytes) -> bytes:
+    _require(type(header_digest) is bytes and len(header_digest) == 32 and type(phase) is int and phase in (1, 2),
+        'ntfs.file2_pass_mismatch')
+    _require(type(index) is int and 0 <= index < _MAX_CHUNKS
+        and type(offset) is int and offset == index * _CHUNK, 'ntfs.file2_chunk_order')
+    _require(type(chunk) is bytes and 0 < len(chunk) <= _CHUNK, 'ntfs.file2_chunk_bound')
+    return _BINARY_CHUNK.pack(_BINARY_CHUNK_TAG, header_digest, phase, index, offset, len(chunk)) + chunk
+
+
+def _binary_chunk_payload(raw: bytes, header_digest: bytes, phase: int, index: int, offset: int, wanted: int) -> bytes:
+    _require(type(raw) is bytes and _BINARY_CHUNK.size < len(raw) <= _BINARY_CHUNK.size + _CHUNK,
+        'ntfs.file2_frame_bound')
+    tag, header, observed_phase, ordinal, observed_offset, length = _BINARY_CHUNK.unpack_from(raw)
+    _require(tag == _BINARY_CHUNK_TAG, 'ntfs.file2_frame_shape')
+    _require(header == header_digest and observed_phase == phase, 'ntfs.file2_pass_mismatch')
+    _require(ordinal == index and observed_offset == offset, 'ntfs.file2_chunk_order')
+    _require(length == wanted == len(raw) - _BINARY_CHUNK.size, 'ntfs.file2_chunk_bound')
+    return raw[_BINARY_CHUNK.size:]
 
 
 def _header(*, context_bytes: bytes, channel_id: str,
@@ -80,10 +110,12 @@ class _File2TwoPassReceiver:
     process witnesses. finish reports no receipt, target fact or quiescence.
     """
     def __init__(self, *, context_bytes: bytes, channel_id: str,
-                 content_digest: str, content_length: int):
+                 content_digest: str, content_length: int, _binary_chunks: bool = False):
+        _require(type(_binary_chunks) is bool, 'ntfs.file2_chunk_mode_required')
         self._header_raw=_header(context_bytes=context_bytes,channel_id=channel_id,
             content_digest=content_digest,content_length=content_length)
         self._header_digest=digest_bytes(self._header_raw)
+        self._binary_header = bytes.fromhex(self._header_digest[7:]) if _binary_chunks else None
         self._digest,self._length=content_digest,content_length
         self._chunks=(content_length+_CHUNK-1)//_CHUNK
         self._state='header'
@@ -94,36 +126,42 @@ class _File2TwoPassReceiver:
     def feed(self, raw: bytes) -> bytes | None:
         try:
             _require(self._state in ('header','first','replay'),'ntfs.file2_sequence_unavailable')
-            frame=_frame(raw)
             if self._state=='header':
+                _frame(raw)
                 _require(raw==self._header_raw,'ntfs.file2_header_mismatch')
                 self._state='first'
                 return None
             phase=1 if self._state=='first' else 2
-            _require(frame.get('header_digest')==self._header_digest
-                and type(frame.get('pass')) is int and frame['pass']==phase,
-                'ntfs.file2_pass_mismatch')
-            if frame.get('kind')=='end':
-                _require(set(frame)==_COMMON|{'content_digest','content_length','chunk_count'}
-                    and type(frame['content_length']) is int and type(frame['chunk_count']) is int
-                    and frame['content_length']==self._offset==self._length
-                    and frame['chunk_count']==self._index==self._chunks==len(self._hashes)
-                    and frame['content_digest']==self._digest=='sha256:'+self._hash.hexdigest(),
-                    'ntfs.file2_end_mismatch')
-                self._state='ready' if phase==1 else 'complete'
-                return None
-            _require(frame.get('kind')=='chunk'
-                and set(frame)==_COMMON|{'index','offset','content_base64'}
-                and type(frame['index']) is int and frame['index']==self._index<self._chunks
-                and type(frame['offset']) is int and frame['offset']==self._offset,
-                'ntfs.file2_chunk_order')
             wanted=min(_CHUNK,self._length-self._offset)
-            text=frame['content_base64']
-            _require(wanted>0 and type(text) is str and len(text)==(wanted+2)//3*4,
-                'ntfs.file2_chunk_bound')
-            chunk=base64.b64decode(text,validate=True)
-            _require(len(chunk)==wanted and base64.b64encode(chunk).decode('ascii')==text,
-                'ntfs.file2_chunk_encoding')
+            if self._binary_header is not None and self._index < self._chunks:
+                chunk = _binary_chunk_payload(raw, self._binary_header, phase, self._index, self._offset, wanted)
+            else:
+                if self._binary_header is not None:
+                    _require(type(raw) is bytes and 0 < len(raw) <= 4096, 'ntfs.file2_frame_bound')
+                frame = _frame(raw)
+                _require(frame.get('header_digest')==self._header_digest
+                    and type(frame.get('pass')) is int and frame['pass']==phase,
+                    'ntfs.file2_pass_mismatch')
+                if frame.get('kind')=='end':
+                    _require(set(frame)==_COMMON|{'content_digest','content_length','chunk_count'}
+                        and type(frame['content_length']) is int and type(frame['chunk_count']) is int
+                        and frame['content_length']==self._offset==self._length
+                        and frame['chunk_count']==self._index==self._chunks==len(self._hashes)
+                        and frame['content_digest']==self._digest=='sha256:'+self._hash.hexdigest(),
+                        'ntfs.file2_end_mismatch')
+                    self._state='ready' if phase==1 else 'complete'
+                    return None
+                _require(self._binary_header is None and frame.get('kind')=='chunk'
+                    and set(frame)==_COMMON|{'index','offset','content_base64'}
+                    and type(frame['index']) is int and frame['index']==self._index<self._chunks
+                    and type(frame['offset']) is int and frame['offset']==self._offset,
+                    'ntfs.file2_chunk_order')
+                text=frame['content_base64']
+                _require(wanted>0 and type(text) is str and len(text)==(wanted+2)//3*4,
+                    'ntfs.file2_chunk_bound')
+                chunk=base64.b64decode(text,validate=True)
+                _require(len(chunk)==wanted and base64.b64encode(chunk).decode('ascii')==text,
+                    'ntfs.file2_chunk_encoding')
             actual=hashlib.sha256(chunk).digest()
             if phase==1:
                 _require(len(self._hashes)==self._index<_MAX_CHUNKS,'ntfs.file2_vector_bound')
@@ -180,9 +218,11 @@ class _File2TwoPassReceiver:
 
 class _File2SnapshotSource:
     """Private same-process FD borrower; only _file2_verified_source constructs it."""
-    def __init__(self, fd: int, header: bytes):
+    def __init__(self, fd: int, header: bytes, *, _binary_chunks: bool = False):
+        _require(type(_binary_chunks) is bool, 'ntfs.file2_chunk_mode_required')
         self._fd=fd
         self._header_raw=header;self._header_digest=digest_bytes(header)
+        self._binary_header = bytes.fromhex(self._header_digest[7:]) if _binary_chunks else None
         metadata=parse_json_bytes(header,maximum_bytes=4096)
         self._length,self._digest=metadata['content_length'],metadata['content_digest']
         self._fingerprint=fingerprint(os.fstat(fd))
@@ -193,6 +233,13 @@ class _File2SnapshotSource:
     def _check(self, state: str) -> None:
         _require(self._state==state and self._fd is not None,'ntfs.file2_source_unavailable')
         _require(fingerprint(os.fstat(self._fd))==self._fingerprint,'ntfs.file2_snapshot_changed')
+
+    def _bind_channel_chunk_mode(self, binary_chunks: bool) -> None:
+        self._check('first-unused')
+        _require(type(binary_chunks) is bool and (binary_chunks or self._binary_header is None),
+            'ntfs.file2_chunk_mode_required')
+        if binary_chunks:
+            self._binary_header = bytes.fromhex(self._header_digest[7:])
 
     def _read_chunk(self, wanted: int, state: str) -> bytes:
         data=bytearray()
@@ -213,9 +260,12 @@ class _File2SnapshotSource:
             while offset<self._length:
                 chunk=self._read_chunk(min(_CHUNK,self._length-offset),state)
                 hasher.update(chunk)
-                yield canonical_bytes({'protocol':_PROTOCOL,'version':_VERSION,'kind':'chunk',
-                    'header_digest':self._header_digest,'pass':phase,'index':index,
-                    'offset':offset,'content_base64':base64.b64encode(chunk).decode('ascii')})
+                if self._binary_header is None:
+                    yield canonical_bytes({'protocol':_PROTOCOL,'version':_VERSION,'kind':'chunk',
+                        'header_digest':self._header_digest,'pass':phase,'index':index,
+                        'offset':offset,'content_base64':base64.b64encode(chunk).decode('ascii')})
+                else:
+                    yield _binary_chunk_frame(self._binary_header, phase, index, offset, chunk)
                 offset+=len(chunk);index+=1
             self._check(state)
             _require(os.read(self._fd,1)==b'','ntfs.file2_snapshot_extra_bytes')
@@ -277,7 +327,7 @@ def _failure(error: BaseException) -> dict:
 
 @contextmanager
 def _file2_verified_source(blob: Path, *, context_bytes: bytes, channel_id: str,
-                           content_digest: str, content_length: int):
+                           content_digest: str, content_length: int, _binary_chunks: bool = False):
     """Borrow the existing verified anonymous Linux snapshot through one exchange.
 
     Full source/installation/root authority remains the future trusted caller's
@@ -285,13 +335,14 @@ def _file2_verified_source(blob: Path, *, context_bytes: bytes, channel_id: str,
     Closing its FD proves nothing about a remote worker or operation outcome.
     """
     _require(sys.platform.startswith('linux'),'ntfs.file2_linux_source_required')
+    _require(type(_binary_chunks) is bool, 'ntfs.file2_chunk_mode_required')
     header=_header(context_bytes=context_bytes,channel_id=channel_id,
         content_digest=content_digest,content_length=content_length)
     manager=_verified_blob_snapshot(blob,(content_digest,content_length))
     entered=False;source=None;primary=None
     try:
         fd=manager.__enter__();entered=True
-        source=_File2SnapshotSource(fd,header)
+        source=_File2SnapshotSource(fd,header,_binary_chunks=_binary_chunks)
         yield source
     except BaseException as error:
         primary=error

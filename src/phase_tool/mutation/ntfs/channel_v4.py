@@ -24,8 +24,11 @@ class LinuxNativeChannelV4(LinuxNativeChannelV2):
     _PROTOCOL_VERSION='1.3'
     _EXECUTE_KINDS=frozenset({'execute_file2'})
 
-    def __init__(self,channel_id,*,_inspection_only=False):
+    def __init__(self,channel_id,*,_inspection_only=False,_binary_chunks=False):
+        _require(type(_binary_chunks) is bool and (not _binary_chunks or type(self) is LinuxNativeChannelV4),
+            'ntfs.file2_chunk_mode_required')
         super().__init__(channel_id,_inspection_only=_inspection_only)
+        self._binary_chunks=_binary_chunks
         self._terminal_value_bytes=None
 
     def _request(self,kind,run_id,intent_digest,payload):
@@ -92,7 +95,7 @@ class LinuxNativeChannelV4(LinuxNativeChannelV2):
                 and type(source) is _File2SnapshotSource
                 and source._header_raw==_file2_header(projection,self.channel_id),
                 'ntfs.original_current_invocation_mismatch')
-            source._check('first-unused')
+            source._bind_channel_chunk_mode(self._binary_chunks)
             common={'protocol':'phase.native.pipe','version':self._PROTOCOL_VERSION,
                 'channel_id':self.channel_id,'sequence':self._sequence+1,
                 'kind':'execute_file2','run_id':run_id,'intent_digest':intent_digest}

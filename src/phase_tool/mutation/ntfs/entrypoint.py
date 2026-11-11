@@ -546,6 +546,7 @@ def _run_version1_worker_transfer(launch,original,pipe,deadline,*,_version2=Fals
 def _run_file2_worker_transfer(launch,original,pipe,deadline):
     """Metadata initial frame; fixed worker verifies first-pass bytes before native I/O."""
     from .file2_execution import _file2_projection_from_value,run_file2_worker
+    from .file2_stream import _file2_binary_chunks_for_contract
     _require(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=30_000_000_000,
         'ntfs.file2_owned_deadline_required')
     _require(type(original) is dict and set(original)=={'native_worker_original_version','channel_id','projection'}
@@ -559,7 +560,8 @@ def _run_file2_worker_transfer(launch,original,pipe,deadline):
     primary=None
     try:
         launch.check_runtime()
-        run_file2_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline)
+        run_file2_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline,
+            _binary_chunks=_file2_binary_chunks_for_contract(launch.manifest['contract']))
         launch.check_runtime()
     except BaseException as error:primary=error
     _close_worker_stdio(primary)

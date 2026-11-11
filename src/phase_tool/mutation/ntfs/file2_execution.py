@@ -117,7 +117,7 @@ class _File2WorkerInput:
     replay chunk is returned before any native partial write can consume it.
     It never owns/closes the pipe or claims process exit/physical success.
     """
-    def __init__(self, pipe, projection, channel_id, deadline_ns):
+    def __init__(self, pipe, projection, channel_id, deadline_ns, *, _binary_chunks=False):
         _require(os.name=='nt' and type(pipe) is WindowsPipeFrames,
             'ntfs.windows_worker_pipe_required')
         _require(type(deadline_ns) is int
@@ -131,7 +131,8 @@ class _File2WorkerInput:
         self.content_length=value['content_length']
         compact={k:self._context[k] for k in ('run_id','intent_digest','installation_digest','operation_nonce')}
         self._receiver=_File2TwoPassReceiver(context_bytes=canonical_bytes(compact),
-            channel_id=channel_id,content_digest=self.content_digest,content_length=self.content_length)
+            channel_id=channel_id,content_digest=self.content_digest,content_length=self.content_length,
+            _binary_chunks=_binary_chunks)
         self._header_digest=digest_bytes(_file2_header(projection,channel_id))
         self._first_attempted=self._go_attempted=False
         self._failed=self._complete=False
@@ -249,7 +250,7 @@ def validate_file2_worker_completion(raw, *, context, grant_data, effect, expect
     return value
 
 
-def run_file2_worker(pipe,projection,channel_id,*,_transfer_deadline_ns):
+def run_file2_worker(pipe,projection,channel_id,*,_transfer_deadline_ns,_binary_chunks=False):
     """One fixed authenticated-role invocation, no NativeIO until first pass + GO."""
     from .file_create import NativeFileCreateOutcomeUnavailable,execute_file2_create
     from .uncertainty import _diagnostic
@@ -259,7 +260,7 @@ def run_file2_worker(pipe,projection,channel_id,*,_transfer_deadline_ns):
     binding=value['context'];completion=None
     try:
         try:
-            source=_File2WorkerInput(pipe,projection,channel_id,_transfer_deadline_ns)
+            source=_File2WorkerInput(pipe,projection,channel_id,_transfer_deadline_ns,_binary_chunks=_binary_chunks)
             source.first_pass()  # Full actual SHA/length/END, no native API.
             pipe.send_frame(canonical_bytes(_file2_ready_value(projection,channel_id,os.getpid())),
                 _transfer_deadline_ns)

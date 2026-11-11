@@ -25,6 +25,8 @@ from phase_tool.mutation.exclusive_create import _receipt
 from phase_tool.mutation.ntfs import authority,parent,file2_execution as execution,file2_stream as wire
 from phase_tool.mutation.ntfs.channel import NativeChannelError
 from phase_tool.mutation.ntfs.authority import _NativeFileCreateAuthority
+from phase_tool.mutation.ntfs.experimental_file2 import _FILE2_CONTRACT
+from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 from .test_native_file2_connected import fixture,projection,ready_literal,CHANNEL,CHUNK
 
 
@@ -179,23 +181,27 @@ def test_authority_real_bound_body_retains_valid_receipt_across_late_failure(tmp
 
 
 @pytest.mark.parametrize('fault',['none','ready_pid','go_delivery','completion_pid','worker_exit','owner_close','observer'])
-def test_parent_real_orchestration_body_uses_one_model_owner_and_sole_go(tmp_path,monkeypatch,fault):
+@pytest.mark.parametrize('binary_chunks',[False,True])
+def test_parent_real_orchestration_body_uses_one_model_owner_and_sole_go(tmp_path,monkeypatch,fault,binary_chunks):
     _,_,args,_,_=fixture(tmp_path,b'x'*(CHUNK+17));parsed=projection(args)
     context=parse_json_bytes(parsed.context_bytes);reply=model_reply(parsed);record=[]
     compact={k:context[k]for k in('run_id','intent_digest','installation_digest','operation_nonce')}
     blob=tmp_path/'protocol-only-blob';blob.write_bytes(args['blob_bytes'])
     with wire._file2_verified_source(blob,context_bytes=canonical_bytes(compact),channel_id=CHANNEL,
-        content_digest=parsed.content_digest,content_length=parsed.content_length)as source:
+        content_digest=parsed.content_digest,content_length=parsed.content_length,_binary_chunks=binary_chunks)as source:
         first=list(source.first_frames());rewind=source.rewind_after_ready(canonical_bytes(ready_literal(parsed,77)['ready_token']))
         replay=list(source.replay_frames())
     # This prebuilt protocol model does not assert a live Core/Windows channel.
-    core_frames=iter([*first,rewind,*replay]);core_sent=[];worker_sent=[]
+    core_frames=iter([*first,rewind,*replay]);core_sent=[];worker_sent=[];worker_data=[]
     ready=ready_literal(parsed,78 if fault=='ready_pid' else 77)
     if fault=='completion_pid':reply['completion']['pid']=78
     worker_frames=iter([canonical_bytes(ready),canonical_bytes(reply['completion'])])
     def receive_core(deadline,**_):
         record.append('core_frame');return next(core_frames),None
     def send_worker(raw,deadline):
+        if binary_chunks and raw.startswith(wire._BINARY_CHUNK_TAG):
+            worker_data.append(raw)
+            return
         value=parse_json_bytes(raw);worker_sent.append(value)
         if value.get('command')=='execute_file2':
             record.append('GO')
@@ -210,6 +216,7 @@ def test_parent_real_orchestration_body_uses_one_model_owner_and_sole_go(tmp_pat
         if fault=='owner_close':raise PhaseError('synthetic.owner_close')
     launch=SimpleNamespace(run_id=context['run_id'],operation_nonce=context['operation_nonce'],
         installation_digest=context['installation_digest'],channel_id=CHANNEL,
+        manifest={'contract':semantic_owner_contract('File2') if binary_chunks else _FILE2_CONTRACT},
         root_grant=parse_json_bytes(parsed.grant_bytes),read_original=original,spawn_worker=spawn,
         worker_pipe=lambda _:worker_pipe,send_worker_original=lambda *_args,**_kwargs:record.append('original_metadata'),
         finalize_worker=finalize,check_runtime=lambda:None)
@@ -246,6 +253,8 @@ def test_parent_real_orchestration_body_uses_one_model_owner_and_sole_go(tmp_pat
         else:assert partial['completion']is None
     assert owner._worker_count==1 and record.count('spawn')==1
     assert record[:3]==['original_read_and_exit_MODELED','spawn','original_metadata']
+    if binary_chunks:
+        assert worker_data==first[1:-1]+([] if fault in {'ready_pid','go_delivery'} else replay[:-1])
     gos=[v for v in worker_sent if v.get('command')=='execute_file2']
     assert len(gos)==(0 if fault=='ready_pid' else 1)
     assert owner._go_attempted is (fault!='ready_pid')

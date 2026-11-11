@@ -88,6 +88,9 @@ def _installation_from_owner_directory_bindings(binding, history, *, run_id, ope
     kwargs = {'channel_id': channel_id, '_inspection_only': _inspection_only}
     if role == 'Version1':
         kwargs['_version1'] = True
+    elif role == 'File2':
+        from .file2_stream import _file2_binary_chunks_for_contract
+        kwargs['_binary_chunks'] = _file2_binary_chunks_for_contract(manifest['contract'])
     channel = channel_types[role](**kwargs)
     profile = binding._owner_directory_context.catalog.profile(role)
     authority = authority_type(binding, profile, canonical_bytes(manifest['root_projections']), channel,

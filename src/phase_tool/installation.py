@@ -543,8 +543,13 @@ def _resolve_native_history_bindings(active, raw, expected_digest):
                 active_bytes=active.manifest_bytes, active_digest=active.manifest_digest)
             from contextlib import nullcontext
             from .registry import _native_schema_check_pass
+            from .mutation.ntfs.owner_directory_fixture import is_fixture
             semantic = active.experimental_admission.document()['experimental_admission_version'] == '3.0'
             with _native_schema_check_pass() if semantic else nullcontext():
+                if (semantic and active._owner_directory_context is None
+                        and is_fixture(active.experimental_admission.raw)):
+                    from .mutation.ntfs.owner_semantic_history import _resolve_owner3_history_bindings
+                    return _resolve_owner3_history_bindings(active, buffers)
                 bindings = tuple(_native_experimental_read_binding(manifest_bytes=leaf,
                     expected_manifest_digest=sha, admission=kind(cap))
                     for leaf, sha, cap, kind in buffers)
@@ -1308,6 +1313,7 @@ def _native_experimental_file2_installation(*, manifest_bytes, expected_manifest
     from .mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
     from .mutation.ntfs.experimental_file2_authority import _ExperimentalFile2Authority
     from .mutation.ntfs.channel_v4 import LinuxNativeChannelV4
+    from .mutation.ntfs.file2_stream import _file2_binary_chunks_for_contract
     from .mutation.ntfs.native import _require
     _require(type(admission) is _ExperimentalFile2Admission and type(_inspection_only) is bool,
         'ntfs.experimental_admission_required')
@@ -1324,7 +1330,8 @@ def _native_experimental_file2_installation(*, manifest_bytes, expected_manifest
     from .canonical import parse_json_bytes
     configured = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
     history = _resolve_native_history_bindings(binding, history_manifest_set_bytes, history_manifest_set_digest)
-    channel = LinuxNativeChannelV4(channel_id=channel_id, _inspection_only=_inspection_only)
+    channel = LinuxNativeChannelV4(channel_id=channel_id, _inspection_only=_inspection_only,
+        _binary_chunks=_file2_binary_chunks_for_contract(configured['contract']))
     authority = (semantic_owner_authority(type(admission)) if admission.document().get('experimental_admission_version')=='3.0' else _ExperimentalFile2Authority)(binding, profile,
         canonical_bytes(configured['root_projections']), channel,
         run_id=run_id, operation_nonce=operation_nonce, _inspection_only=_inspection_only)

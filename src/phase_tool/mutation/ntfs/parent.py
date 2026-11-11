@@ -388,7 +388,7 @@ class _NativeWindowsParent:
         worker was spawned. Parent data checks supplement, never replace, the
         worker's complete first pass and per-chunk replay verification.
         """
-        from .file2_stream import _File2TwoPassReceiver,_CHUNK,_MAX_FRAME,_token
+        from .file2_stream import _File2TwoPassReceiver,_CHUNK,_MAX_FRAME,_token,_file2_binary_chunks_for_contract
         from .file2_execution import _file2_header,validate_file2_worker_ready
         from ...canonical import digest_bytes
         _require(type(deadline) is int and type(common) is dict,'ntfs.file2_owned_deadline_required')
@@ -396,7 +396,8 @@ class _NativeWindowsParent:
         compact={k:context[k] for k in ('run_id','intent_digest','installation_digest','operation_nonce')}
         receiver=_File2TwoPassReceiver(context_bytes=canonical_bytes(compact),
             channel_id=self._launch.channel_id,content_digest=parsed.content_digest,
-            content_length=parsed.content_length)
+            content_length=parsed.content_length,
+            _binary_chunks=_file2_binary_chunks_for_contract(self._launch.manifest['contract']))
         count=(parsed.content_length+_CHUNK-1)//_CHUNK
         for _ in range(count+2):
             raw,_=self._pipe.receive_frame(deadline,maximum_bytes=_MAX_FRAME)

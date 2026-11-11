@@ -126,8 +126,22 @@ def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
 
 
 @_native_schema_check_pass()
-def validate_owner3_history_bindings(active,bindings):
-    from ...installation import _NativeFileCreateReadBinding,_native_experimental_read_binding
+def _resolve_owner3_history_bindings(active, buffers):
+    """Resolve the closed buffer set and validate its common domain in one call."""
+    from ...installation import _native_experimental_read_binding
+    bindings = tuple(_native_experimental_read_binding(manifest_bytes=raw,
+        expected_manifest_digest=digest, admission=kind(cap)) for raw, digest, cap, kind in buffers)
+    return _check_owner3_history_domain(active, bindings, recheck_registry=False)
+
+
+@_native_schema_check_pass()
+def validate_owner3_history_bindings(active, bindings):
+    """Independently reconstruct every registry for externally supplied bindings."""
+    return _check_owner3_history_domain(active, bindings, recheck_registry=True)
+
+
+def _check_owner3_history_domain(active, bindings, *, recheck_registry):
+    from ...installation import _NativeFileCreateReadBinding, _native_experimental_read_binding
     _need(type(active)is _NativeFileCreateReadBinding and type(bindings)is tuple
         and 6<=len(bindings)<=6+_MAX_PREDECESSORS,'ntfs.original_history_binding_mismatch')
     active_raw=active.experimental_admission.raw;fixture=fixture_document(active_raw)
@@ -136,11 +150,12 @@ def validate_owner3_history_bindings(active,bindings):
     for index,row in enumerate(bindings):
         _need(type(row)is _NativeFileCreateReadBinding and row._qualification_context is None,
             'ntfs.original_history_binding_mismatch')
-        checked=_native_experimental_read_binding(manifest_bytes=row.manifest_bytes,
-            expected_manifest_digest=row.manifest_digest,admission=row.experimental_admission)
-        _need(type(row.registry)is type(checked.registry)and row.registry.digest==checked.registry.digest
-            and canonical_bytes(row.registry.to_document())==canonical_bytes(checked.registry.to_document()),
-            'ntfs.original_history_binding_mismatch')
+        if recheck_registry:
+            checked = _native_experimental_read_binding(manifest_bytes=row.manifest_bytes,
+                expected_manifest_digest=row.manifest_digest, admission=row.experimental_admission)
+            _need(type(row.registry) is type(checked.registry) and row.registry.digest == checked.registry.digest
+                and canonical_bytes(row.registry.to_document()) == canonical_bytes(checked.registry.to_document()),
+                'ntfs.original_history_binding_mismatch')
         row.experimental_admission.profile(row)
         manifest=parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2);_domain(manifest,fixture)
         if index<6:

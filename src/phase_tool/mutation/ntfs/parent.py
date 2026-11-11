@@ -4,7 +4,7 @@ metadata/READY/ACK matches never authenticate that boundary. No journal/queue,
 receipt writer, effect retry, process search, respawn, terminate or history owner.
 """
 from __future__ import annotations
-from .input_stage import _cap_input_deadline,_input_observation_timeout_ms
+from .input_stage import _active_input_deadline_ns,_cap_input_deadline,_input_observation_timeout_ms
 
 import os
 import base64
@@ -18,7 +18,7 @@ from ...paths import safe_relative_locator
 from .native import NativeIdentity, _require
 from .worker import validate_worker_ready, validate_worker_completion, _grant
 from .process_witness import WindowsProcessWitness
-from .windows_pipe import WindowsPipeFrames
+from .windows_pipe import WindowsPipeFrames, _InputExecutePipeBoundary
 from .file_create import observe_file
 from .parent_result import _observation, _require_command_run_binding
 
@@ -493,12 +493,20 @@ class _NativeWindowsParent:
         bootstrap keeps all accepted code immutable until these processes exit.
         """
         from .bootstrap import _is_bundle_recovery_launch
+        received_core_frame = False
+        pipe_boundary = None
         try:
+            attribute_pipe = not self._inspection_only and _active_input_deadline_ns() is not None
             while True:
                 _require(self._owner==(os.getpid(),threading.get_ident()) and not self._finished,
                     'ntfs.parent_unavailable')
                 self._launch.check_runtime()
+                if attribute_pipe:
+                    pipe_boundary = (_InputExecutePipeBoundary.LATER_RECEIVE if received_core_frame
+                        else _InputExecutePipeBoundary.FIRST_RECEIVE)
                 raw,_=self._pipe.receive_frame(_deadline())
+                pipe_boundary = None
+                received_core_frame = True
                 value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
                 if type(value) is dict and value.get('protocol')=='phase.native.command':
                     # Admission rejection may precede any control request. An
@@ -626,8 +634,14 @@ class _NativeWindowsParent:
                     windows_terminal(self._pipe,sending=True,raw=canonical_bytes(response),
                         deadline_ns=terminal_reply_deadline,maximum_bytes=2*1024**2)
                 else:
+                    if attribute_pipe and response['ok'] is True and value.get('kind') == 'observe_file':
+                        pipe_boundary = _InputExecutePipeBoundary.OBSERVATION_REPLY
                     self._pipe.send_frame(canonical_bytes(response),response_deadline)
-        except BaseException:
+                    pipe_boundary = None
+        except BaseException as error:
             self._failed=True
+            # Keep the same error and sticky owner. This annotation grants no retry.
+            if pipe_boundary is not None and type(error) is PhaseError and error.code == 'ntfs.pipe_frame_unknown':
+                error._input_execute_pipe_boundary = pipe_boundary
             # Never fabricate a positive ACK or recover the control stream.
             raise

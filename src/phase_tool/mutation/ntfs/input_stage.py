@@ -15,7 +15,7 @@ from ...errors import PhaseError
 from ...paths import safe_relative_locator
 from ...bundle import validate_members,parse_manifest,MAX_TOTAL_BYTES,MAX_MEMBERS,MAX_DEPTH,_BundleLimitExceeded
 from ...streaming import FILE_LIMIT,REQUEST_LIMIT
-from .native import NativeIdentity,_require,_input_leaf
+from .native import NativeIdentity,_require,_input_leaf,_InputPublicationRootOverlap
 
 _SCOPE_FILE='native-input-scope.json'
 _PROTOCOL='phase.native.input.stage'
@@ -26,6 +26,40 @@ _MARKER=4*1024**2
 _DIGEST=re.compile('sha256:[0-9a-f]{64}')
 _ID=re.compile('[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*')
 _OPERATION=ContextVar('phase_native_input_operation_deadline',default=None)
+_FILE_PUBLICATION_ROLES={'1.0':'File1','2.0':'File2'}
+
+
+@dataclass(frozen=True)
+class _FileInputAssertions:
+    publication_version: str
+    expected_digest: str
+    root_binding: str
+
+    def __post_init__(self):
+        _require(type(self.publication_version)is str and self.publication_version in _FILE_PUBLICATION_ROLES,
+            'publish_file.unsupported_publication_version')
+        _require(type(self.expected_digest)is str and _DIGEST.fullmatch(self.expected_digest) is not None,
+            'publish_file.invalid_expected_digest')
+        _require(type(self.root_binding)is str and 0<len(self.root_binding)<=128
+            and re.fullmatch('[A-Za-z0-9_][A-Za-z0-9_.-]*',self.root_binding) is not None,
+            'publish_file.invalid_root_binding')
+
+
+@dataclass(frozen=True)
+class _ClosedFileAssertionRefusal:
+    code: str
+
+
+def _file_input_target_grant(assertions,launch,role):
+    from ...publish_file import TARGET_ROOT_BINDING
+    from .worker import _grant
+    if role!=_FILE_PUBLICATION_ROLES[assertions.publication_version]:
+        return _ClosedFileAssertionRefusal('publish_file.wrong_contract')
+    grant=_grant(launch.root_grant)
+    _require(grant.binding==TARGET_ROOT_BINDING,'publish_file.invalid_installed_root_binding')
+    if assertions.root_binding!=grant.binding:
+        return _ClosedFileAssertionRefusal('publish_file.wrong_root_binding')
+    return grant
 
 
 class _InputOperationDeadline:
@@ -469,7 +503,8 @@ def _validate_prepared_input(response,*,launch,scope_digest,header,footer):
     return parse_json_bytes(canonical_bytes(value))
 
 
-def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,deadline_ns,*,request_id,target_locator,expected_current_digest):
+def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,deadline_ns,*,request_id,target_locator,
+        expected_current_digest,_file_assertions=None):
     """Return prepared data or a closed source-size refusal; no Core call.
 
     Only the existing finite MCP/CLI owner calls this while holding its gate.
@@ -485,6 +520,15 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
     probe=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=True)
     scope,role,scope_digest=_scope_for_launch(probe)
     _require(scope['scope_id']==input_scope,'input_stage.foreign_scope')
+    publication_root=None
+    if _file_assertions is not None:
+        _require(type(_file_assertions)is _FileInputAssertions and members is None and expected_current_digest is None,
+            'publish_file.file_input_assertions_required')
+        grant=_file_input_target_grant(_file_assertions,probe,role)
+        if type(grant)is _ClosedFileAssertionRefusal:
+            _left(deadline_ns)
+            return grant
+        publication_root=(grant,safe_relative_locator(target_locator))
     try:
         _publication_candidate(role,request_id,target_locator,members,expected_current_digest,
             ''if role=='Version2'else None)  # Pure caller literals BEFORE source IO.
@@ -501,7 +545,10 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
         api=object.__new__(NativeIO)
         owner._held_input_io=api  # Retain before the first native constructor call.
         NativeIO.__init__(api)
-        source=api.input_snapshot(scope,source_locator,members,deadline_ns)
+        if publication_root is None:
+            source=api.input_snapshot(scope,source_locator,members,deadline_ns)
+        else:
+            source=api.input_snapshot(scope,source_locator,members,deadline_ns,_publication_root=publication_root)
         owner._held_input_source=source
         _require(type(source)is _NativeInputSnapshot,'input_stage.closed_source_required')
         try:
@@ -536,6 +583,12 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
                 if not raw:break
                 stderr.extend(raw);_require(len(stderr)<=65536,'input_stage.stderr_bound')
             _require(not stderr,'input_stage.preparation_stderr')
+    except _InputPublicationRootOverlap:
+        _require(publication_root is not None and not api._handles and owner._held_launch is None
+            and owner._held_input_source is None and process is None,'input_stage.source_finalization_unknown')
+        _left(deadline_ns)
+        owner._held_input_io=None
+        return _ClosedFileAssertionRefusal('publish_file.overlapping_roots')
     except BaseException as error:
         primary=error;owner._unavailable=True
     finally:

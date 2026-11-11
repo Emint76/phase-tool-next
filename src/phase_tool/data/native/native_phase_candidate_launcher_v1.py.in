@@ -251,7 +251,8 @@ def _input_failure_diagnostic(phase,error):
         cause=error.__cause__
         if type(error)is PhaseError and type(cause)is PhaseError:
             if cause.code=='ntfs.pipe_deadline_expired':
-                value.update(error_class='timeout',reason='deadline')
+                from phase_tool.mutation.ntfs.windows_pipe import _input_execute_pipe_deadline_reason
+                value.update(error_class='timeout',reason=_input_execute_pipe_deadline_reason(error))
             elif cause.code=='ntfs.pipe_eof':
                 value['reason']='eof'
     raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode('ascii')+b'\n'
@@ -265,13 +266,19 @@ def _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,confi
         need(outer['native_fixed_startup_version']in {'3.0','4.0'})
         mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
         from phase_tool.canonical import canonical_bytes
-        from phase_tool.mutation.ntfs.inspection_mcp import _InspectionMCPCallOwner,_native_input_cli_request
-        arguments=_native_input_cli_request(initial)
+        from phase_tool.mutation.ntfs.inspection_mcp import (
+            _InspectionMCPCallOwner,_native_input_cli_request,_native_staged_file_cli_request)
+        request=initial.get('request') if type(initial)is dict else None
+        staged_file=type(request)is dict and request.get('operation')=='publish_file'
+        parser=_native_staged_file_cli_request if staged_file else _native_input_cli_request
+        arguments=parser(initial)
         owner=_InspectionMCPCallOwner(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
             manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
             _experimental_admission_context=admission)
         from phase_tool.mutation.ntfs.input_stage import _InputOperationDeadline
-        result=owner.publish_input(**arguments,_operation_deadline=_InputOperationDeadline(_initial_deadline_ns=initial_deadline_ns))
+        deadline=_InputOperationDeadline(_initial_deadline_ns=initial_deadline_ns)
+        publish=owner.publish_staged_file if staged_file else owner.publish_input
+        result=publish(**arguments,_operation_deadline=deadline)
         phase='delivery'
         frame={'protocol':'phase.native.input.publication','version':'1.0','run_id':initial['run_id'],
             'installation_digest':outer['manifest_digest'],'result':result,'exit_code':result['exit_code']}

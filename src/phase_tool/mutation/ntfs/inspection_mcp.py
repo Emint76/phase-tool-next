@@ -291,14 +291,16 @@ class _InspectionMCPCallOwner:
         if _include_bundle_manifest:return result,reference,projection
         return (result,reference) if _include_canonical_result else result
 
-    def publish_input(self,run_id,input_scope,source_locator,target_locator,request_id,members=None,expected_current_digest=None,*,_operation_deadline=None):
+    def publish_input(self,run_id,input_scope,source_locator,target_locator,request_id,members=None,expected_current_digest=None,
+            *,_operation_deadline=None,_file_assertions=None):
         """One Windows input stage, genuine execute and fresh unary inspection.
 
         A transient delivery pairs actual native results; it is never a receipt.
         All data paths are Windows-relative under one installed input scope.
         """
         from .input_stage import (_InputOperationDeadline,_input_operation_scope,_left,
-            _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal,_ClosedInputBundleRefusal)
+            _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal,
+            _ClosedInputBundleRefusal,_ClosedFileAssertionRefusal,_FileInputAssertions)
         validate_run_id(run_id);_stage_request(input_scope,source_locator)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None;result=None
@@ -309,9 +311,26 @@ class _InspectionMCPCallOwner:
                 'input_stage.deadline_owner_required')
             token=_InputOperationDeadline()if _operation_deadline is None else _operation_deadline
             with _input_operation_scope(token):
+                stage_options={}
+                if _file_assertions is not None:
+                    _require(type(_file_assertions)is _FileInputAssertions,'publish_file.file_input_assertions_required')
+                    stage_options['_file_assertions']=_file_assertions
                 staged=run_windows_input_stage(self,run_id,input_scope,source_locator,members,token.deadline_ns,
-                    request_id=request_id,target_locator=target_locator,expected_current_digest=expected_current_digest)
-                if type(staged) in {_ClosedInputFileRefusal,_ClosedInputBundleRefusal}:
+                    request_id=request_id,target_locator=target_locator,expected_current_digest=expected_current_digest,
+                    **stage_options)
+                observed_source=None
+                if _file_assertions is not None and type(staged)is tuple:
+                    prepared,_,_,_=staged
+                    if prepared['expected_digest']!=_file_assertions.expected_digest:
+                        observed_source=(prepared['expected_digest'],prepared['expected_length'])
+                        staged=_ClosedFileAssertionRefusal('publish_file.source_digest_mismatch')
+                if type(staged)is _ClosedFileAssertionRefusal:
+                    _require(_file_assertions is not None,'publish_file.file_input_assertions_required')
+                    result=self._staged_file_result(run_id,request_id,target_locator,error=staged.code,
+                        observed_source=observed_source)
+                elif _file_assertions is not None and type(staged)is _ClosedInputFileRefusal:
+                    result=self._staged_file_result(run_id,request_id,target_locator,error='input_stage.member_bound')
+                elif type(staged) in {_ClosedInputFileRefusal,_ClosedInputBundleRefusal}:
                     from ...application import PhaseApplication
                     registry=_native_registry_for_manifest(self._startup['manifest_bytes'],self._startup['expected_manifest_digest'])
                     is_file=type(staged) is _ClosedInputFileRefusal
@@ -367,6 +386,8 @@ class _InspectionMCPCallOwner:
                             and inspected.get('error')is None and inspected.get('blockers')==[],
                             'input_stage.inspect_unverified')
                         result['independent_inspection']=inspected
+                    if _file_assertions is not None:
+                        result=self._staged_file_result(run_id,request_id,target_locator,delivery=result)
                 self._input_publication_phase='delivery'
                 _left(token.deadline_ns)
                 _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
@@ -380,6 +401,31 @@ class _InspectionMCPCallOwner:
         if primary is not None:raise primary
         return result
 
+    def _staged_file_result(self,run_id,request_id,target_locator,*,delivery=None,error=None,observed_source=None):
+        from ...publish_file import PublishFileResult,_native_file_publication_ack
+
+        manifest=parse_json_bytes(self._startup['manifest_bytes'],maximum_bytes=2*1024**2)
+        contract=manifest['contract']
+        result=PublishFileResult(status='rejected_before_write',run_id=run_id,request_id=request_id,
+            evidence_root=manifest['evidence_root'],target_locator=target_locator,
+            contract_binding=contract['id']+'@'+contract['version'],contract_digest=contract['package_digest'],
+            error=error).model_dump()
+        if observed_source is not None:
+            result['content_digest'],result['content_length']=observed_source
+        if delivery is not None:
+            result.update(content_digest=delivery['source_digest'],content_length=delivery['source_length'])
+            if _native_file_publication_ack(result,delivery['command_ack']):
+                _require(delivery['independent_inspection']is not None,'input_stage.inspect_unverified')
+                result.update(success=True,status='verified',target_verified=True,
+                    inspection_required=False,error=None,exit_code=0)
+        return PublishFileResult.model_validate(result).model_dump()
+
+    def publish_staged_file(self,run_id,input_scope,source_locator,target_locator,request_id,
+            publication_version,expected_digest,root_binding,*,_operation_deadline=None):
+        from .input_stage import _FileInputAssertions
+        assertions=_FileInputAssertions(publication_version,expected_digest,root_binding)
+        return self.publish_input(run_id,input_scope,source_locator,target_locator,request_id,
+            _operation_deadline=_operation_deadline,_file_assertions=assertions)
 
     def recover_publication(self,run_id,request_id,expected_intent_digest,mode='observe'):
         from .recovery_frontdoor import publication_request,_manifest_role,_OBSERVE_ROLES
@@ -735,7 +781,13 @@ class _InputScopeSession:
         try:
             _require(not self.unknown,'ntfs.inspection_mcp_unavailable')
             owner=_InspectionMCPCallOwner(**self.startup);self.held.append(owner)
-            result=owner.publish_input(**arguments)if method=='publish_input'else owner.inspect(**arguments)
+            if method=='publish_input':
+                result=owner.publish_input(**arguments)
+            elif method=='publish_staged_file':
+                result=owner.publish_staged_file(**arguments)
+            else:
+                _require(method=='inspect','ntfs.fixed_native_request_required')
+                result=owner.inspect(**arguments)
             _require(not owner._unavailable,'input_stage.session_unknown')
             self.held.remove(owner)
             return result
@@ -746,15 +798,39 @@ class _InputScopeSession:
             request_id:StrictStr,members:list[StrictStr]|None=None,expected_current_digest:StrictStr|None=None)->dict:
         return self._invoke('publish_input',dict(run_id=run_id,input_scope=input_scope,source_locator=source_locator,
             target_locator=target_locator,request_id=request_id,members=members,expected_current_digest=expected_current_digest))
+    def publish_staged_file(self,run_id:StrictStr,input_scope:StrictStr,source_locator:StrictStr,
+            target_locator:StrictStr,request_id:StrictStr,publication_version:StrictStr,
+            expected_digest:StrictStr,root_binding:StrictStr)->dict:
+        """Publish a file from the installed input scope, asserting the installed root and SHA-256."""
+        return self._invoke('publish_staged_file',_native_staged_file_cli_request({
+            'run_id':run_id,'request':{'operation':'publish_file','input_scope':input_scope,
+                'source_locator':source_locator,'target_locator':target_locator,'request_id':request_id,
+                'publication_version':publication_version,'expected_digest':expected_digest,
+                'root_binding':root_binding}}))
     def inspect(self,run_id:StrictStr)->dict:
         return self._invoke('inspect',dict(run_id=run_id))
+    def inspect_file(self,run_id:StrictStr,root_binding:StrictStr|None=None)->dict:
+        """Read a known run with an optional assertion of the fixed file root."""
+        if root_binding is not None:
+            from ...publish_file import TARGET_ROOT_BINDING
+            from .worker import _grant
+            _require(root_binding==TARGET_ROOT_BINDING,'publish_file.wrong_root_binding')
+            manifest=parse_json_bytes(self.startup['manifest_bytes'],maximum_bytes=2*1024**2)
+            grants=manifest.get('root_grants')
+            _require(type(grants)is list and len(grants)==1 and _grant(grants[0]).binding==root_binding,
+                'publish_file.invalid_installed_root_binding')
+        return self.inspect(run_id)
 
 
 def run_native_input_mcp(**startup):
     owner=_InputScopeSession(**startup)
     server=FastMCP('phase-native-input')
     server.tool(name='phase_publish_input')(owner.publish_input)
-    server.tool(name='phase_inspect')(owner.inspect)
+    manifest=parse_json_bytes(startup['manifest_bytes'],maximum_bytes=2*1024**2)
+    is_file=manifest['contract']['id'] in {'file_create.v1','file_create.v2'}
+    if is_file:
+        server.tool(name='phase_publish_file')(owner.publish_staged_file)
+    server.tool(name='phase_inspect')(owner.inspect_file if is_file else owner.inspect)
     _closed_arguments(server).run(transport='stdio');return 0
 
 
@@ -770,3 +846,21 @@ def _native_input_cli_request(value):
     _require(members is None or type(members)is list and all(type(member)is str for member in members),
         'ntfs.fixed_native_request_required')
     return dict(run_id=value['run_id'],**{key:request[key]for key in fields-{'operation'}})
+
+
+def _native_staged_file_cli_request(value):
+    from ...paths import safe_relative_locator
+    from .input_stage import _FILE_PUBLICATION_ROLES,_FileInputAssertions,_publication_candidate,_stage_request
+
+    _require(type(value)is dict and set(value)=={'run_id','request'} and type(value['request'])is dict,
+        'ntfs.fixed_native_request_required')
+    validate_run_id(value['run_id'])
+    request=value['request']
+    fields={'operation','input_scope','source_locator','target_locator','request_id','publication_version',
+        'expected_digest','root_binding'}
+    _require(set(request)==fields and request['operation']=='publish_file','ntfs.fixed_native_request_required')
+    assertions=_FileInputAssertions(request['publication_version'],request['expected_digest'],request['root_binding'])
+    _stage_request(request['input_scope'],request['source_locator'])
+    _publication_candidate(_FILE_PUBLICATION_ROLES[assertions.publication_version],request['request_id'],
+        safe_relative_locator(request['target_locator']),None,None)
+    return dict(run_id=value['run_id'],**{key:request[key] for key in fields-{'operation'}})

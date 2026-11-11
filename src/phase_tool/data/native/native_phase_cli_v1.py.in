@@ -1,6 +1,6 @@
 """Stdlib-only caller for one accepted fixed native Phase installation.
 
-Usage: accepted-python -I -S -B -u cli.py execute|inspect|publish-bundle|publish-input|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR
+Usage: accepted-python -I -S -B -u cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR
 Install beside the accepted launcher.py and native-phase.json. Requests use the
 existing {run_id,request} envelope and prepared execute or unary known-run inspect.
 Operational delivery captures are separate from Core receipts and evidence.
@@ -113,10 +113,13 @@ def exchange(process,frame):
         'eof':eof,'complete':primary is None and not any(discarded)and all(eof),
         'initial_complete':offset==len(frame),'bytes_sent':offset,'stdin_close_failed':close_failed}
 
+_INPUT_ACTIONS={'publish-input','publish-file'}
+
+
 def reconciliation_role(action,value,outer):
     """Pure routing; accepted parent/factory still verifies every exact binding."""
     if action not in {'recover-publication','continue-version'}:
-        return 'publish-input'if action=='publish-input'else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action=='inspect'else'parent'
+        return 'publish-input'if action in _INPUT_ACTIONS else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action=='inspect'else'parent'
     request=value['request'];manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
     role=manifest['contract']['id']
     need(type(request['request_id'])is str and 0<len(request['request_id'])<=128
@@ -143,6 +146,16 @@ def reconciliation_role(action,value,outer):
         and type(v[0])is str and re.fullmatch('sha256:[0-9a-f]{64}',v[0])is not None
         and type(v[1])is int and v[1]>=0 for k,v in expected.items()),'fixed expected inputs')
     return 'parent'
+
+
+def asserted_file_inspection(value,outer):
+    manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
+    grants=manifest['root_grants']
+    need(value['request']['root_binding']=='phase_result_root'
+        and manifest['contract']['id'] in {'file_create.v1','file_create.v2'}
+        and type(grants)is list and len(grants)==1 and grants[0]['root_binding']=='phase_result_root',
+        'fixed installed file inspection root required')
+    return {'run_id':value['run_id'],'request':{'operation':'inspect'}}
 
 
 def input_publication_refusal(candidate,request,outer):
@@ -191,6 +204,44 @@ def input_publication_refusal(candidate,request,outer):
     need(canon(candidate['refusal'])==canon(expected_refusal),'native input refusal payload')
 
 
+def staged_file_result(candidate,request,outer):
+    fields={'publish_file_result_version','success','status','request_id','run_id','evidence_root','target_locator',
+        'contract_binding','contract_digest','content_digest','content_length','receipt_digest','intent_digest',
+        'effect_plan_digest','execution_disposition','mutation_attempted','target_verified','inspection_required',
+        'error','exit_code'}
+    manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
+    contract=manifest['contract']
+    need(set(candidate)==fields and candidate['publish_file_result_version']=='1.0'
+        and candidate['contract_binding']==contract['id']+'@'+contract['version']
+        and candidate['contract_digest']==contract['package_digest']
+        and candidate['evidence_root']==manifest['evidence_root'],'native file result installation correlation')
+    status=candidate['status']
+    exit_codes={'verified':0,'rejected_before_write':10,'committed_unverified':30,'indeterminate':40}
+    need(type(status)is str and status in exit_codes and candidate['exit_code']==exit_codes[status]
+        and candidate['success'] is (status=='verified') and candidate['target_verified'] is (status=='verified')
+        and type(candidate['inspection_required'])is bool
+        and (candidate['mutation_attempted'] is None or type(candidate['mutation_attempted'])is bool),
+        'native file result status correlation')
+    def digest(value):
+        return type(value)is str and re.fullmatch('sha256:[0-9a-f]{64}',value) is not None
+    if status=='verified':
+        version={'file_create.v1':'1.0','file_create.v2':'2.0'}.get(contract['id'])
+        limit=1024**2 if version=='1.0' else 2*1024**3
+        need(version is not None and request['publication_version']==version
+            and request['root_binding']=='phase_result_root' and candidate['error']is None
+            and candidate['inspection_required']is False and candidate['mutation_attempted']is not None
+            and candidate['execution_disposition']in {'executed','reused_existing'}
+            and digest(candidate['content_digest']) and candidate['content_digest']==request['expected_digest']
+            and type(candidate['content_length'])is int and 0<=candidate['content_length']<=limit
+            and all(digest(candidate[field]) for field in ('receipt_digest','intent_digest','effect_plan_digest')),
+            'native verified file result proof')
+    if status=='rejected_before_write':
+        need(candidate['mutation_attempted']is False and candidate['receipt_digest']is None
+            and type(candidate['error'])is str and bool(candidate['error']),'native file refusal proof')
+    if status in {'committed_unverified','indeterminate'}:
+        need(candidate['inspection_required']is True,'native file uncertainty proof')
+
+
 def input_failure_line(raw=b'',*,timeout=False):
     if 0<len(raw)<=64:
         try:
@@ -201,7 +252,9 @@ def input_failure_line(raw=b'',*,timeout=False):
                         and value['error_class'] in ('timeout','error')):
                     return raw
                 if (set(value)=={'phase','error_class','reason'} and value['phase']=='execute'
-                        and (value['error_class'],value['reason']) in (('timeout','deadline'),('error','eof'))):
+                        and ((value['error_class']=='timeout' and value['reason'] in (
+                            'deadline','rx_empty','rx_bytes','rx_first','rx_fdata','rx_next','rx_ndata','tx','tx_obs'))
+                            or (value['error_class'],value['reason'])==('error','eof'))):
                     return raw
         except (ValueError,RuntimeError):
             pass
@@ -245,18 +298,23 @@ def bounded_delivery(report):
 
 
 def main():
-    need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect','publish-bundle','publish-input','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
+    need(len(sys.argv)==4 and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
     action,source,destination=sys.argv[1:];launcher,outer=bindings()
     raw=stdin_request()if source=='-'else ordinary(Path(source),MAX_REQUEST)
     value=strict(raw);need(type(value)is dict and set(value)=={'run_id','request'}
         and type(value['run_id'])is str and type(value['request'])is dict,'existing request envelope required')
-    request=value['request'];need(request.get('operation')==('continue_version'if action=='continue-version'else'recover_publication'if action=='recover-publication'else'publish_input'if action=='publish-input'else'publish_bundle'if action=='publish-bundle'else action),
-        'command/action mismatch')
+    request=value['request'];need(request.get('operation')==action.replace('-','_'),'command/action mismatch')
     expected=({'operation','native_version_continuation_request_version','original_run_id','request_id','expected_intent_digest','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'}if action=='continue-version'else{'operation','native_bundle_recovery_request_version','request_id','expected_intent_digest','mode'}if action=='recover-publication'else{'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}if action=='publish-input'else{'operation','source_locator','target_locator','request_id','members'}if action=='publish-bundle'else
-        {'operation'}if action=='inspect'else{'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'})
-    need(set(request)==expected,'closed fixed CLI request required')
+        {'operation','input_scope','source_locator','target_locator','request_id','publication_version','expected_digest',
+            'root_binding'}if action=='publish-file'else{'operation'}if action=='inspect'else
+        {'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'})
+    asserted_inspect=action=='inspect' and set(request)=={'operation','root_binding'}
+    need(asserted_inspect or set(request)==expected,'closed fixed CLI request required')
     child_role=reconciliation_role(action,value,outer)
     body=canon(value);need(0<len(body)<=MAX_REQUEST,'bounded canonical request')
+    # Preserve the caller assertion in capture. The fixed reader still accepts
+    # only its original unary wire and independently authenticates its grant.
+    wire_body=canon(asserted_file_inspection(value,outer)) if asserted_inspect else body
     requested_capture=Path(destination).absolute()
     need(requested_capture.name not in ('','.','..'),'ordinary new capture leaf required')
     ordinary_parent=requested_capture.parent
@@ -266,7 +324,7 @@ def main():
     capture_dir=ordinary_parent.resolve(strict=True)/requested_capture.name
     need(not capture_dir.is_relative_to(HERE.resolve(strict=True)),'capture directory must be outside installation directory')
     capture_dir.mkdir();exclusive(capture_dir/'request.json',body)
-    frame=f'{len(body):08x}\n'.encode()+body+b'\n'
+    frame=f'{len(wire_body):08x}\n'.encode()+wire_body+b'\n'
     out=err=b'';process=None;result=None
     report={'run_id':value['run_id'],'operation':action,'request_sha256':sha(body),'child_delivery':'UNKNOWN',
         'capture':None,'process_exit':None,'outer_owner_finalization':'UNKNOWN','error':None,
@@ -297,7 +355,7 @@ def main():
             and len(out)==int(out[:8],16)+10,'incomplete native delivery frame')
         native=strict(out[9:-1]);need(canon(native)==out[9:-1]and type(native)is dict,
             'canonical delivery object required')
-        if action=='publish-input':
+        if action in _INPUT_ACTIONS:
             need(set(native)=={'protocol','version','run_id','installation_digest','result','exit_code'}
                 and native['protocol']=='phase.native.input.publication'and native['version']=='1.0'
                 and native['run_id']==value['run_id']and native['installation_digest']==outer['manifest_digest'],
@@ -305,13 +363,15 @@ def main():
             candidate=native['result']
             need(type(candidate)is dict
                 and candidate.get('run_id')==value['run_id']and candidate.get('request_id')==request['request_id']
-                and candidate.get('input_scope')==request['input_scope']
                 and candidate.get('target_locator')==request['target_locator'],'native input caller correlation')
-            if 'native_input_publication_refusal_version'in candidate:
-                input_publication_refusal(candidate,request,outer)
+            if action=='publish-file':
+                staged_file_result(candidate,request,outer)
             else:
-                need(candidate.get('native_input_publication_result_version')=='1.0',
-                    'native input result version')
+                need(candidate.get('input_scope')==request['input_scope'],'native input caller correlation')
+                if 'native_input_publication_refusal_version'in candidate:
+                    input_publication_refusal(candidate,request,outer)
+                else:
+                    need(candidate.get('native_input_publication_result_version')=='1.0','native input result version')
         elif action=='publish-bundle':
             need(set(native)=={'protocol','version','run_id','installation_digest','result','exit_code'}
                 and native['protocol']=='phase.native.publication'and native['version']=='1.0'
@@ -344,7 +404,7 @@ def main():
             'native command/exit correlation')
         # The trusted owner validated the result before releasing its call gate.
         # This outer transport preserves nullable/negative/uncertain fields.
-        result=candidate;report['child_delivery']=('COMPLETE_NATIVE_PUBLICATION_FRAME'if action=='publish-bundle'
+        result=candidate;report['child_delivery']=('COMPLETE_NATIVE_PUBLICATION_FRAME'if action in {'publish-bundle','publish-file'}
             else'COMPLETE_NATIVE_COMMAND_FRAME')
         if action=='publish-input'and 'native_input_publication_refusal_version'in candidate:
             report['child_delivery']='COMPLETE_NATIVE_INPUT_REFUSAL_FRAME'
@@ -355,7 +415,7 @@ def main():
         delivery,delivery_error=bounded_delivery(report)
         exclusive(capture_dir/'delivery.json',delivery)
     except BaseException as error:
-        if action=='publish-input':
+        if action in _INPUT_ACTIONS:
             sys.stderr.buffer.write(input_failure_line(timeout=isinstance(error,TimeoutError)))
             sys.stderr.buffer.flush();return 50
         sys.stderr.buffer.write(canon({'run_id':diagnostic_run_id(report),'capture_error':type(error).__name__,
@@ -363,13 +423,13 @@ def main():
             'retry_authorized':False,'message':'Delivery diagnostics incomplete; inspect known run.'})+b'\n')
         sys.stderr.buffer.flush();return 50
     if delivery_error is not None:
-        note=(input_failure_line() if action=='publish-input' else canon({'run_id':diagnostic_run_id(report),
+        note=(input_failure_line() if action in _INPUT_ACTIONS else canon({'run_id':diagnostic_run_id(report),
             'request_sha256':report['request_sha256'],'child_delivery':'UNKNOWN','delivery_error':delivery_error,
             'retry_authorized':False})+b'\n')
         sys.stderr.buffer.write(note);sys.stderr.buffer.flush();return 50
-    if err and action!='publish-input':sys.stderr.buffer.write(err);sys.stderr.buffer.flush()
+    if err and action not in _INPUT_ACTIONS:sys.stderr.buffer.write(err);sys.stderr.buffer.flush()
     if result is None:
-        if action=='publish-input':
+        if action in _INPUT_ACTIONS:
             capture=report['capture'] or {}
             timeout=any(type(record)is dict and record.get('type') in ('TimeoutError','TimeoutExpired')
                 for record in (report['error'],capture.get('primary')))
@@ -386,7 +446,7 @@ if __name__=='__main__':
     try:status=main()
     except BaseException as error:
         try:
-            if sys.argv[1:2]==['publish-input']:
+            if len(sys.argv)>1 and sys.argv[1] in _INPUT_ACTIONS:
                 os.write(2,input_failure_line(timeout=isinstance(error,TimeoutError)))
             else:os.write(2,canon({'error':type(error).__name__,'message':str(error),'retry_authorized':False})+b'\n')
         except BaseException:pass

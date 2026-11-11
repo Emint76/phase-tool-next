@@ -268,8 +268,9 @@ class NativeIO:
             'attributes':info['attributes'],'links':info['links'],
             'creation_time':basic.creation,'write_time':basic.write,'change_time':basic.change}
 
-    def input_snapshot(self,scope,source_locator,members,deadline_ns):
-        return _NativeInputSnapshot(self,scope,source_locator,members,deadline_ns)
+    def input_snapshot(self,scope,source_locator,members,deadline_ns,*,_publication_root=None):
+        return _NativeInputSnapshot(self,scope,source_locator,members,deadline_ns,
+            _publication_root=_publication_root)
 
 
     def _open(self, name: str, *, parent: NativeHandle | None, directory: bool,
@@ -611,6 +612,10 @@ class _InputBasicInfo(C.Structure):
     _fields_=[('creation',C.c_int64),('access',C.c_int64),('write',C.c_int64),('change',C.c_int64),('attributes',C.c_uint32)]
 
 
+class _InputPublicationRootOverlap(Exception):
+    """Raised only for overlapping pinned roots; caller must confirm closure."""
+
+
 class _NativeInputSnapshot:
     """Readonly retained source handles; only existing NativeIO performs APIs.
 
@@ -618,7 +623,7 @@ class _NativeInputSnapshot:
     handles deny write/delete sharing. Directory observations are freshly
     rechecked; this does not assert global or adversarial lifetime immutability.
     """
-    def __init__(self,api,scope,source_locator,members,deadline_ns):
+    def __init__(self,api,scope,source_locator,members,deadline_ns,*,_publication_root=None):
         from pathlib import PureWindowsPath
         from ...bundle import validate_members
         self.api=api;self.scope=scope;self.deadline=deadline_ns
@@ -637,6 +642,8 @@ class _NativeInputSnapshot:
                 self.anchors.append((parent,api.identity(parent)))
             api.assert_object(parent,directory=True,expected=NativeIdentity.parse(scope['root_identity']))
             self.root=parent
+            if _publication_root is not None:
+                self._check_publication_root(*_publication_root)
             from .input_stage import _safe_input_locator
             source_locator=_safe_input_locator(source_locator)
             components=source_locator.split('/')
@@ -671,6 +678,30 @@ class _NativeInputSnapshot:
             except BaseException as close_error:
                 raise BaseExceptionGroup('input source acquisition and close failed',[primary,close_error])
             raise primary
+
+    def _check_publication_root(self,grant,locator):
+        from .scoped import NativeScopedTarget
+
+        self.verify_complete()
+        source_volume=self.scope['volume']
+        same_device=source_volume['device']==grant.device
+        same_guid=source_volume['volume_guid']==grant.volume_guid
+        _require(same_device==same_guid and (not same_guid or source_volume['volume_serial32']==grant.volume_serial32),
+            'input_stage.publication_volume_identity_mismatch')
+        # The leaf is never opened. A single-component locator pins the grant
+        # itself and excludes every caller-selected descendant from this check.
+        with NativeScopedTarget(self.api,grant,locator.rsplit('/',1)[-1]) as target:
+            self._time()
+            target_ancestry=target._pinned_root_ancestry()
+            source_ancestry=tuple(identity for _,identity in self.anchors)
+            self.verify_complete()
+            _require(not same_guid or (source_ancestry[0]==target_ancestry[0]
+                and source_ancestry[-1].volume_serial==target_ancestry[-1].volume_serial),
+                'input_stage.publication_volume_identity_mismatch')
+            overlap=same_guid and (source_ancestry[-1] in target_ancestry or target_ancestry[-1] in source_ancestry)
+        self._time()
+        if overlap:
+            raise _InputPublicationRootOverlap()
 
     def _time(self):
         _require(self.owner==(os.getpid(),threading.get_ident())and not self.close_attempted,

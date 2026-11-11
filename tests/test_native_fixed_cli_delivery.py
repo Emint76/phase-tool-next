@@ -27,7 +27,7 @@ head=sys.stdin.buffer.read(9);n=int(head[:8],16)
 request=json.loads(sys.stdin.buffer.read(n));assert sys.stdin.buffer.read(1)==b'\n'
 assert sys.stdin.buffer.read()==b''
 code=10 if mode=='negative'else 0
-result={'command':'execute','run_id':request['run_id'],'exit_code':code,
+result={'command':request['request']['operation'],'run_id':request['run_id'],'exit_code':code,
  'success':code==0,'target_verified':False if code else None,
  'modeled_only':True,'error':'modeled.conflict'if code else None}
 reply={'protocol':'phase.native.command','version':'1.0','channel_id':'a'*32,
@@ -39,7 +39,7 @@ if request['request']['operation']=='publish_input':
         raise SystemExit(50)
     if mode.startswith('diagnostic-'):
         reason=mode.removeprefix('diagnostic-')
-        diagnostic={'phase':'execute','error_class':'timeout' if reason=='deadline' else 'error'}
+        diagnostic={'phase':'execute','error_class':'timeout' if reason in ('deadline','rx_empty','rx_bytes','rx_first','rx_fdata','rx_next','rx_ndata','tx','tx_obs') else 'error'}
         if reason!='other':diagnostic['reason']=reason
         sys.stderr.buffer.write(json.dumps(diagnostic,sort_keys=True,separators=(',',':')).encode()+b'\n')
         raise SystemExit(50)
@@ -78,6 +78,28 @@ if request['request']['operation']=='publish_input':
     if mode=='wrong-exit':code=50
 if mode=='oversized-diagnostic':
     b=b'{"broken":1.'+b'3'*70000+b'}'
+if request['request']['operation']=='inspect':
+    assert request['request']=={'operation':'inspect'} and sys.argv[1:]==['inspect-parent']
+if request['request']['operation']=='publish_file':
+    assert sys.argv[1:]==['publish-input']
+    action=request['request'];v=action['publication_version'][0]
+    proof='sha256:'+'b'*64
+    result={'publish_file_result_version':'1.0','success':True,'status':'verified',
+        'request_id':action['request_id'],'run_id':request['run_id'],'evidence_root':'/work/evidence',
+        'target_locator':action['target_locator'],'contract_binding':'file_create.v'+v+'@1.0.1',
+        'contract_digest':'sha256:'+'c'*64,'content_digest':action['expected_digest'],'content_length':65536,
+        'receipt_digest':proof,'intent_digest':proof,'effect_plan_digest':proof,'execution_disposition':'executed',
+        'mutation_attempted':True,'target_verified':True,'inspection_required':False,'error':None,'exit_code':0}
+    if mode=='file-wrong-digest':
+        code=10
+        result.update(status='rejected_before_write',success=False,content_digest=proof,receipt_digest=None,
+            intent_digest=None,effect_plan_digest=None,execution_disposition=None,mutation_attempted=False,
+            target_verified=False,error='publish_file.source_digest_mismatch',exit_code=10)
+    if mode=='file-foreign-contract':result['contract_binding']='file_create.v9@1.0.1'
+    if mode=='file-missing-receipt':result['receipt_digest']=None
+    reply={'protocol':'phase.native.input.publication','version':'1.0','run_id':request['run_id'],
+        'installation_digest':'sha256:'+'b'*64,'result':result,'exit_code':code}
+    b=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
 frame=f'{len(b):08x}\n'.encode()+b+b'\n'
 sys.stdout.buffer.write(frame[:-3]if mode=='truncated'else frame);sys.stdout.buffer.flush()
 sys.stderr.buffer.write(b'modeled-child-diagnostic\n');sys.stderr.buffer.flush()
@@ -119,7 +141,7 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertTrue(self.root.name.startswith('phase-cli-delivery-model-'))
         self.temp.cleanup()
 
-    def call_model(self,mode,*,input_role=None):
+    def call_model(self,mode,*,input_role=None,staged_file_role=None,inspect_binding=None):
         (self.binding/'mode.json').write_text(json.dumps(mode))
         capture=self.output/('fresh'if input_role is None else input_role+'-'+mode)
         outer={'manifest_digest':'sha256:'+'b'*64}
@@ -137,6 +159,22 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                 'operation':'publish_input','input_scope':'inputs.'+input_role,'source_locator':'input.bin',
                 'target_locator':'target.bin','request_id':'request-a','members':members,
                 'expected_current_digest':None}}),encoding='utf-8')
+        if staged_file_role is not None or inspect_binding is not None:
+            version='1' if staged_file_role is None else staged_file_role[-1]
+            contract={'id':'file_create.v'+version,'version':'1.0.1','package_digest':'sha256:'+'c'*64}
+            manifest={'contract':contract,'evidence_root':'/work/evidence',
+                'root_grants':[{'root_binding':'phase_result_root'}]}
+            outer['manifest_base64']=base64.b64encode(json.dumps(manifest).encode()).decode()
+            if inspect_binding is None:
+                action='publish-file'
+                request={'operation':'publish_file','input_scope':'owner.inputs','source_locator':'input.bin',
+                    'target_locator':'target.bin','request_id':'request-a','publication_version':version+'.0',
+                    'expected_digest':'sha256:'+'d'*64,'root_binding':'phase_result_root'}
+            else:
+                action='inspect'
+                request={'operation':'inspect','root_binding':inspect_binding}
+            self.request.write_text(json.dumps({'run_id':'model-cli-run','request':request}),encoding='utf-8')
+            capture=self.output/(action+'-'+version+'-'+mode)
         real_popen=subprocess.Popen
         def popen(argv,**kwargs):
             # Dependency injection models the OUTER pipe only. Native bindings are never loaded.
@@ -163,6 +201,38 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(child.poll())
         self.assertTrue(all(stream.closed for stream in (child.stdin,child.stdout,child.stderr)))
         self.assertTrue(child._handle.closed)
+
+    def test_staged_file_both_versions_and_typed_mismatch_use_closed_pipe(self):
+        for role in ('File1','File2'):
+            for mode,exit_code in (('file-good',0),('file-wrong-digest',10)):
+                with self.subTest(role=role,mode=mode):
+                    code,out,err,capture=self.call_model(mode,staged_file_role=role)
+                    self.assert_outer_closed_before_fixture_cleanup()
+                    self.assertEqual((code,err),(exit_code,b''))
+                    self.assertEqual(json.loads(out),json.loads((capture/'stdout.bin').read_bytes()[9:-1])['result'])
+                    self.assertEqual(json.loads((capture/'delivery.json').read_bytes())['child_delivery'],
+                        'COMPLETE_NATIVE_PUBLICATION_FRAME')
+
+    def test_staged_file_uncorrelated_claims_retain_raw_with_unknown_delivery(self):
+        for mode in ('file-foreign-contract','file-missing-receipt'):
+            with self.subTest(mode=mode):
+                code,out,_,capture=self.call_model(mode,staged_file_role='File2')
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,out),(50,b''))
+                self.assertTrue((capture/'stdout.bin').read_bytes())
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'UNKNOWN')
+                self.assertIs(report['retry_authorized'],False)
+
+    def test_explicit_file_inspect_retains_assertion_and_keeps_unary_child_wire(self):
+        code,out,_,capture=self.call_model('inspect-good',inspect_binding='phase_result_root')
+        self.assert_outer_closed_before_fixture_cleanup()
+        self.assertEqual((code,json.loads(out)['command']),(0,'inspect'))
+        recorded=json.loads((capture/'request.json').read_bytes())
+        self.assertEqual(recorded['request'],{'operation':'inspect','root_binding':'phase_result_root'})
+        with self.assertRaises(RuntimeError):
+            self.call_model('inspect-foreign',inspect_binding='objects_root')
+        self.assertEqual(len(self.children),1)
 
     def test_real_pipe_positive_preserves_nullable_actual_result(self):
         code,out,err,capture=self.call_model('positive')
@@ -298,6 +368,18 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                     self.assertNotIn(b'private-model',expected)
                     code,out,err,capture=self.call_model('diagnostic-'+reason,input_role='File1')
                     self.assert_outer_closed_before_fixture_cleanup()
+                    self.assertEqual((code,out,err),(50,b'',expected))
+                    self.assertEqual((capture/'stderr.bin').read_bytes(),expected)
+                    report=json.loads((capture/'delivery.json').read_bytes())
+                    self.assertEqual(report['child_delivery'],'UNKNOWN')
+                    self.assertFalse(report['retry_authorized'])
+            for reason in ('rx_empty','rx_bytes','rx_first','rx_fdata','rx_next','rx_ndata','tx','tx_obs'):
+                with self.subTest(reason=reason):
+                    code,out,err,capture=self.call_model('diagnostic-'+reason,input_role='File1')
+                    self.assert_outer_closed_before_fixture_cleanup()
+                    expected=json.dumps({'error_class':'timeout','phase':'execute','reason':reason},
+                        sort_keys=True,separators=(',',':')).encode()+b'\n'
+                    self.assertLessEqual(len(expected),64)
                     self.assertEqual((code,out,err),(50,b'',expected))
                     self.assertEqual((capture/'stderr.bin').read_bytes(),expected)
                     report=json.loads((capture/'delivery.json').read_bytes())

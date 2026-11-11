@@ -8,6 +8,7 @@ durable state. Its deadline bounds protocol waiting, not OS-call execution.
 """
 from __future__ import annotations
 
+from enum import Enum, auto
 import errno
 import io
 import os
@@ -28,6 +29,46 @@ def _error(error: BaseException) -> dict:
     return {'type': type(error).__name__, 'code': getattr(error, 'code', None),
             'errno': getattr(error, 'errno', None), 'winerror': getattr(error, 'winerror', None),
             'message': str(error)[:2048]}
+
+
+class _InputExecutePipeBoundary(Enum):
+    FIRST_RECEIVE = auto()
+    LATER_RECEIVE = auto()
+    OBSERVATION_REPLY = auto()
+
+
+def _input_execute_pipe_deadline_reason(error: PhaseError) -> str:
+    """Project only finite facts from the owned Windows frame failure."""
+    details = error.details
+    if (type(details) is not dict or set(details) != {'primary', 'progress', 'direction',
+            'effect_success_established', 'peer_exit_established'}
+            or details['effect_success_established'] is not False
+            or details['peer_exit_established'] is not False):
+        return 'deadline'
+    primary, progress, direction = details['primary'], details['progress'], details['direction']
+    if (type(primary) is not dict or primary.get('type') != 'PhaseError'
+            or primary.get('code') != 'ntfs.pipe_deadline_expired'
+            or type(progress) is not dict or type(direction) is not str):
+        return 'deadline'
+    wire_bytes = progress.get('wire_bytes')
+    if type(wire_bytes) is not int or not 0 <= wire_bytes <= MAX_FRAME + 10:
+        return 'deadline'
+    boundary = getattr(error, '_input_execute_pipe_boundary', None)
+    if direction == 'receive':
+        if boundary is _InputExecutePipeBoundary.FIRST_RECEIVE:
+            return 'rx_fdata' if wire_bytes else 'rx_first'
+        if boundary is _InputExecutePipeBoundary.LATER_RECEIVE:
+            return 'rx_ndata' if wire_bytes else 'rx_next'
+        return 'rx_bytes' if wire_bytes else 'rx_empty'
+    if direction == 'send':
+        expected = progress.get('expected_wire_bytes')
+        if 'expected_wire_bytes' in progress:
+            if type(expected) is not int or not 11 <= expected <= MAX_FRAME + 10 or wire_bytes > expected:
+                return 'deadline'
+        elif wire_bytes:
+            return 'deadline'
+        return 'tx_obs' if boundary is _InputExecutePipeBoundary.OBSERVATION_REPLY else 'tx'
+    return 'deadline'
 
 
 class WindowsPipeFrames:

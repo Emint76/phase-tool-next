@@ -14,7 +14,10 @@ def _semantic_profile_key(role):
 def semantic_fixture_document(raw):
     """Pure closed parser. A fixture cannot choose a class/factory/policy."""
     _need(type(raw) is bytes and 0 < len(raw) <= 32768, 'ntfs.owner_fixture_shape')
-    doc = parse_json_bytes(raw, maximum_bytes=32768)
+    return _validate_semantic_fixture_document(raw, parse_json_bytes(raw, maximum_bytes=32768))
+
+
+def _validate_semantic_fixture_document(raw, doc):
     _need(type(doc) is dict and canonical_bytes(doc) == raw and (set(doc) == {'experimental_admission_version', 'authorization_digest', 'fixture_uuid', 'owner_scope_id', 'wheel_digest', 'core', 'windows_roots', 'root_grants', 'root_projections', 'evidence_root', 'evidence_identity', 'preparation_root', 'preparation_identity', 'roles', 'request_limits', 'qualification', 'release_eligible'}), 'ntfs.owner_fixture_shape')
     _need(doc['experimental_admission_version'] == '3.0' and doc['authorization_digest'] == _AUTHORIZATION and (doc['release_eligible'] is False) and (doc['qualification'] == {'A05': 'NOT_VERIFIED', 'G01': 'NOT_VERIFIED'}), 'ntfs.owner_fixture_scope')
     _need(type(doc['fixture_uuid']) is str and _UUID.fullmatch(doc['fixture_uuid']) is not None and (doc['owner_scope_id'] == 'phase.qualification.owner.' + doc['fixture_uuid']))

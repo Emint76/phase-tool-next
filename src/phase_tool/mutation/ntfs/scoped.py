@@ -172,6 +172,13 @@ class NativeScopedTarget:
             self.io.assert_object(opened,directory=True,expected=identity)
         self.io.assert_object(self.parent,directory=True,expected=self.parent_identity)
 
+    def _pinned_root_ancestry(self) -> tuple[NativeIdentity, ...]:
+        """Recheck one root-only read and return complete physical identities."""
+        _require(type(self.io)is NativeIO and '/' not in self.locator and self.parent_identity==self.grant.root_identity,
+            'ntfs.root_only_scope_required')
+        self.assert_bound()
+        return (self.io.identity(self._handles[0]),*(identity for _,_,_,identity in self._relations))
+
     def ancestor_absence(self) -> dict | None:
         """Recheck ONLY a missing relative directory under a pinned prefix.
 

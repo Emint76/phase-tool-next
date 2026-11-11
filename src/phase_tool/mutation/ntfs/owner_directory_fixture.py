@@ -66,8 +66,8 @@ def fixture_document(raw):
     _need(type(raw) is bytes and 0<len(raw)<=32768,'ntfs.owner_fixture_shape')
     doc=parse_json_bytes(raw,maximum_bytes=32768)
     if type(doc)is dict and doc.get('experimental_admission_version')=='3.0':
-        from .owner_semantic_fixture import semantic_fixture_document
-        return semantic_fixture_document(raw)
+        from .owner_semantic_fixture import _validate_semantic_fixture_document
+        return _validate_semantic_fixture_document(raw, doc)
     _need(type(doc) is dict and canonical_bytes(doc)==raw and set(doc)=={
         'experimental_admission_version','authorization_digest','fixture_uuid','owner_scope_id',
         'wheel_digest','core','windows_roots','root_grants','root_projections',
@@ -144,17 +144,25 @@ def fixture_role(kind,raw):
 
 def installation_id(kind,raw):
     doc,role=fixture_role(kind,raw)
-    identity=digest_bytes(canonical_bytes({'fixture_digest':digest_bytes(raw),'role':role['role']}))
+    return _fixture_installation_id(kind, digest_bytes(raw), doc, role)
+
+
+def _fixture_installation_id(kind, fixture_digest, doc, role):
+    identity=digest_bytes(canonical_bytes({'fixture_digest':fixture_digest,'role':role['role']}))
     return kind._installation_prefix+('owner3.'if doc['experimental_admission_version']=='3.0'else'owner2.')+identity[7:]
 
 
 def role_projection(kind,raw):
     """Fixed data view for the unchanged exact experimental authorities."""
     doc,role=fixture_role(kind,raw)
+    return _fixture_role_projection(doc, role, digest_bytes(raw))
+
+
+def _fixture_role_projection(doc, role, fixture_digest):
     grants=parse_json_bytes(canonical_bytes(doc['root_grants']))
     current=grants[0];current['root_binding']=role['root_binding']
     shared={key:doc[key] for key in ('authorization_digest','wheel_digest','evidence_identity','preparation_identity','qualification','release_eligible')}
-    shared.update(experimental_admission_version=doc['experimental_admission_version'],contract=role['contract'],owner_scope_id=doc['owner_scope_id'],fixture_digest=digest_bytes(raw))
+    shared.update(experimental_admission_version=doc['experimental_admission_version'],contract=role['contract'],owner_scope_id=doc['owner_scope_id'],fixture_digest=fixture_digest)
     if role['role']=='Version2':
         shared.update(root_grants=grants,windows_roots=doc['windows_roots'])
     else:
@@ -164,13 +172,14 @@ def role_projection(kind,raw):
 
 def check_manifest(kind,raw,manifest,manifest_digest):
     doc,role=fixture_role(kind,raw);_digest(manifest_digest)
-    _need(type(manifest) is dict and manifest['installation_id']==installation_id(kind,raw)
+    fixture_digest=digest_bytes(raw)
+    _need(type(manifest) is dict and manifest['installation_id']==_fixture_installation_id(kind, fixture_digest, doc, role)
         and manifest['native_read_installation_version']==role['native_read_installation_version']
         and all(manifest[key]==role[key] for key in ('contract','registry_snapshot_digest','authority'))
         and manifest['core']==doc['core']
         and all(manifest[key]==doc[key] for key in ('evidence_root','evidence_identity','preparation_root','preparation_identity')),
         'ntfs.owner_fixture_binding_mismatch')
-    view=role_projection(kind,raw)
+    view=_fixture_role_projection(doc, role, fixture_digest)
     grants=view.get('root_grants',[view.get('root_grant')])
     projections=({'current_root':'/ntfs-result','objects_root':'/ntfs-objects'} if role['role']=='Version2'
         else {role['root_binding']:'/ntfs-result'})

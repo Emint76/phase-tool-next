@@ -45,17 +45,22 @@ class NativeInputMCPClosedSchemaTests(unittest.TestCase):
                 manifest_bytes=manifest,expected_manifest_digest=digest_bytes(manifest))
         run.assert_called_once();return run.call_args.args[0]
 
-    def test_all_six_fixed_input_servers_have_exact_two_closed_tools(self):
+    def test_all_six_fixed_input_servers_have_exact_closed_tools(self):
         for role in ROLES:
             with self.subTest(role=role):
                 tools=self.server(role)._tool_manager._tools
-                self.assertEqual(set(tools),{'phase_publish_input','phase_inspect'})
+                expected={'phase_publish_input','phase_inspect'}
+                if role in {'File1','File2'}:
+                    expected.add('phase_publish_file')
+                self.assertEqual(set(tools),expected)
                 for tool in tools.values():
                     self.assertIs(tool.parameters['additionalProperties'],False)
                     self.assertEqual(tool.fn_metadata.arg_model.model_config['extra'],'forbid')
                 self.assertEqual(set(tools['phase_publish_input'].parameters['properties']),
                     {'run_id','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'})
-                self.assertEqual(set(tools['phase_inspect'].parameters['properties']),{'run_id'})
+                inspect_fields={'run_id','root_binding'} if role in {'File1','File2'} else {'run_id'}
+                self.assertEqual(set(tools['phase_inspect'].parameters['properties']),inspect_fields)
+                self.assertEqual(tools['phase_inspect'].parameters['required'],['run_id'])
 
     def test_actual_SDK_tool_invocation_preserves_six_typed_argument_sets(self):
         for role in ROLES:

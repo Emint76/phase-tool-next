@@ -139,8 +139,8 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     # Pin their complete ASTs and both entrypoints, including admission and
     # dispatch. Empty type_params differs between CPython 3.11 and 3.12.
     ordinary_only = {
-        '_input_failure_diagnostic': '2a0cbccdeda5a5a6eacb1a76da68f782aaabb69c16d9ef8f818548dae90015f0',
-        '_publish_input_cli': 'f7ed9abffe64759a7fac7bb05cd967eeaa14c67f597ec3660a79ba1889e970c4',
+        '_input_failure_diagnostic': '6ea593a2ebd39bb43523254d029a4f79b8d077199f5e49893326ef29305ebc8e',
+        '_publish_input_cli': '08c2b2d0524e0756db66bb962c967908b023bf9c0f08416956256f40b8f9e858',
     }
     assert normal_functions.keys() == fixed_functions.keys() | ordinary_only.keys()
     assert fixed_functions.keys().isdisjoint(ordinary_only)

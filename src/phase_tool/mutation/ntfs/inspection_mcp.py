@@ -149,6 +149,8 @@ class _InspectionMCPCallOwner:
             self._startup['_experimental_admission_context']=_experimental_admission_context
         self._gate=threading.Lock()
         self._held_launch=None
+        self._held_input_source=None
+        self._held_input_io=None
         self._unavailable=False
         self._publication_ack=None  # One transient ACK, never a durable journal or retry record.
 
@@ -296,8 +298,8 @@ class _InspectionMCPCallOwner:
         All data paths are Windows-relative under one installed input scope.
         """
         from .input_stage import (_InputOperationDeadline,_input_operation_scope,_left,
-            _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal)
-        validate_run_id(run_id);_stage_request(input_scope,source_locator,members)
+            _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal,_ClosedInputBundleRefusal)
+        validate_run_id(run_id);_stage_request(input_scope,source_locator)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None;result=None
         self._input_publication_phase='stage'
@@ -309,16 +311,22 @@ class _InspectionMCPCallOwner:
             with _input_operation_scope(token):
                 staged=run_windows_input_stage(self,run_id,input_scope,source_locator,members,token.deadline_ns,
                     request_id=request_id,target_locator=target_locator,expected_current_digest=expected_current_digest)
-                if type(staged) is _ClosedInputFileRefusal:
+                if type(staged) in {_ClosedInputFileRefusal,_ClosedInputBundleRefusal}:
                     from ...application import PhaseApplication
                     registry=_native_registry_for_manifest(self._startup['manifest_bytes'],self._startup['expected_manifest_digest'])
-                    refusal=PhaseApplication(registry=registry)._failure('execute',PhaseError('input_stage.member_bound'))
+                    is_file=type(staged) is _ClosedInputFileRefusal
+                    code='input_stage.member_bound'if is_file else staged.code
+                    refusal=PhaseApplication(registry=registry)._failure('execute',PhaseError(code))
                     validate_command_result(refusal.payload,registry)
-                    result={'native_input_publication_refusal_version':'1.0','run_id':run_id,'input_scope':input_scope,
-                        'role':staged.role,'source_locator':source_locator,'source_length':staged.length,
-                        'maximum_source_length':staged.maximum,'request_id':request_id,'target_locator':target_locator,
-                        'source_handles_closed':True,'preparation_started':False,'refusal':refusal.payload,
+                    result={'native_input_publication_refusal_version':'1.0'if is_file else'1.1',
+                        'run_id':run_id,'input_scope':input_scope,'role':staged.role,'source_locator':source_locator,
+                        'request_id':request_id,'target_locator':target_locator,'preparation_started':False,'refusal':refusal.payload,
                         'exit_code':refusal.exit_code,'retry_authorized':False}
+                    if is_file:
+                        result.update(source_length=staged.length,maximum_source_length=staged.maximum,source_handles_closed=True)
+                    else:
+                        result.update(bound={'kind':staged.kind,'observed':staged.observed,'maximum':staged.maximum},
+                            source_finalization=staged.source_finalization)
                 else:
                     prepared,role,scope,content=staged
                     request=_staged_publication_request(role=role,prepared=prepared,input_scope=input_scope,
@@ -757,5 +765,8 @@ def _native_input_cli_request(value):
     fields={'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}
     _require(set(request)==fields and request['operation']=='publish_input','ntfs.fixed_native_request_required')
     from .input_stage import _stage_request
-    _stage_request(request['input_scope'],request['source_locator'],request['members'])
+    _stage_request(request['input_scope'],request['source_locator'])
+    members=request['members']
+    _require(members is None or type(members)is list and all(type(member)is str for member in members),
+        'ntfs.fixed_native_request_required')
     return dict(run_id=value['run_id'],**{key:request[key]for key in fields-{'operation'}})

@@ -13,8 +13,8 @@ from pathlib import Path,PureWindowsPath
 from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes,profile_digest
 from ...errors import PhaseError
 from ...paths import safe_relative_locator
-from ...bundle import validate_members,parse_manifest,MAX_TOTAL_BYTES,MAX_MEMBERS,MAX_DEPTH
-from ...streaming import FILE_LIMIT
+from ...bundle import validate_members,parse_manifest,MAX_TOTAL_BYTES,MAX_MEMBERS,MAX_DEPTH,_BundleLimitExceeded
+from ...streaming import FILE_LIMIT,REQUEST_LIMIT
 from .native import NativeIdentity,_require,_input_leaf
 
 _SCOPE_FILE='native-input-scope.json'
@@ -221,6 +221,20 @@ class _ClosedInputFileRefusal:
     maximum: int
 
 
+@dataclass(frozen=True)
+class _ClosedInputBundleRefusal:
+    role: str
+    code: str
+    kind: str
+    observed: int
+    maximum: int
+    source_finalization: str
+
+
+def _bundle_manifest_bytes(rows,total):
+    return canonical_bytes({'bundle_version':'1.0','members':rows,'total_length':total})
+
+
 def _header(launch,scope,role,scope_digest,request,records):
     _require(request==_stage_request(request['input_scope'],request['source_locator'],request['members'])
         and request['input_scope']==scope['scope_id'],'input_stage.fixed_request_required')
@@ -232,12 +246,12 @@ def _header(launch,scope,role,scope_digest,request,records):
         and [row['path']for row in records]==wanted,'input_stage.exact_members_required')
     _require(len({canonical_bytes(row['native_identity'])for row in records})==len(records),
         'input_stage.source_physical_alias')
-    total=0
+    total=0;longest=0
     file_create=role in {'File1','File2'}
     for row in records:
         _require(type(row)is dict and set(row)=={'path','length','native_identity','state'}
             and type(row['length'])is int and row['length']>=0
-            and (file_create or row['length']<=maximum_file),'input_stage.member_bound')
+            and (file_create or bundle or row['length']<=maximum_file),'input_stage.member_bound')
         if role=='File1':_require(row['length']>0,'input_stage.empty_legacy_input')
         identity=NativeIdentity.parse(row['native_identity'])
         _require(identity.volume_serial==NativeIdentity.parse(scope['root_identity']).volume_serial,
@@ -249,9 +263,21 @@ def _header(launch,scope,role,scope_digest,request,records):
             and type(state['links'])is int and state['links']==1 and type(state['attributes'])is int
             and not state['attributes']&0x410 and all(type(state[name])is int for name in('creation_time','write_time','change_time')),
             'input_stage.source_state_binding')
-        if row['length']>maximum_file:
+        if file_create and row['length']>maximum_file:
             raise _InputFileTooLarge(role,row['length'],maximum_file)
         total+=row['length']
+        longest=max(longest,row['length'])
+    if bundle:
+        if longest>maximum_file:
+            raise _BundleLimitExceeded('input_stage.member_bound','member_bytes',longest,maximum_file)
+        if total>maximum_total:
+            raise _BundleLimitExceeded('input_stage.total_bound','total_bytes',total,maximum_total)
+        # Every real digest adds exactly 71 unescaped ASCII bytes to the empty field.
+        # These bytes are used only for the bound, before any receiver or payload read.
+        rows=[{'path':row['path'],'length':row['length'],'digest':''}for row in records]
+        manifest_length=len(_bundle_manifest_bytes(rows,total))+71*len(rows)
+        if manifest_length>REQUEST_LIMIT:
+            raise _BundleLimitExceeded('bundle.metadata_limit','manifest_bytes',manifest_length,REQUEST_LIMIT)
     _require(total<=maximum_total,'input_stage.total_bound')
     raw=canonical_bytes({'protocol':_PROTOCOL,'version':_VERSION,'kind':'header','run_id':launch.run_id,
         'installation_digest':launch.installation_digest,'channel_id':launch.channel_id,'operation_nonce':launch.operation_nonce,
@@ -293,10 +319,10 @@ class _InputStageSender:
             close_attempted=True
             self.source.close();closed=True
             _left(self.deadline)
-            manifest={'bundle_version':'1.0','members':rows,'total_length':sum(row['length']for row in rows)}
-            if _control(self.header)['payload_kind']=='bundle':parse_manifest(canonical_bytes(manifest))
+            total=sum(row['length']for row in rows)
+            if _control(self.header)['payload_kind']=='bundle':parse_manifest(_bundle_manifest_bytes(rows,total))
             self.footer={'protocol':_PROTOCOL,'version':_VERSION,'kind':'end','header_digest':self.header_digest,
-                'members':rows,'total_length':manifest['total_length'],'source_handles_closed':True}
+                'members':rows,'total_length':total,'source_handles_closed':True}
             yield canonical_bytes(self.footer)
             _left(self.deadline)
         except BaseException as error:primary=error;raise
@@ -436,8 +462,8 @@ def _validate_prepared_input(response,*,launch,scope_digest,header,footer):
     if h['payload_kind']=='file':
         expected_digest=footer['members'][0]['digest'];expected_length=footer['members'][0]['length']
     else:
-        manifest={'bundle_version':'1.0','members':footer['members'],'total_length':footer['total_length']}
-        data=canonical_bytes(manifest);parse_manifest(data);expected_digest=digest_bytes(data);expected_length=len(data)
+        data=_bundle_manifest_bytes(footer['members'],footer['total_length'])
+        parse_manifest(data);expected_digest=digest_bytes(data);expected_length=len(data)
     _require(type(value['expected_length'])is int and value['expected_digest']==expected_digest
         and value['expected_length']==expected_length,'input_stage.prepared_digest_binding')
     return parse_json_bytes(canonical_bytes(value))
@@ -454,13 +480,21 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
     from .process_witness import WindowsProcessWitness
     import secrets
     _require(os.name=='nt','input_stage.windows_owner_required');_left(deadline_ns)
-    request=_stage_request(input_scope,source_locator,members)
-    invocation={'run_id':run_id,'request':request,'channel_id':secrets.token_hex(16),'operation_nonce':secrets.token_hex(16)}
+    probe_request=_stage_request(input_scope,source_locator)
+    invocation={'run_id':run_id,'request':probe_request,'channel_id':secrets.token_hex(16),'operation_nonce':secrets.token_hex(16)}
     probe=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=True)
     scope,role,scope_digest=_scope_for_launch(probe)
     _require(scope['scope_id']==input_scope,'input_stage.foreign_scope')
-    _publication_candidate(role,request_id,target_locator,members,expected_current_digest,
-        ''if role=='Version2'else None)  # Pure caller literals BEFORE source IO.
+    try:
+        _publication_candidate(role,request_id,target_locator,members,expected_current_digest,
+            ''if role=='Version2'else None)  # Pure caller literals BEFORE source IO.
+    except _BundleLimitExceeded as error:
+        _require(role in {'Bundle1','Bundle2'} and error.kind in {'member_count','member_depth','candidate_bytes'}
+            and owner._held_launch is None and owner._held_input_source is None and owner._held_input_io is None,
+            'input_stage.source_finalization_unknown')
+        _left(deadline_ns)
+        return _ClosedInputBundleRefusal(role,error.code,error.kind,error.observed,error.maximum,'not_opened')
+    request=_stage_request(input_scope,source_locator,members)
     source=None;sender=None;process=None;pipe=None;witness=None;primary=None;result=None;fact=None;closed=False
     refusal=None
     try:
@@ -474,7 +508,12 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
             sender=_InputStageSender(probe,scope,role,scope_digest,request,source,deadline_ns)
         except _InputFileTooLarge as error:
             source.verify_complete()
-            refusal=(error.role,error.length,error.maximum)
+            refusal=_ClosedInputFileRefusal(error.role,error.length,error.maximum)
+        except _BundleLimitExceeded as error:
+            _require(role in {'Bundle1','Bundle2'} and error.kind in {'member_bytes','total_bytes','manifest_bytes'},
+                'input_stage.source_finalization_unknown')
+            source.verify_complete()
+            refusal=_ClosedInputBundleRefusal(role,error.code,error.kind,error.observed,error.maximum,'closed')
         else:
             invocation['request']={'operation':'stage_input','native_input_stage_request_version':'1.0','header':_control(sender.header)}
             launch=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=False)
@@ -522,7 +561,7 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
         _require(source.close_attempted and not api._handles and owner._held_launch is None,
             'input_stage.source_finalization_unknown')
         owner._held_input_source=None;owner._held_input_io=None
-        return _ClosedInputFileRefusal(*refusal)
+        return refusal
     _require(result is not None and fact['exit_code']==0 and closed,'input_stage.preparation_delivery_unknown')
     _require(not api._handles,'input_stage.source_finalization_unknown')
     owner._held_launch=None

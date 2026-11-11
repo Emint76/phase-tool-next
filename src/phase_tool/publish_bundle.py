@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
-from .bundle import CONTRACT_BINDING, parse_manifest, read_metadata, validate_members
+from .bundle import CONTRACT_BINDING, _BundleLimitExceeded, parse_manifest, read_metadata, validate_members
 from .candidate import encode_structured_input
 from .canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
 from .errors import PhaseError
@@ -85,7 +85,8 @@ def _bundle_publication_candidate(request_id, target_locator, members):
     candidate={'operation_id':request_id,'idempotency_key':request_id,'input_binding':'payload',
         'target_locator':target_locator,'members':members}
     raw=encode_structured_input(candidate)
-    if len(raw)>REQUEST_LIMIT:raise PhaseError('bundle.request_too_large')
+    if len(raw)>REQUEST_LIMIT:
+        raise _BundleLimitExceeded('bundle.request_too_large','candidate_bytes',len(raw),REQUEST_LIMIT)
     return candidate,raw
 
 

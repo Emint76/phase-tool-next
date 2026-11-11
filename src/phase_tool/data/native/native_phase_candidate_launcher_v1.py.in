@@ -245,8 +245,16 @@ def _input_failure_diagnostic(phase,error):
     timeout=(isinstance(error,TimeoutError) or type(error).__name__=='TimeoutExpired'
         or getattr(error,'code',None) in ('input_stage.deadline','input_stage.deadline_cap_required',
             'ntfs.pipe_deadline_expired','ntfs.channel_deadline_expired'))
-    raw=json.dumps({'phase':phase,'error_class':'timeout' if timeout else 'error'},
-        sort_keys=True,separators=(',',':')).encode('ascii')+b'\n'
+    value={'phase':phase,'error_class':'timeout' if timeout else 'error'}
+    if phase=='execute' and getattr(error,'code',None)=='ntfs.pipe_frame_unknown':
+        from phase_tool.errors import PhaseError
+        cause=error.__cause__
+        if type(error)is PhaseError and type(cause)is PhaseError:
+            if cause.code=='ntfs.pipe_deadline_expired':
+                value.update(error_class='timeout',reason='deadline')
+            elif cause.code=='ntfs.pipe_eof':
+                value['reason']='eof'
+    raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode('ascii')+b'\n'
     try:os.write(2,raw)
     except BaseException:pass
 

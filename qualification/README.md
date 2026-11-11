@@ -32,8 +32,7 @@ If an essential primitive fails, dependent mutation stops and remaining cases
 stay NOT_VERIFIED. The original counterexample must be retained.
 
 This small stage allocates under 256 MiB with a 4 GiB reserve checked on the host
-and relevant ext4/NTFS roots. The 64 GiB host and VM reserves remain mandatory
-for other large cases. The separately approved B08 floors are listed below.
+and relevant ext4/NTFS roots. The current REF and MIX resource rules are listed below.
 A short first-failure
 run retains requested/completed counts and is never treated as ten passing
 repeats. The image is an offline directory-only derivative of the available
@@ -53,10 +52,46 @@ commands and ownership map. A fresh campaign UUID and ownership manifest are
 mandatory. No container/volume is accepted by name alone; labels, IDs and mounts
 must match. No cleanup is currently implemented: retain owned resources.
 
+## Resource admission for REF and MIX (2026-11-11)
+
+The campaign owner approved a separately calculated free-space requirement for
+each resource-intensive scenario. The original 32 GiB campaign cap, 4 GiB
+operating reserves, test objects, counts, deadlines and acceptance criteria
+continue to apply. The six original programme documents are preserved as inputs.
+
+Use one reviewed resource controller for setup, publication, independent
+verification and closure. The case manifest binds the installed artifacts,
+source object identities, actual mounts, schedule, writer width and copy
+lifetimes. Price source files, preparation, frozen evidence, private snapshots,
+target/stage, version archives, restores, and every retained control occurrence.
+Carry previous holdings and outstanding reservations forward across cases.
+
+Measure C:, S:, guest ext4 and Docker VHDX against their actual backing identities.
+If ext4 is backed by a VHDX on C:, direct C: writes and possible VHDX allocations
+share the same host capacity. Guest ext4 free space is an additional constraint.
+Compute each initial floor from the scoped remaining peak plus its operating
+reserve. The separate VHDX high-water limits cover apparent and allocated growth.
+
+Reserve the full in-flight amount before dispatch. Use fresh observations before
+starting and the reviewed bounded sampling cadence while each owned action runs.
+Stop further dispatch on stale or incomplete evidence, a lost storage identity,
+an exceeded bound, or uncertain closure. Preserve the actual bytes and outstanding
+allocation for unknown outcomes. Settle an unused reservation only after exact
+ownership, closure, coverage and independent readback have been established.
+
+The prior B08 REF result remains valid within its recorded scope. Its historical
+floors below apply to that exact route. Recalculate the Windows-input MIX route
+by boundary variant from its complete driver and current ledger. At the current
+source review, the 4 GiB aggregate Bundle variants in the Windows-input route
+still exceed the campaign envelope together. Smaller D07 variants use their own
+exact plans. A scenario with unpriced work or insufficient capacity remains
+NOT_VERIFIED. See the reproducible resource checkpoints in
+[Draft PR #14](https://github.com/Emint76/phase-tool-next/pull/14).
+
 ## B08 resource addendum (2026-11-06)
 
-This addendum supersedes the original 64 GiB rule for B08 alone. Use
-[b08_resources.py](b08_resources.py) for admission and monitoring.
+This historical addendum records the original B08 route. It uses
+[b08_resources.py](b08_resources.py) for its admission and monitoring.
 
 | B08 lane | C: free | Docker ext4 free | S: free |
 | --- | ---: | ---: | ---: |

@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import patch
 
 RESOURCE=Path(__file__).absolute().parents[1]/'src/phase_tool/data/native/native_phase_cli_v1.py.in'
+LAUNCHER=RESOURCE.with_name('native_phase_candidate_launcher_v1.py.in')
 TOY=r"""
 import json,pathlib,sys
 mode=json.loads((pathlib.Path(__file__).parent/'mode.json').read_text())
@@ -36,10 +37,18 @@ if request['request']['operation']=='publish_input':
     action=request['request']
     if mode=='pending':
         raise SystemExit(50)
+    if mode.startswith('diagnostic-'):
+        reason=mode.removeprefix('diagnostic-')
+        diagnostic={'phase':'execute','error_class':'timeout' if reason=='deadline' else 'error'}
+        if reason!='other':diagnostic['reason']=reason
+        sys.stderr.buffer.write(json.dumps(diagnostic,sort_keys=True,separators=(',',':')).encode()+b'\n')
+        raise SystemExit(50)
     role=action['input_scope'].split('.')[-1]
-    bound={'File1':1024**2,'File2':2*1024**3}[role]
+    bundle=role.startswith('Bundle')
+    bound={'File1':1024**2,'File2':2*1024**3,'Bundle1':2*1024**3,'Bundle2':2*1024**3}[role]
+    pure=bundle and mode in {'bundle-count','wrong-count'}
     code=10
-    error='input_stage.member_bound'
+    error='bundle.member_count_limit'if pure else'input_stage.member_bound'
     refusal={'stage3_command_result_version':'1.0','command':'execute','success':False,
         'run_id':None,'terminal_status':'rejected','execution_disposition':'not_executed',
         'mutation_attempted':False,'effect_plan_digest':None,'intent_digest':None,'receipt_digest':None,
@@ -49,15 +58,26 @@ if request['request']['operation']=='publish_input':
         'source_length':bound+1,'maximum_source_length':bound,'request_id':action['request_id'],
         'target_locator':action['target_locator'],'source_handles_closed':True,'preparation_started':False,
         'refusal':refusal,'exit_code':code,'retry_authorized':False}
+    if bundle:
+        for field in ('source_length','maximum_source_length','source_handles_closed'):del result[field]
+        result['native_input_publication_refusal_version']='1.1'
+        result['source_finalization']='not_opened'if pure else'closed'
+        result['bound']={'kind':'member_count'if pure else'member_bytes',
+            'observed':(1026 if mode=='wrong-count'else 1025)if pure else bound+1,
+            'maximum':1024 if pure else bound}
+        if mode=='wrong-bound':result['bound']['maximum']-=1
+        if mode=='pending-handle':result['source_finalization']='pending'
     if mode=='wrong-role':result['role']='File9'
     if mode=='wrong-run':result['run_id']='another-run'
     if mode=='wrong-source':result['source_locator']='different.bin'
-    if mode=='pending-handle':result['source_handles_closed']=False
+    if mode=='pending-handle'and not bundle:result['source_handles_closed']=False
     if mode=='fake-receipt':refusal['receipt_digest']='sha256:'+'1'*64
     reply={'protocol':'phase.native.input.publication','version':'1.0','run_id':request['run_id'],
         'installation_digest':'sha256:'+'b'*64,'result':result,'exit_code':code}
     b=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
     if mode=='wrong-exit':code=50
+if mode=='oversized-diagnostic':
+    b=b'{"broken":1.'+b'3'*70000+b'}'
 frame=f'{len(b):08x}\n'.encode()+b+b'\n'
 sys.stdout.buffer.write(frame[:-3]if mode=='truncated'else frame);sys.stdout.buffer.flush()
 sys.stderr.buffer.write(b'modeled-child-diagnostic\n');sys.stderr.buffer.flush()
@@ -106,11 +126,16 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         action='execute'
         if input_role is not None:
             action='publish-input'
-            contract={'File1':'file_create.v1','File2':'file_create.v2'}[input_role]
+            contract={'File1':'file_create.v1','File2':'file_create.v2','Bundle1':'bundle_create.v1',
+                'Bundle2':'bundle_create.v2'}[input_role]
             outer['manifest_base64']=base64.b64encode(json.dumps({'contract':{'id':contract}}).encode()).decode()
+            members=None
+            if input_role.startswith('Bundle'):
+                count=1025 if mode in {'bundle-count','wrong-count'}else 1
+                members=[f'member-{index}'for index in range(count)]
             self.request.write_text(json.dumps({'run_id':'model-cli-run','request':{
                 'operation':'publish_input','input_scope':'inputs.'+input_role,'source_locator':'input.bin',
-                'target_locator':'target.bin','request_id':'request-a','members':None,
+                'target_locator':'target.bin','request_id':'request-a','members':members,
                 'expected_current_digest':None}}),encoding='utf-8')
         real_popen=subprocess.Popen
         def popen(argv,**kwargs):
@@ -175,6 +200,25 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertEqual(report['stdout_sha256'],'sha256:'+hashlib.sha256(saved).hexdigest())
         self.assertEqual(report['child_delivery'],'UNKNOWN');self.assertFalse(report['retry_authorized'])
 
+    def test_oversized_delivery_diagnostic_preserves_raw_and_remains_unknown(self):
+        code,out,err,capture=self.call_model('oversized-diagnostic')
+        self.assert_outer_closed_before_fixture_cleanup()
+        self.assertEqual((code,out),(50,b''))
+        payload=b'{"broken":1.'+b'3'*70000+b'}'
+        raw=f'{len(payload):08x}\n'.encode()+payload+b'\n'
+        self.assertEqual((capture/'stdout.bin').read_bytes(),raw)
+        self.assertEqual((capture/'stderr.bin').read_bytes(),b'modeled-child-diagnostic\n')
+        delivery=(capture/'delivery.json').read_bytes()
+        self.assertLessEqual(len(delivery),64*1024)
+        report=json.loads(delivery)
+        self.assertEqual(report['process_exit'],0)
+        self.assertEqual(report['child_delivery'],'UNKNOWN')
+        self.assertEqual(report['outer_owner_finalization'],'closed')
+        self.assertFalse(report['retry_authorized'])
+        self.assertEqual(report['stdout_sha256'],'sha256:'+hashlib.sha256(raw).hexdigest())
+        self.assertEqual(report['error']['type'],'DELIVERY_REPORT_TOO_LARGE')
+        self.assertEqual(json.loads(err)['delivery_error'],'DELIVERY_REPORT_TOO_LARGE')
+
     def test_previous_capture_is_never_replaced_or_redispatched(self):
         _,_,_,capture=self.call_model('positive')
         saved={p.name:p.read_bytes()for p in capture.iterdir()};count=len(self.children)
@@ -207,5 +251,62 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                 self.assertEqual(report['child_delivery'],'UNKNOWN')
                 self.assertEqual(report['stdout_sha256'],'sha256:'+hashlib.sha256((capture/'stdout.bin').read_bytes()).hexdigest())
                 self.assertFalse(report['retry_authorized'])
+
+    def test_bundle_refusals_require_correlated_frame_and_closed_actual_process(self):
+        for role in ('Bundle1','Bundle2'):
+            for mode in ('bundle-count','bundle-member'):
+                with self.subTest(role=role,mode=mode):
+                    code,out,_,capture=self.call_model(mode,input_role=role)
+                    self.assert_outer_closed_before_fixture_cleanup()
+                    self.assertEqual(code,10)
+                    value=json.loads(out)
+                    self.assertEqual(value,json.loads((capture/'stdout.bin').read_bytes()[9:-1])['result'])
+                    self.assertEqual(value['role'],role)
+                    self.assertIsNone(value['refusal']['receipt_digest'])
+                    report=json.loads((capture/'delivery.json').read_bytes())
+                    self.assertEqual(report['child_delivery'],'COMPLETE_NATIVE_INPUT_REFUSAL_FRAME')
+                    self.assertEqual(report['process_exit'],10)
+                    self.assertEqual(report['outer_owner_finalization'],'closed')
+
+    def test_bundle_pending_or_invalid_proofs_preserve_raw_and_are_unknown(self):
+        for mode in ('pending','wrong-role','wrong-run','wrong-source','wrong-count','wrong-bound',
+                     'pending-handle','fake-receipt','wrong-exit','truncated'):
+            with self.subTest(mode=mode):
+                code,out,_,capture=self.call_model(mode,input_role='Bundle2')
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,out),(50,b''))
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'UNKNOWN')
+                self.assertEqual(report['stdout_sha256'],'sha256:'+hashlib.sha256((capture/'stdout.bin').read_bytes()).hexdigest())
+                self.assertFalse(report['retry_authorized'])
+
+    def test_execute_frame_diagnostics_stay_bounded_and_relay_only_fixed_reasons(self):
+        from phase_tool.errors import PhaseError
+        launcher={'__name__':'_phase_test_diagnostic_only'}
+        exec(compile(LAUNCHER.read_bytes(),str(LAUNCHER),'exec'),launcher)
+        emitted=[]
+        with patch.dict(launcher,os=types.SimpleNamespace(write=lambda fd, raw: emitted.append((fd,raw)))):
+            for reason,cause in (('deadline','ntfs.pipe_deadline_expired'),('eof','ntfs.pipe_eof'),
+                                 ('other','ntfs.pipe_invalid_header')):
+                with self.subTest(reason=reason):
+                    error=PhaseError('ntfs.pipe_frame_unknown','private-model-wrapper')
+                    error.__cause__=PhaseError(cause,'private-model-cause')
+                    launcher['_input_failure_diagnostic']('execute',error)
+                    fd,expected=emitted.pop()
+                    self.assertEqual(fd,2)
+                    self.assertLessEqual(len(expected),64)
+                    self.assertNotIn(b'private-model',expected)
+                    code,out,err,capture=self.call_model('diagnostic-'+reason,input_role='File1')
+                    self.assert_outer_closed_before_fixture_cleanup()
+                    self.assertEqual((code,out,err),(50,b'',expected))
+                    self.assertEqual((capture/'stderr.bin').read_bytes(),expected)
+                    report=json.loads((capture/'delivery.json').read_bytes())
+                    self.assertEqual(report['child_delivery'],'UNKNOWN')
+                    self.assertFalse(report['retry_authorized'])
+            code,out,err,capture=self.call_model('diagnostic-foreign',input_role='File1')
+            self.assert_outer_closed_before_fixture_cleanup()
+            self.assertEqual((code,out,err),(50,b'',b'{"error_class":"error","phase":"delivery"}\n'))
+            self.assertIn(b'"reason":"foreign"',(capture/'stderr.bin').read_bytes())
+
 
 if __name__=='__main__':unittest.main()

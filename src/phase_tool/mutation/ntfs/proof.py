@@ -302,7 +302,11 @@ def _check(binding, receipt, proof):
         contract_binding['package_digest'],core_version=manifest['core']['version'])
     from .experimental_file1 import _experimental_admission
     admission = _experimental_admission(binding)
-    if admission is None:
+    if binding._owner_directory_context is not None:
+        from .owner_directory import require_owner_directory_binding
+        # This revalidates the exact role profile, its artifact and coverage.
+        require_owner_directory_binding(binding)
+    elif admission is None:
         if manifest['native_read_installation_version']=='1.3' and contract_binding['id']=='file_create.v2':
             profile = _native_qualified_profile(binding.registry, manifest['authority']['profile'], _file2=True)
         else:

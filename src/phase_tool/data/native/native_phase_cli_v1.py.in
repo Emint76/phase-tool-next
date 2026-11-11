@@ -13,6 +13,8 @@ from pathlib import Path
 MAX_REQUEST=2*1024**2
 MAX_STDOUT=2*1024**2+10
 MAX_STDERR=512*1024
+MAX_DELIVERY=64*1024
+DELIVERY_DIAGNOSTIC_PREFIX=4*1024
 HERE=Path(__file__).absolute().parent
 _PENDING_DELIVERY_OWNERS=[]  # Process-local only; never a durable operation owner.
 
@@ -145,21 +147,43 @@ def reconciliation_role(action,value,outer):
 
 def input_publication_refusal(candidate,request,outer):
     fields={'native_input_publication_refusal_version','run_id','input_scope','role',
-        'source_locator','source_length','maximum_source_length','request_id','target_locator',
-        'source_handles_closed','preparation_started','refusal','exit_code','retry_authorized'}
-    need(set(candidate)==fields and candidate['native_input_publication_refusal_version']=='1.0',
-        'closed native input refusal required')
+        'source_locator','request_id','target_locator','preparation_started','refusal','exit_code','retry_authorized'}
+    need(candidate['source_locator']==request['source_locator'] and request['expected_current_digest']is None
+        and candidate['preparation_started']is False and candidate['retry_authorized']is False
+        and type(candidate['exit_code'])is int and candidate['exit_code']==10,'native input refusal binding')
     manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
-    expected={'file_create.v1':('File1',1024**2),'file_create.v2':('File2',2*1024**3)}
-    role,bound=expected.get(manifest['contract']['id'],(None,None))
-    need(role is not None and candidate['role']==role
-        and type(candidate['maximum_source_length'])is int and candidate['maximum_source_length']==bound
-        and type(candidate['source_length'])is int and bound<candidate['source_length']<2**63
-        and request['members']is None and request['expected_current_digest']is None
-        and candidate['source_locator']==request['source_locator']
-        and candidate['source_handles_closed']is True and candidate['preparation_started']is False
-        and candidate['retry_authorized']is False and candidate['exit_code']==10,'native input refusal binding')
-    code='input_stage.member_bound'
+    contract=manifest['contract']['id']
+    if candidate['native_input_publication_refusal_version']=='1.0':
+        need(set(candidate)==fields|{'source_length','maximum_source_length','source_handles_closed'},
+            'closed native file input refusal required')
+        role,maximum={'file_create.v1':('File1',1024**2),'file_create.v2':('File2',2*1024**3)}.get(contract,(None,None))
+        need(role is not None and candidate['role']==role and request['members']is None
+            and type(candidate['maximum_source_length'])is int and candidate['maximum_source_length']==maximum
+            and type(candidate['source_length'])is int and maximum<candidate['source_length']<2**63
+            and candidate['source_handles_closed']is True,'native file input refusal binding')
+        code='input_stage.member_bound'
+    else:
+        need(candidate['native_input_publication_refusal_version']=='1.1'
+            and set(candidate)==fields|{'bound','source_finalization'},'closed native bundle input refusal required')
+        role={'bundle_create.v1':'Bundle1','bundle_create.v2':'Bundle2'}.get(contract)
+        members=request['members']; bound=candidate['bound']
+        need(role is not None and candidate['role']==role and type(members)is list
+            and all(type(member)is str for member in members)
+            and type(bound)is dict and set(bound)=={'kind','observed','maximum'},'native bundle input refusal binding')
+        kind=bound['kind']; observed=bound['observed']
+        limits={'member_count':('bundle.member_count_limit',1024,'not_opened'),
+            'member_depth':('bundle.reserved_or_deep_path',32,'not_opened'),
+            'candidate_bytes':('bundle.request_too_large',1024**2,'not_opened'),
+            'member_bytes':('input_stage.member_bound',2*1024**3,'closed'),
+            'total_bytes':('input_stage.total_bound',4*1024**3,'closed'),
+            'manifest_bytes':('bundle.metadata_limit',1024**2,'closed')}
+        need(type(kind)is str and kind in limits,'native bundle input refusal limit')
+        code,maximum,finalization=limits[kind]
+        need(type(bound['maximum'])is int and bound['maximum']==maximum
+            and type(observed)is int and maximum<observed<2**63
+            and candidate['source_finalization']==finalization,'native bundle input refusal observation')
+        if kind=='member_count':need(len(members)==observed,'native bundle input member count')
+        if kind=='member_depth':need(any(path.count('/')+1==observed for path in members),'native bundle input member depth')
     expected_refusal={'stage3_command_result_version':'1.0','command':'execute','success':False,
         'run_id':None,'terminal_status':'rejected','execution_disposition':'not_executed',
         'mutation_attempted':False,'effect_plan_digest':None,'intent_digest':None,'receipt_digest':None,
@@ -171,13 +195,53 @@ def input_failure_line(raw=b'',*,timeout=False):
     if 0<len(raw)<=64:
         try:
             value=strict(raw)
-            if (type(value)is dict and set(value)=={'phase','error_class'}
-                    and value['phase'] in ('stage','execute','inspect','delivery')
-                    and value['error_class'] in ('timeout','error') and canon(value)+b'\n'==raw):
-                return raw
+            if type(value)is dict and canon(value)+b'\n'==raw:
+                if (set(value)=={'phase','error_class'}
+                        and value['phase'] in ('stage','execute','inspect','delivery')
+                        and value['error_class'] in ('timeout','error')):
+                    return raw
+                if (set(value)=={'phase','error_class','reason'} and value['phase']=='execute'
+                        and (value['error_class'],value['reason']) in (('timeout','deadline'),('error','eof'))):
+                    return raw
         except (ValueError,RuntimeError):
             pass
     return canon({'phase':'delivery','error_class':'timeout' if timeout else 'error'})+b'\n'
+
+
+def diagnostic_run_id(report):
+    run_id=report['run_id']
+    return run_id if re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',run_id) is not None else None
+
+
+def bounded_delivery(report):
+    """Preserve normal delivery bytes or a bounded UNKNOWN with actual observations."""
+    try:
+        raw=canon(report)
+        if len(raw)<=MAX_DELIVERY:
+            return raw,None
+        reason='DELIVERY_REPORT_TOO_LARGE'
+        encoding='UTF8_JSON'
+    except UnicodeEncodeError:
+        # Preserve an exact escaped representation of otherwise unencodable diagnostics.
+        raw=json.dumps(report,ensure_ascii=True,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
+        reason='DELIVERY_REPORT_UNENCODABLE'
+        encoding='ASCII_JSON'
+    prefix=raw[:DELIVERY_DIAGNOSTIC_PREFIX]
+    compact={name:report[name] for name in ('operation','request_sha256','process_exit','outer_owner_finalization',
+        'native_worker_quiescence_proven','retry_authorized','manifest_digest','scope','stdout_bytes','stderr_bytes',
+        'stdout_sha256','stderr_sha256')}
+    if 'pid'in report:
+        compact['pid']=report['pid']
+    capture=report['capture']
+    compact.update(run_id=diagnostic_run_id(report),child_delivery='UNKNOWN',
+        capture=None if capture is None else {name:capture[name] for name in ('discarded','eof','complete',
+            'initial_complete','bytes_sent','stdin_close_failed')},
+        error={'type':reason,'message':'Delivery report unavailable. Inspect the known run through its fixed reader.'},
+        delivery_report_diagnostic={'encoding':encoding,'bytes':len(raw),'sha256':sha(raw),
+            'prefix_bytes':len(prefix),'prefix_base64':base64.b64encode(prefix).decode('ascii')})
+    body=canon(compact)
+    need(len(body)<=MAX_DELIVERY,'bounded compact delivery report')
+    return body,reason
 
 
 def main():
@@ -288,15 +352,21 @@ def main():
     report.update(stdout_bytes=len(out),stderr_bytes=len(err),stdout_sha256=sha(out),stderr_sha256=sha(err))
     try:
         exclusive(capture_dir/'stdout.bin',out);exclusive(capture_dir/'stderr.bin',err)
-        exclusive(capture_dir/'delivery.json',canon(report))
+        delivery,delivery_error=bounded_delivery(report)
+        exclusive(capture_dir/'delivery.json',delivery)
     except BaseException as error:
         if action=='publish-input':
             sys.stderr.buffer.write(input_failure_line(timeout=isinstance(error,TimeoutError)))
             sys.stderr.buffer.flush();return 50
-        sys.stderr.buffer.write(canon({'run_id':value['run_id'],'capture_error':type(error).__name__,
+        sys.stderr.buffer.write(canon({'run_id':diagnostic_run_id(report),'capture_error':type(error).__name__,
             'stdout_base64':base64.b64encode(out).decode(),'stderr_base64':base64.b64encode(err).decode(),
             'retry_authorized':False,'message':'Delivery diagnostics incomplete; inspect known run.'})+b'\n')
         sys.stderr.buffer.flush();return 50
+    if delivery_error is not None:
+        note=(input_failure_line() if action=='publish-input' else canon({'run_id':diagnostic_run_id(report),
+            'request_sha256':report['request_sha256'],'child_delivery':'UNKNOWN','delivery_error':delivery_error,
+            'retry_authorized':False})+b'\n')
+        sys.stderr.buffer.write(note);sys.stderr.buffer.flush();return 50
     if err and action!='publish-input':sys.stderr.buffer.write(err);sys.stderr.buffer.flush()
     if result is None:
         if action=='publish-input':

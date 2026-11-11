@@ -353,6 +353,87 @@ class RetainedNativeSourceModels(unittest.TestCase):
         self.assertTrue(all(h.close_count==1 for h in api.handles))
 
 
+class WindowsStageRefusalModels(unittest.TestCase):
+    def stage(self,role,length,*,fail_close=False,fail_recheck=False,receiver_started=False):
+        from phase_tool.mutation.ntfs import bootstrap,process_witness
+        model,sc,source,members=native_fixture()
+        sc['scope_id']='owner.inputs'
+        leaf=next(path for path in model.tree if path.endswith('/a'))
+        opened=[]
+        source_reads=[]
+
+        class ModelIO(NativeModel):
+            def __init__(self):
+                super().__init__(model.tree)
+                self.fail_close=leaf if fail_close else None
+                self.states=0
+                opened.append(self)
+            @property
+            def _handles(self):
+                return [handle for handle in self.handles if handle not in self.closed]
+            def input_snapshot(self,*args):
+                return native._NativeInputSnapshot(self,*args)
+            def input_state(self,handle):
+                self.states+=1
+                state=super().input_state(handle)
+                state['length']=length
+                if fail_recheck and self.states==3:state['write_time']+=1
+                return state
+            def read_chunks(self,*args):
+                source_reads.append(args)
+                raise AssertionError('no body read is permitted in this model')
+
+        owner=types.SimpleNamespace(_startup={},_held_launch=None,_unavailable=False)
+        probe=types.SimpleNamespace(**vars(launch),_invocation_bytes=b'model')
+        bound=input_stage._role_bounds(role)[1]
+        def fail_after_start(*args):
+            raise input_stage._InputFileTooLarge(role,bound+1,bound)
+        receiver=types.SimpleNamespace(send_frame=fail_after_start)
+        witness=types.SimpleNamespace(wait_for_exit=lambda timeout:{'worker_exit_established':False})
+        with patch.object(input_stage,'os',types.SimpleNamespace(name='nt',getpid=os.getpid)),\
+                patch.object(native,'NativeIO',ModelIO),\
+                patch.object(input_stage,'_scope_for_launch',return_value=(sc,role,'sha256:'+'4'*64)),\
+                patch.object(bootstrap,'_NativeAcceptedLaunch',return_value=probe),\
+                patch.object(process_witness,'WindowsProcessWitness',return_value=witness),\
+                patch.object(probe,'spawn_input_stage',create=True)as spawn,\
+                patch.object(probe,'_pipe',return_value=receiver,create=True):
+            if not receiver_started:spawn.side_effect=AssertionError('receiver spawn attempted')
+            try:
+                result=input_stage.run_windows_input_stage(owner,'run-a','owner.inputs',source,members,deadline(),
+                    request_id='request-a',target_locator='a.bin',expected_current_digest=None)
+            except Exception as error:
+                result=error
+        self.assertEqual(source_reads,[])
+        return owner,opened[0],spawn.call_count,result
+
+    def test_file1_file2_plus_one_close_before_known_refusal_without_spawn(self):
+        for role,maximum in (('File1',1024**2),('File2',2*1024**3)):
+            with self.subTest(role=role):
+                owner,api,starts,result=self.stage(role,maximum+1)
+                self.assertEqual(result,input_stage._ClosedInputFileRefusal(role,maximum+1,maximum))
+                self.assertEqual(starts,0);self.assertEqual(api._handles,[])
+                self.assertTrue(all(handle.close_count==1 for handle in api.handles))
+                self.assertIsNone(owner._held_input_source);self.assertIsNone(owner._held_input_io)
+                self.assertFalse(owner._unavailable)
+
+    def test_source_close_or_recheck_failure_has_no_closed_refusal(self):
+        for fault in ('fail_close','fail_recheck'):
+            with self.subTest(fault=fault):
+                owner,api,starts,result=self.stage('File2',2*1024**3+1,**{fault:True})
+                self.assertIsInstance(result,Exception);self.assertEqual(starts,0)
+                self.assertEqual(bool(api._handles),fault=='fail_close')
+                self.assertIs(owner._held_input_io,api)
+                self.assertTrue(all(handle.close_count==1 for handle in api.handles))
+
+    def test_exact_boundary_enters_receiver_and_same_late_error_is_unknown(self):
+        for role,maximum in (('File1',1024**2),('File2',2*1024**3)):
+            with self.subTest(role=role):
+                owner,api,starts,result=self.stage(role,maximum,receiver_started=True)
+                self.assertEqual(starts,1);self.assertIsInstance(result,BaseExceptionGroup)
+                self.assertTrue(owner._unavailable);self.assertIsNotNone(owner._held_launch)
+                self.assertEqual(api._handles,[])
+
+
 class DeadlineModels(unittest.TestCase):
     def test_one_absolute_deadline_caps_all_clocks_no_reset_or_foreign_token(self):
         clock=types.SimpleNamespace(now=1_000_000_000)

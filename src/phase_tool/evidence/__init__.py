@@ -743,7 +743,7 @@ def validate_receipt(receipt: dict[str, Any], registry: RegistrySnapshot) -> Non
 # No candidate import/test/execution. This extends the existing evidence IO
 # boundary; it is not another store, marker, journal or recovery authority.
 
-def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id, expected_files):
+def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id, expected_files, *, _version_selection=None):
     """Confirm current durability ONLY inside the existing native common lock.
 
     The caller first verifies a permitted positive terminal proof and projects
@@ -767,16 +767,29 @@ def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id
     qualify_host_authority_roots({'phase_evidence_root':root})
     _require(_linux_filesystem_type(root) == 'ext4', 'ntfs.original_ext4_evidence_required')
     _require_native_no_descendant_mounts(root)
-    _require(type(expected_files) is dict and 'receipt.json' in expected_files
-        and 'attachments/native-terminal-proof.json' in expected_files,
-        'ntfs.native_durability_dependency_mismatch')
+    if _version_selection is None:
+        _require(type(expected_files) is dict and 'receipt.json' in expected_files
+            and 'attachments/native-terminal-proof.json' in expected_files,
+            'ntfs.native_durability_dependency_mismatch')
+    else:
+        from ..mutation.ntfs.version_original_closure import _NativeVersionContinuationSelection,_NativeVersionOriginalClosure
+        from ..mutation.ntfs.publication_observe import _NativePublicationObserveSelection
+        _require(type(_version_selection)in(_NativeVersionContinuationSelection,_NativeVersionOriginalClosure,_NativePublicationObserveSelection)
+            and _version_selection.run_id==run_id,'recovery.selected_original_mismatch')
+        closed=_version_selection.check(root/'.phase/runs'/run_id)
+        closure_leaf=('attachments/native-terminal-proof.json'if closed['closure_kind']=='native_terminal_proof'
+            else'attachments/native-parent-failure.json'if closed['closure_kind']=='validated_parent_failure_completion'else None)
+        _require(closure_leaf is not None and type(expected_files)is dict and expected_files==closed['files']
+            and closure_leaf in expected_files,'ntfs.native_durability_dependency_mismatch')
     for name, binding in expected_files.items():
         parts = name.split('/')
         _require((parts in (['receipt.json'], ['intent.json'], ['preparation-binding.json'])
                 or (len(parts) == 2 and parts[0] == 'attachments'
                     and re.fullmatch(r'[a-z][a-z0-9.-]*\.json',parts[1]) is not None)
                 or (len(parts) == 2 and parts[0] == 'blobs'
-                    and re.fullmatch('[0-9a-f]{64}',parts[1]) is not None))
+                    and re.fullmatch('[0-9a-f]{64}',parts[1]) is not None)
+                or (_version_selection is not None and len(parts)==2 and parts[0]=='recovery'
+                    and re.fullmatch(r'[0-9a-f]{64}\.json',parts[1])is not None))
             and type(binding) is tuple and len(binding) == 2
             and type(binding[0]) is str and re.fullmatch('sha256:[0-9a-f]{64}',binding[0]) is not None
             and type(binding[1]) is int and 0 <= binding[1] <= (2*1024**3 if parts[0]=='blobs' else 2*1024**2),
@@ -806,7 +819,12 @@ def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id
         owned()
         flags = os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK
         if directory:flags |= os.O_DIRECTORY
-        descriptor = os.open(name,flags,dir_fd=parent) if parent is not None else os.open(name,flags)
+        try:
+            descriptor = os.open(name,flags,dir_fd=parent) if parent is not None else os.open(name,flags)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise PhaseError('ntfs.original_evidence_object_unsafe') from error
+            raise
         # Register ownership BEFORE any subsequent failing stat/identity check.
         record = {'fd':descriptor,'parent':parent,'name':name,'directory':directory,'identity':None}
         opened.append(record)
@@ -832,11 +850,13 @@ def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id
         run = directories['run']['fd']
         names = set(os.listdir(run))
         allowed={'intent.json','receipt.json','attachments','blobs'}
+        if _version_selection is not None:allowed.add('recovery')
         if 'preparation-binding.json' in expected_files:allowed.add('preparation-binding.json')
         _require(names <= allowed,
             'ntfs.native_durability_dependency_mismatch')
-        actual = names - {'attachments','blobs'}
-        for child in ('attachments','blobs'):
+        children=('attachments','blobs')if _version_selection is None else('attachments','blobs','recovery')
+        actual = names - set(children)
+        for child in children:
             if child in names:
                 _require(child in directories, 'ntfs.native_durability_dependency_mismatch')
                 actual.update(child+'/'+name for name in os.listdir(directories[child]['fd']))
@@ -850,7 +870,8 @@ def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id
         for key,parent,name in [('phase','root','.phase'),('runs','phase','runs'),('run','runs',run_id)]:
             directories[key] = pin(directories[parent]['fd'],name,directory=True)
         present = set(os.listdir(directories['run']['fd']))
-        for child in ('attachments','blobs'):
+        children=('attachments','blobs')if _version_selection is None else('attachments','blobs','recovery')
+        for child in children:
             if child in present:
                 directories[child] = pin(directories['run']['fd'],child,directory=True)
         inventory()
@@ -950,7 +971,7 @@ def _write_native_parent_failure(store,binding,value):
     return _write_native_canonical(store,binding,'attachments/native-parent-failure.json',value)
 
 
-def _open_native_recovery_store(binding, run_id):
+def _open_native_recovery_store(binding, run_id, *, _publication_selection=None):
     """Open ONE existing original; never call the reserving constructor.
 
     The caller already holds the native common guard and has fully verified
@@ -963,9 +984,18 @@ def _open_native_recovery_store(binding, run_id):
     from ..mutation.ntfs.native import _require
     _require(type(binding) is _NativeFileCreateReadBinding, 'ntfs.original_read_binding_required')
     manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
-    _require(manifest['native_read_installation_version'] == '1.9', 'recovery.closed_native_role_required')
+    if _publication_selection is None and manifest['native_read_installation_version']!='1.9':
+        from ..mutation.ntfs.version_original_closure import version_original_role
+        version_original_role(binding)
+
     validate_run_id(run_id)
     root = binding.check_evidence_root()
+    if _publication_selection is not None:
+        from ..mutation.ntfs.publication_observe import _NativePublicationObserveSelection
+        _require(type(_publication_selection) is _NativePublicationObserveSelection
+            and _publication_selection.binding is binding and _publication_selection.run_id == run_id,
+            'recovery.selected_original_mismatch')
+        _publication_selection.check(root / '.phase' / 'runs' / run_id)
     opened = []
     try:
         current = os.open(root, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)

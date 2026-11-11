@@ -312,6 +312,10 @@ class _NativeWindowsParent:
                 'creation_handle':'closed' if self._worker_finalized else 'unknown','errors':[]},
             'post_observation':None,'ingress_state':'consumed'}
         self._partial_bytes=canonical_bytes(partial)
+        version_closed_capture=None
+        if self._version1 or self._version2:
+            from .version_failure_completion import capture_version_owner_completion
+            version_closed_capture=capture_version_owner_completion(partial,go_attempted=self._go_attempted)
         if primary is None:
             try:
                 _require(completion is not None and self._worker_finalized,
@@ -354,11 +358,14 @@ class _NativeWindowsParent:
                 from ...canonical import digest_bytes
                 return {'sha256':digest_bytes(raw),'length':len(raw),
                     'bytes_base64':base64.b64encode(raw).decode('ascii')}
-            raise PhaseError('ntfs.parent_execution_unresolved',details={
+            failure_details={
                 'parent_partial':parse_json_bytes(self._partial_bytes),
                 'worker_ready_wire':captured(self._ready_wire),
                 'worker_completion_wire':captured(self._completion_wire),
-                'possible_dispatch':self._go_attempted,'retry_authorized':False}) from primary
+                'possible_dispatch':self._go_attempted,'retry_authorized':False}
+            if version_closed_capture is not None:
+                failure_details.update(capture_version='1.3',version_closed_completion=version_closed_capture)
+            raise PhaseError('ntfs.parent_execution_unresolved',details=failure_details) from primary
         return partial
 
     def _after_original_read(self,parsed,intent_digest):
@@ -500,6 +507,18 @@ class _NativeWindowsParent:
                         'ntfs.parent_execution_unresolved')
                     self._consumed=True
                     from .parent_result import _native_file_result_mode, validate_native_file_result_delivery
+                    if value.get('version')=='1.4':
+                        from .recovery_frontdoor import validate_observe_delivery
+                        _require(self._inspection_only and not self._spawn_attempted and not self._go_attempted
+                            and self._worker is None and type(self._worker_count)is int and self._worker_count==0,
+                            'recovery.readonly_worker_forbidden')
+                        validate_observe_delivery(value,self._launch)
+                        if self._failed:
+                            _require(value['result']['success']is False
+                                and value['result']['inspection_required']is True and value['result']['exit_code']==40,
+                                'recovery.native_uncertainty_delivery_required')
+                        self._finished=True
+                        return value
                     if value.get('version')=='1.2':
                         _require(_is_bundle_recovery_launch(self._launch)
                             and not self._inspection_only,'recovery.closed_native_role_required')

@@ -548,9 +548,9 @@ class _NativeAcceptedLaunch:
         return process
 
     def _linux_command(self,role):
-        _require(role in {'core','original','inspect','prepare-input'},'ntfs.fixed_linux_role_required')
+        _require(role in {'core','original','inspect','observe-recovery','prepare-input'},'ntfs.fixed_linux_role_required')
         config=self._config
-        container=config['core_container_id' if role in {'core','prepare-input'} else 'reader_container_id']
+        container=config['core_container_id' if role in {'core','prepare-input','observe-recovery'} else 'reader_container_id']
         _require(type(container) is str and re.fullmatch('[0-9a-f]{64}',container) is not None
             and type(config['image_digest']) is str and re.fullmatch('sha256:[0-9a-f]{64}',config['image_digest'])
             and Path(config['docker_executable']).is_absolute()
@@ -581,6 +581,16 @@ class _NativeAcceptedLaunch:
         _require(not self._core_spawn_attempted,'ntfs.core_spawn_consumed')
         self._core_spawn_attempted=True
         # Existing identified RO reader contour; no new container or mount.
+        request=self.invocation['request']
+        if request.get('operation')=='recover_publication':
+            from .recovery_frontdoor import _manifest_role,_OBSERVE_ROLES
+            from .bundle_recovery_entrypoint import validate_request
+            validate_request(request)
+            _require(_manifest_role(self.manifest)in _OBSERVE_ROLES and request['mode']=='observe',
+                'recovery.closed_publication_observer_required')
+            # Same admitted RW Core for its operational common flock only.
+            # This launch/factory/Windows parent still has NO worker/GO right.
+            return self._spawn(self._linux_command('observe-recovery'))
         return self._spawn(self._linux_command('inspect'))
 
     def spawn_worker(self):

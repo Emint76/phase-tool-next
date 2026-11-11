@@ -180,6 +180,12 @@ def recover_publication(application, *, evidence_root: Path, run_id: str, target
     from .application import ApplicationResponse
     from .installation import _NativeFileCreateInstallation
     if type(application.installation) is _NativeFileCreateInstallation:
+        binding=application.installation.read_binding
+        manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
+        if manifest.get('contract',{}).get('id')in{'file_create.v1','file_create.v2','bundle_create.v1'}:
+            from .mutation.ntfs.publication_observe import recover_native_publication_observe
+            return recover_native_publication_observe(application,evidence_root=evidence_root,run_id=run_id,
+                target_root=target_root,request_id=request_id,expected_intent_digest=expected_intent_digest,mode=mode)
         from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
         authority = application.installation.authority
         if (type(authority) is not _ExperimentalBundle2AuthorityV3

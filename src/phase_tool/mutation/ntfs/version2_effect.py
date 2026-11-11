@@ -19,6 +19,11 @@ from .version1_effect import _native_state
 from .version2_observation import (_LIMIT, _version2_grants, _version2_targets,
     observe_version2_triple)
 
+VERSION_CONTINUATION_DURABILITY_CAPABILITY = '1.1'
+
+
+_NO_EFFECT_REFS = ('native.current.before', 'native.current.after', 'native.old_object.before', 'native.old_object.after', 'native.new_object.before', 'native.new_object.after')
+
 
 def _effect_binding(grants, effect, content):
     accepted=_version2_grants(grants)
@@ -45,6 +50,8 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
     before={name:_unknown() for name in targets};after=dict(before)
     before_native={name:None for name in targets};after_native=dict(before_native)
     secondary_errors=[];primary_error=None;error=None;status='indeterminate';written=0
+    from .version_durability import durability_binding
+    durability_bindings={}
     temporary_locators={};flushed=[];replace_completed=False
 
     def call(function,*args,_adopt_into=None,**kwargs):
@@ -105,6 +112,31 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                 old_ok=_same(before['old_object'],effect['archive_digest'],effect['archive_length'])
                 new_ok=_same(before['new_object'],effect['content_digest'],len(content))
                 if _same(before['current'],effect['content_digest'],len(content)) and old_ok and new_ok:
+                    # No new object/content/rename. Reaffirm every unique
+                    # existing file AND parent namespace before verified success.
+                    with ExitStack() as pins:
+                        unique={}
+                        for role in('current','old_object','new_object'):
+                            root,locator=targets[role]
+                            if targets[role]in unique:
+                                previous=unique[targets[role]]
+                                durability_bindings[role]=dict(durability_bindings[previous])
+                                after[role]=after[previous];after_native[role]=after_native[previous]
+                                flushed.append(role);continue
+                            scope=pins.enter_context(NativeScopedTarget(io,accepted[root],locator,namespace_flush=True))
+                            observed,native=observe(scope)
+                            _require(observed==before[role] and native==before_native[role],
+                                'publish.version_changed_during_reflush')
+                            identity=NativeIdentity.parse(native['native_identity'])
+                            handle=call(io.open_writable,scope.parent,scope.name,
+                                expected_parent=scope.parent_identity,expected=identity,_adopt_into=pins)
+                            call(io.flush_file,handle,identity)
+                            call(io.flush_namespace,scope.parent,scope.parent_identity)
+                            length=effect['archive_length']if role=='old_object'else len(content)
+                            after[role],after_native[role]=_native_state(io,scope,handle,identity,length)
+                            _require(after[role]==before[role],'publish.version_changed_during_reflush')
+                            durability_bindings[role]=durability_binding(identity,scope.parent_identity)
+                            flushed.append(role);unique[targets[role]]=role
                     status='applied_verified'
                 elif not _same(before['current'],effect['archive_digest'],effect['archive_length']):
                     status='failed_no_effect';error={'code':'publish.current_mismatch','message':'publish.current_mismatch'}
@@ -131,6 +163,7 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                             if role=='new_object' and targets[role]==targets['old_object']:
                                 objects[role]=objects['old_object']
                                 after[role]=after['old_object'];after_native[role]=after_native['old_object']
+                                durability_bindings[role]=dict(durability_bindings['old_object']);flushed.append(role)
                                 continue
                             scope=call(NativeScopedTarget,io,accepted['objects_root'],
                                 targets[role][1],namespace_flush=True,
@@ -141,7 +174,10 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                             if observed['exists']:
                                 _require(_same(observed,digest,len(data)),'publish.object_conflict')
                                 identity=NativeIdentity.parse(native['native_identity'])
-                                handle=pins.enter_context(scope.open_file(expected=identity))
+                                handle=call(io.open_writable,scope.parent,scope.name,expected_parent=scope.parent_identity,
+                                    expected=identity,_adopt_into=pins)
+                                call(io.flush_file,handle,identity)
+                                call(io.flush_namespace,scope.parent,scope.parent_identity);flushed.append(role)
                             else:
                                 handle,identity=write_staged(scope,data,role,pins)
                                 call(io.rename_noreplace,handle,scope.parent,scope.name,
@@ -150,6 +186,7 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                                 flushed.append(role)
                             after[role],after_native[role]=_native_state(io,scope,handle,identity,len(data))
                             _require(_same(after[role],digest,len(data)),'publish.object_verification_failed')
+                            durability_bindings[role]=durability_binding(identity,scope.parent_identity)
                             objects[role]=(scope,handle,identity)
                         staged,staged_id=write_staged(current_scope,content,'current',pins)
                         latest,_=_native_state(io,current_scope,current,current_id,effect['archive_length'])
@@ -165,6 +202,7 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
                         call(io.flush_namespace,current_scope.parent,current_scope.parent_identity)
                         flushed.append('current')
                         after['current'],after_native['current']=_native_state(io,current_scope,staged,staged_id,len(content))
+                        durability_bindings['current']=durability_binding(staged_id,current_scope.parent_identity)
                         for role,(scope,handle,identity) in objects.items():
                             length=effect['archive_length'] if role=='old_object' else len(content)
                             after[role],after_native[role]=_native_state(io,scope,handle,identity,length)
@@ -204,7 +242,8 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
     if not closed:
         status='indeterminate';error={'code':'ntfs.worker_finalization_unknown','message':'ntfs.worker_finalization_unknown'}
         after={name:_unknown() for name in targets};after_native={name:None for name in targets}
-    evidence={'native_version2_effect_version':'1.0','run_id':run_id,'effect_id':effect['effect_id'],
+    evidence={'native_version2_effect_version':'1.0','native_version_durability_version':'1.1',
+        'durability_bindings':durability_bindings,'run_id':run_id,'effect_id':effect['effect_id'],
         'grants':grants,'targets':{name:{'root_binding':binding,'relative_locator':locator}
             for name,(binding,locator) in targets.items()},'before':before_native,'after':after_native,
         'temporary_locators':temporary_locators,'namespace_flushed':flushed,'replace_completed':replace_completed,
@@ -213,7 +252,12 @@ def execute_version2(grants, effect, content, *, run_id, timestamp):
         'remaining_handle_count':len(io._handles),'primary_error':primary,'finalization_errors':finalization_errors,
         'worker_exit_established':False}
     if not all(row['known'] for row in before.values()):raise NativeFileCreateOutcomeUnavailable(evidence)
+    refs = []
+    if status == 'applied_verified':
+        refs = ['native.current.after', 'native.old_object.after', 'native.new_object.after']
+    elif status == 'failed_no_effect':
+        refs = list(_NO_EFFECT_REFS)
     return _receipt(effect,run_id=run_id,timestamp=timestamp,status=status,before=before['current'],after=after['current'],
         old_before=before['old_object'],old_after=after['old_object'],new_before=before['new_object'],new_after=after['new_object'],
-        bytes_written=written,refs=['native.current.after','native.old_object.after','native.new_object.after'] if status=='applied_verified' else [],
+        bytes_written=written,refs=refs,
         error_code=None if error is None else error['code'],error_message=None if error is None else error['message']),evidence

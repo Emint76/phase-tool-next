@@ -143,9 +143,21 @@ def native_inventory(binding, run):
                             'recovery.original_inventory_unsafe')
                     digest,length=digest_bytes(raw),len(raw)
                     if relative.startswith('recovery/') and re.fullmatch(r'[0-9a-f]{64}\.json',row.name):
+                        original=_record(run/'intent.json')
+                        if type(value) is dict and 'native_publication_observation_version' in value:
+                            from .publication_observe import validate_publication_observation_shape
+                            validate_publication_observation_shape(value, original)
+                            _require(row.name == digest[7:] + '.json', 'recovery.observation_mismatch')
+                            files[relative] = (digest, length)
+                            continue
+                        if value.get('native_version_resolution_version')in{'1.0','1.1','1.2','1.3'}:
+                            from .version_continuation import validate_version_resolution_shape
+                            validate_version_resolution_shape(value,original)
+                            _require(row.name==digest[7:]+'.json','recovery.observation_mismatch')
+                            files[relative]=(digest,length)
+                            continue
                         from ...recovery import NativeRecoveryResult
                         checked=NativeRecoveryResult.model_validate(value)
-                        original=_record(run/'intent.json')
                         _require(row.name==digest[7:]+'.json' and checked.run_id==original['run_id']
                             and checked.request_id==original['idempotency']['key']
                             and checked.intent_digest==profile_digest('intent',original)
@@ -246,24 +258,31 @@ def verify_original(binding, run_id, request_id, expected_intent_digest):
         from .proof import verify_native_terminal_proof
         verify_native_terminal_proof(binding,run,receipt)
     files=native_inventory(binding,run)
-    required={'effect-plan.json','pre-validator-results.json','prepared-stage.json',
-        'native-parent-failure.json','experimental-admission.json'}
-    from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
-    from .owner_directory_fixture import is_fixture
-    admission=binding.experimental_admission
-    if type(admission) is _ExperimentalBundle2AdmissionV3 and is_fixture(admission.raw):
-        # Same Original was parsed by binding.read above. Repeat its actual
-        # scope/capture/intent attachment verification before widening names.
-        admission.verify_attachment(binding,run_id)
-        required.add('experimental-attempt.json')
-    actual={name.split('/',1)[1]for name in files if name.startswith('attachments/')}
-    # Optional original Core terminal records remain immutable and validated;
-    # no arbitrary claimed/actual attachment may be used as a recovery exemption.
-    _require(required<=actual and actual<=required|{'effect-receipts.json','validator-results.json',
-        'native-terminal-proof.json'},'recovery.original_attachment_mismatch')
+    _verify_original_attachments(binding, run_id, files)
     binding.check_evidence_root()
     return {'intent':intent,'plan':plan,'contract':contract,'projection':projection,'prepared':prepared,
         'parent':parent,'original_receipt':receipt,'files':files,'run':run}
+
+
+def _verify_original_attachments(binding, run_id, files):
+    required = {'effect-plan.json', 'pre-validator-results.json', 'prepared-stage.json', 'native-parent-failure.json'}
+    if getattr(binding, '_owner_directory_context', None) is not None:
+        from .owner_directory import require_owner_directory_binding
+        require_owner_directory_binding(binding, 'Bundle2')
+    else:
+        required.add('experimental-admission.json')
+        from .experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+        from .owner_directory_fixture import is_fixture
+        admission = binding.experimental_admission
+        if type(admission) is _ExperimentalBundle2AdmissionV3 and is_fixture(admission.raw):
+            # Repeat the actual fixture scope/capture/intent check before
+            # recognizing its attempt record as an allowed attachment.
+            admission.verify_attachment(binding, run_id)
+            required.add('experimental-attempt.json')
+    actual = {name.split('/', 1)[1] for name in files if name.startswith('attachments/')}
+    # Optional terminal records remain immutable and validated by the caller.
+    _require(required <= actual <= required | {'effect-receipts.json', 'validator-results.json',
+        'native-terminal-proof.json'}, 'recovery.original_attachment_mismatch')
 
 
 def select_original(binding,run_id,request_id,intent_digest):

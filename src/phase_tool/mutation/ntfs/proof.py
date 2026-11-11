@@ -146,6 +146,9 @@ def _verify_original_semantics(binding, manifest, receipt, proof):
     if digest is None:return
     run = Path(manifest['evidence_root'])/'.phase'/'runs'/receipt['run_id']
     intent,_ = _canonical(run/'intent.json')
+    from .version_lineage import verify_version_lineage
+    verify_version_lineage(binding, run, intent,
+        require_resolution=receipt['terminal_status'] == 'succeeded_verified')
     # ONE existing full semantic parser, with a non-dispatching planned wrapper.
     if intent['execution_requested'] is True:
         binding.read(run_id=receipt['run_id'],intent_digest=digest)

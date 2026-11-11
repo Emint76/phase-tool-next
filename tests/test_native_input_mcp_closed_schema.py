@@ -131,6 +131,59 @@ class NativeInputMCPClosedSchemaTests(unittest.TestCase):
                 self.assertEqual(call.call_args_list[0].args[1]['source_length'],len(payload))
                 self.assertEqual(call.call_args_list[1].args[1],{'operation':'inspect'})
 
+    def test_real_sdk_delivers_closed_file_refusals_and_retains_session(self):
+        registry=PhaseApplication().registry
+        for role,maximum in (('File1',1024**2),('File2',2*1024**3)):
+            tool=self.server(role)._tool_manager._tools['phase_publish_input']
+            arguments,_,_=vector(role)
+            staged=input_stage._ClosedInputFileRefusal(role,maximum+1,maximum)
+            with self.subTest(role=role),patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),\
+                    patch.object(input_stage,'run_windows_input_stage',return_value=staged)as stage,\
+                    patch.object(inspection_mcp,'_native_registry_for_manifest',return_value=registry),\
+                    patch.object(inspection_mcp._InspectionMCPCallOwner,'_call_locked')as dispatch:
+                result=asyncio.run(tool.run(arguments))
+                for key in ('run_id','input_scope','source_locator','target_locator','request_id'):
+                    self.assertEqual(result[key],arguments[key])
+                self.assertEqual(result['role'],role)
+                self.assertEqual(result['source_length'],maximum+1)
+                self.assertEqual(result['maximum_source_length'],maximum)
+                self.assertEqual(result['exit_code'],10)
+                self.assertIs(result['source_handles_closed'],True)
+                self.assertIs(result['preparation_started'],False)
+                self.assertIs(result['retry_authorized'],False)
+                self.assertNotIn('command_ack',result)
+                refusal=result['refusal']
+                validate_command_result(refusal,registry)
+                self.assertEqual(refusal['error'],'input_stage.member_bound')
+                self.assertIsNone(refusal['run_id'])
+                self.assertIsNone(refusal['receipt_digest'])
+                self.assertIs(refusal['mutation_attempted'],False)
+                dispatch.assert_not_called();stage.assert_called_once()
+                self.assertFalse(tool.fn.__self__.unknown)
+                self.assertEqual(tool.fn.__self__.held,[])
+
+    def test_bare_member_bound_and_pending_execute_errors_keep_session_unknown(self):
+        arguments,payload,_=vector('File2')
+        staged={'header_digest':HEADER,'source_locator':'phase-native-input-'+HEADER[7:39]+'/payload/payload',
+            'expected_digest':digest_bytes(payload),'expected_length':len(payload)}
+        for stage_result in (PhaseError('input_stage.member_bound'),(staged,'File2',{},None)):
+            startup=dict(config_bytes=b'',expected_config_digest=None,manifest_bytes=b'',expected_manifest_digest=None)
+            session=inspection_mcp._InputScopeSession(**startup)
+            if isinstance(stage_result,Exception):
+                stage=patch.object(input_stage,'run_windows_input_stage',side_effect=stage_result)
+            else:
+                stage=patch.object(input_stage,'run_windows_input_stage',return_value=stage_result)
+            with stage,patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),\
+                    patch.object(inspection_mcp._InspectionMCPCallOwner,'_call_locked',
+                        side_effect=PhaseError('input_stage.member_bound'))as dispatch:
+                with self.assertRaisesRegex(PhaseError,'input_stage.member_bound'):
+                    session.publish_input(**arguments)
+                self.assertEqual(dispatch.call_count,0 if isinstance(stage_result,Exception)else 1)
+                self.assertTrue(session.unknown)
+                self.assertEqual(len(session.held),1)
+                with self.assertRaisesRegex(PhaseError,'ntfs.inspection_mcp_unavailable'):
+                    session.inspect(arguments['run_id'])
+
     def test_other_existing_finite_servers_keep_closed_arguments(self):
         startup={'config_bytes':b'','expected_config_digest':None,'manifest_bytes':b'','expected_manifest_digest':None}
         for entry in(inspection_mcp.run_native_inspection_mcp,inspection_mcp.run_native_prepared_mcp,bundle_recovery_mcp.run_native_recovery_mcp):

@@ -97,6 +97,17 @@ class _MutationTrace:
                 'scope':'NativeMutationIO mutation/flush event records, not every OS syscall'}
 
 
+def _validate_no_effect_receipt(receipt, trace, *, references, reason):
+    """Require a genuine, complete empty NativeMutationIO trace for no effect."""
+    _require(reason is not None and receipt['attempted'] is True
+        and type(receipt['bytes_written']) is int and receipt['bytes_written'] == 0
+        and receipt['verification_refs'] == list(references)
+        and receipt['error'] == {'code':reason,'message':reason}
+        and type(trace) is dict
+        and canonical_bytes(trace) == canonical_bytes(_MutationTrace().snapshot()),
+        'ntfs.worker_no_effect_binding_mismatch')
+
+
 def _observe(scope: NativeScopedTarget, *, expected: NativeIdentity | None = None,
              _maximum_bytes: int = _CONTENT_LIMIT) -> tuple[dict[str, Any], dict[str, Any]]:
     # Four code-owned contract bounds; the default file-create role retains

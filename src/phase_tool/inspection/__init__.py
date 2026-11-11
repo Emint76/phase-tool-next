@@ -649,6 +649,11 @@ def inspect_run(
                 attachment_digests.add(progress_digest)
         if native_proof is not None:
             attachment_digests.add(native_proof["attachment_digest"])
+            lineage=native_proof['immutable_files'].get('attachments/native-version-lineage.json')
+            if lineage is not None:
+                # Existing proof verifier checked exact prior-run provenance;
+                # never union a hash merely because receipt claims it.
+                attachment_digests.add(lineage[0])
             from ..mutation.ntfs.bundle_execution import _BUNDLE2_CONTRACTS
             if intent["contract"] in _BUNDLE2_CONTRACTS:
                 controls = native_proof["immutable_files"]

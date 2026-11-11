@@ -159,6 +159,34 @@ def verify_saved_recovery(binding,original):
     return proof,verified
 
 
+def _persist_recovery_observation(binding, history_bindings, result, *, run_id, request_id, intent_digest):
+    """Append result telemetry under the same common guard with fresh selection."""
+    from ...core import _guard_native_original_intents
+    from ...evidence import _open_native_recovery_store, _close_native_recovery_store, _write_native_recovery_canonical
+
+    # Commit evidence may have appeared since the first selection. Do not
+    # reuse its old census, and let the guard recheck this new one under lock.
+    selection = select_original(binding, run_id, request_id, intent_digest)
+    with _guard_native_original_intents(binding, history_bindings=history_bindings, _recovery_selection=selection):
+        store = _open_native_recovery_store(binding, run_id)
+        primary = None
+        try:
+            raw = result.model_dump(exclude={'observation_digest', 'observation_path'})
+            leaf = digest_bytes(canonical_bytes(raw))[7:] + '.json'
+            path, digest = _write_native_recovery_canonical(store, leaf, raw)
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                _close_native_recovery_store(store)
+            except BaseException as error:
+                if primary is None:
+                    raise
+                primary.add_note('Bundle recovery observation Evidence finalization: ' + str(error))
+    return path, digest
+
+
 def recover_native(application, authority, *, evidence_root, run_id, target_root, request_id, expected_intent_digest, mode='observe'):
     from ...application import ApplicationResponse
     from ...recovery import NativeRecoveryResult
@@ -283,12 +311,9 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
                 result.exit_code = 40
                 result.error = getattr(error, 'code', None) or 'recovery.store_finalization_unknown'
                 result.native_error_details.append(_diagnostic(error))
-            observation_store = None
             try:
-                observation_store = _open_native_recovery_store(binding, run_id)
-                raw = result.model_dump(exclude={'observation_digest', 'observation_path'})
-                leaf = digest_bytes(canonical_bytes(raw))[7:] + '.json'
-                path, digest = _write_native_recovery_canonical(observation_store, leaf, raw)
+                path, digest = _persist_recovery_observation(binding, installed.history_bindings, result,
+                    run_id=run_id, request_id=request_id, intent_digest=expected_intent_digest)
                 result.observation_path = str(path)
                 result.observation_digest = digest
             except BaseException as error:
@@ -296,17 +321,6 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
                 result.status = 'indeterminate'
                 result.inspection_required = True
                 result.exit_code = 40
-                result.error = getattr(error, 'code', None) or 'recovery.observation_unknown'
+                result.error = result.error or getattr(error, 'code', None) or 'recovery.observation_unknown'
                 result.native_error_details.append(_diagnostic(error))
-            finally:
-                if observation_store is not None:
-                    try:
-                        _close_native_recovery_store(observation_store)
-                    except BaseException as error:
-                        result.success = False
-                        result.status = 'indeterminate'
-                        result.inspection_required = True
-                        result.exit_code = 40
-                        result.error = getattr(error, 'code', None) or 'recovery.telemetry_finalization_unknown'
-                        result.native_error_details.append(_diagnostic(error))
     return ApplicationResponse(result.model_dump(), result.exit_code)

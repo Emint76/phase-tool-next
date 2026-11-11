@@ -36,7 +36,9 @@ def _run_native_file_create(core, request, *, execute, faults):
     try:
         from .common_flock_test import _take_common_flock_test
         test=_take_common_flock_test(installed.read_binding,request.run_id)
-        return _run_admitted(core, request, execute=execute, context=context, secondary=secondary, _common_flock_test=test)
+        from .version_continuation import _take_version_continuation
+        version_selection=_take_version_continuation(installed.read_binding,request.run_id)
+        return _run_admitted(core, request, execute=execute, context=context, secondary=secondary, _common_flock_test=test, _version_selection=version_selection)
     except BaseException as primary:
         # Covers lock/worker/validation AND proof/receipt publication failures,
         # including a visible receipt whose final durability acknowledgement failed.
@@ -44,7 +46,7 @@ def _run_native_file_create(core, request, *, execute, faults):
             authority=authority, primary=primary, secondary=secondary) from primary
 
 
-def _run_admitted(core, request, *, execute, context, secondary, _common_flock_test=None):
+def _run_admitted(core, request, *, execute, context, secondary, _common_flock_test=None, _version_selection=None):
     from ...core import PhaseOutcome, _NativeRunContext, _guard_native_original_intents
     from ...evidence import validate_receipt, _write_native_canonical
     from ...installation import _NativeFileCreateInstallation
@@ -58,9 +60,13 @@ def _run_admitted(core, request, *, execute, context, secondary, _common_flock_t
     authority = installed.authority
     primary = None
     outcome = None
+    physical = None
     try:
-        with _guard_native_original_intents(installed.read_binding,history_bindings=installed.history_bindings, _common_flock_test=_common_flock_test):
+        with _guard_native_original_intents(installed.read_binding,history_bindings=installed.history_bindings, _recovery_selection=_version_selection, _common_flock_test=_common_flock_test):
             try:
+                if _version_selection is not None:
+                    from .version_continuation import observe_version_continuation
+                    observe_version_continuation(_version_selection,authority)
                 outcome = core._run_lifecycle(request, execute=execute, native_ctx=context)
                 # Core may prepare an indeterminate terminal from interruption.
                 # Keep its original cause ahead of the later inevitable seal
@@ -79,6 +85,26 @@ def _run_admitted(core, request, *, execute, context, secondary, _common_flock_t
                         secondary.append(error)
             if primary is not None:
                 raise primary
+            if _version_selection is not None and outcome is not None and outcome.exit_code == 0:
+                prepared = context.prepared
+                physical = authority.prepared_physical_proof()
+                _require(prepared is not None
+                    and prepared.receipt['terminal_status'] == 'succeeded_verified'
+                    and prepared.receipt['execution_disposition'] == 'executed'
+                    and prepared.receipt['evidence']['finalization_status'] == 'finalized'
+                    and context.idempotency_finalized is True
+                    and physical['local_channel_sealed'] is True
+                    and physical['server_ingress_sealed'] is True
+                    and physical['parent_safety_established'] is True
+                    and physical['no_dispatch_safety_established'] is False
+                    and physical['parent_response']['completion']['physical_evidence'].get(
+                        'native_version_durability_version') == '1.1',
+                    'recovery.version_continuation_unfinalized')
+                # The recovery store is opened, written and closed while this
+                # same guard is held. The terminal proof below is what proves
+                # the later unlock/close, never the staged record itself.
+                from .version_continuation import stage_version_resolution
+                stage_version_resolution(_version_selection, new_intent_digest=context.original_intent_digest)
         # Only after the context manager's real __exit__ completed successfully.
         context.common_guard_finalized = True
         if _common_flock_test is not None:
@@ -97,8 +123,7 @@ def _run_admitted(core, request, *, execute, context, secondary, _common_flock_t
                 primary = error
             else:
                 secondary.append(error)
-    physical = None
-    if authority._seal_attempted:
+    if authority._seal_attempted and physical is None:
         try:
             physical = authority.prepared_physical_proof()
         except BaseException as error:

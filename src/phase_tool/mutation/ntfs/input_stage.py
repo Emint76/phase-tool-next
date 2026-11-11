@@ -197,6 +197,23 @@ def _stage_request(scope_id,source_locator,members=None):
             'source_locator':source_locator,'members':members}
 
 
+class _InputFileTooLarge(PhaseError):
+    """Validated metadata exceeds the installed file bound."""
+
+    def __init__(self,role,length,maximum):
+        super().__init__('input_stage.member_bound')
+        self.role=role
+        self.length=length
+        self.maximum=maximum
+
+
+@dataclass(frozen=True)
+class _ClosedInputFileRefusal:
+    role: str
+    length: int
+    maximum: int
+
+
 def _header(launch,scope,role,scope_digest,request,records):
     _require(request==_stage_request(request['input_scope'],request['source_locator'],request['members'])
         and request['input_scope']==scope['scope_id'],'input_stage.fixed_request_required')
@@ -209,9 +226,11 @@ def _header(launch,scope,role,scope_digest,request,records):
     _require(len({canonical_bytes(row['native_identity'])for row in records})==len(records),
         'input_stage.source_physical_alias')
     total=0
+    file_create=role in {'File1','File2'}
     for row in records:
         _require(type(row)is dict and set(row)=={'path','length','native_identity','state'}
-            and type(row['length'])is int and 0<=row['length']<=maximum_file,'input_stage.member_bound')
+            and type(row['length'])is int and row['length']>=0
+            and (file_create or row['length']<=maximum_file),'input_stage.member_bound')
         if role=='File1':_require(row['length']>0,'input_stage.empty_legacy_input')
         identity=NativeIdentity.parse(row['native_identity'])
         _require(identity.volume_serial==NativeIdentity.parse(scope['root_identity']).volume_serial,
@@ -223,6 +242,8 @@ def _header(launch,scope,role,scope_digest,request,records):
             and type(state['links'])is int and state['links']==1 and type(state['attributes'])is int
             and not state['attributes']&0x410 and all(type(state[name])is int for name in('creation_time','write_time','change_time')),
             'input_stage.source_state_binding')
+        if row['length']>maximum_file:
+            raise _InputFileTooLarge(role,row['length'],maximum_file)
         total+=row['length']
     _require(total<=maximum_total,'input_stage.total_bound')
     raw=canonical_bytes({'protocol':_PROTOCOL,'version':_VERSION,'kind':'header','run_id':launch.run_id,
@@ -416,7 +437,7 @@ def _validate_prepared_input(response,*,launch,scope_digest,header,footer):
 
 
 def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,deadline_ns,*,request_id,target_locator,expected_current_digest):
-    """One retained preparation subprocess, then data result only; no Core call.
+    """Return prepared data or a closed source-size refusal; no Core call.
 
     Only the existing finite MCP/CLI owner calls this while holding its gate.
     It retains actual launch/process on every uncertain cleanup path.
@@ -434,6 +455,7 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
     _publication_candidate(role,request_id,target_locator,members,expected_current_digest,
         ''if role=='Version2'else None)  # Pure caller literals BEFORE source IO.
     source=None;sender=None;process=None;pipe=None;witness=None;primary=None;result=None;fact=None;closed=False
+    refusal=None
     try:
         api=object.__new__(NativeIO)
         owner._held_input_io=api  # Retain before the first native constructor call.
@@ -441,28 +463,33 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
         source=api.input_snapshot(scope,source_locator,members,deadline_ns)
         owner._held_input_source=source
         _require(type(source)is _NativeInputSnapshot,'input_stage.closed_source_required')
-        sender=_InputStageSender(probe,scope,role,scope_digest,request,source,deadline_ns)
-        invocation['request']={'operation':'stage_input','native_input_stage_request_version':'1.0','header':_control(sender.header)}
-        launch=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=False)
-        owner._held_launch=launch
-        _left(deadline_ns);process=launch.spawn_input_stage()
-        witness=WindowsProcessWitness(process);pipe=launch._pipe(process)
-        pipe.send_frame(launch._invocation_bytes,deadline_ns)
-        with closing(sender.frames())as frames:
-            for raw in frames:
-                _left(deadline_ns);pipe.send_frame(raw,deadline_ns)
-        closed=True
-        raw,_=pipe.receive_frame(deadline_ns,maximum_bytes=_CONTROL)
-        result=_validate_prepared_input(_control(raw),launch=launch,scope_digest=scope_digest,header=sender.header,footer=sender.footer)
-        pipe._expect_eof(deadline_ns)
-        stderr=bytearray()
-        while True:
-            _left(deadline_ns)
-            try:raw=os.read(process.stderr.fileno(),min(65536,65537-len(stderr)))
-            except BlockingIOError:continue
-            if not raw:break
-            stderr.extend(raw);_require(len(stderr)<=65536,'input_stage.stderr_bound')
-        _require(not stderr,'input_stage.preparation_stderr')
+        try:
+            sender=_InputStageSender(probe,scope,role,scope_digest,request,source,deadline_ns)
+        except _InputFileTooLarge as error:
+            source.verify_complete()
+            refusal=(error.role,error.length,error.maximum)
+        else:
+            invocation['request']={'operation':'stage_input','native_input_stage_request_version':'1.0','header':_control(sender.header)}
+            launch=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=False)
+            owner._held_launch=launch
+            _left(deadline_ns);process=launch.spawn_input_stage()
+            witness=WindowsProcessWitness(process);pipe=launch._pipe(process)
+            pipe.send_frame(launch._invocation_bytes,deadline_ns)
+            with closing(sender.frames())as frames:
+                for raw in frames:
+                    _left(deadline_ns);pipe.send_frame(raw,deadline_ns)
+            closed=True
+            raw,_=pipe.receive_frame(deadline_ns,maximum_bytes=_CONTROL)
+            result=_validate_prepared_input(_control(raw),launch=launch,scope_digest=scope_digest,header=sender.header,footer=sender.footer)
+            pipe._expect_eof(deadline_ns)
+            stderr=bytearray()
+            while True:
+                _left(deadline_ns)
+                try:raw=os.read(process.stderr.fileno(),min(65536,65537-len(stderr)))
+                except BlockingIOError:continue
+                if not raw:break
+                stderr.extend(raw);_require(len(stderr)<=65536,'input_stage.stderr_bound')
+            _require(not stderr,'input_stage.preparation_stderr')
     except BaseException as error:
         primary=error;owner._unavailable=True
     finally:
@@ -484,6 +511,11 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
                 else:primary=BaseExceptionGroup('input staging and preparation finalization failed',[primary,error])
     if primary is not None:raise primary
     _left(deadline_ns)
+    if refusal is not None:
+        _require(source.close_attempted and not api._handles and owner._held_launch is None,
+            'input_stage.source_finalization_unknown')
+        owner._held_input_source=None;owner._held_input_io=None
+        return _ClosedInputFileRefusal(*refusal)
     _require(result is not None and fact['exit_code']==0 and closed,'input_stage.preparation_delivery_unknown')
     _require(not api._handles,'input_stage.source_finalization_unknown')
     owner._held_launch=None

@@ -19,6 +19,9 @@ from .scoped import NativeScopedTarget
 from .uncertainty import _diagnostic
 
 
+_NO_EFFECT_REFS = ('native.target.before', 'native.target.after')
+
+
 def _bundle_mutation_call(io,trace,errors,method,*args,_pins=None,**kwargs):
     created=None;adopted=False
     try:
@@ -196,8 +199,13 @@ def execute_bundle_create(grant, effect, source, *, run_id, timestamp):
         failure=NativeFileCreateOutcomeUnavailable(physical)
         failure.primary_error=primary;failure.finalization_errors=tuple(errors)
         raise failure from primary
+    refs = []
+    if status == 'applied_verified':
+        refs = ['bundle.members.byte_verified']
+    elif status == 'failed_no_effect':
+        refs = list(_NO_EFFECT_REFS)
     receipt=_receipt(effect,run_id=run_id,timestamp=timestamp,status=status,attempted=True,
         before=before,after=after,bytes_written=None if status=='indeterminate' else written,
-        verification_refs=['bundle.members.byte_verified']if status=='applied_verified'else[],
+        verification_refs=refs,
         error_code=error,error_message=error)
     return receipt,physical

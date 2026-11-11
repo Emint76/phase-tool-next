@@ -432,6 +432,21 @@ def validate_bundle_parent_finalization(reply,checked,*,grant_data,effect,projec
             and receipt['bytes_written']==physical['acknowledged_bytes_written_lower_bound']==expected_bytes
             and receipt['after']=={'known':True,'exists':True,'digest':projection.content_digest,
                 'length':projection.content_length,'head_token':None},'ntfs.worker_receipt_binding_mismatch')
+    elif receipt['status']=='failed_no_effect':
+        from .bundle_effect import _NO_EFFECT_REFS
+        from .file_create import _validate_no_effect_receipt
+        worker_before=validate_bundle_observation({'bundle_observation_version':'1.0',
+            'state':receipt['before'],'native':physical['before'],'grant':grant_data,
+            'locator':physical['locator'],'handles_finalized':True},
+            grant_data,effect['target']['relative_locator'])
+        _require(worker_before['state']['exists'] is True and worker_before==observed
+            and physical['stage_locator'] is None and physical['stage_identity'] is None
+            and physical['rename'] is None and physical['namespace_flushed']==[]
+            and physical['primary_error'] is None
+            and type(physical['acknowledged_bytes_written_lower_bound']) is int
+            and physical['acknowledged_bytes_written_lower_bound']==0,
+            'ntfs.worker_no_effect_binding_mismatch')
+        _validate_no_effect_receipt(receipt,trace,references=_NO_EFFECT_REFS,reason='target.destination_exists')
     if parse_json_bytes(projection.context_bytes)['worker_version']=='1.5':
         from .bundle_prepared import validate_prepared_message,validate_prepared_ack,prepared_locator
         checkpoint=physical.get('prepared_checkpoint')

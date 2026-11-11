@@ -1,6 +1,6 @@
 """Stdlib-only caller for one accepted fixed native Phase installation.
 
-Usage: accepted-python -I -S -B -u cli.py execute|inspect|publish-bundle REQUEST_JSON|- NEW_CAPTURE_DIR
+Usage: accepted-python -I -S -B -u cli.py execute|inspect|publish-bundle|publish-input|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR
 Install beside the accepted launcher.py and native-phase.json. Requests use the
 existing {run_id,request} envelope and prepared execute or unary known-run inspect.
 Operational delivery captures are separate from Core receipts and evidence.
@@ -111,17 +111,74 @@ def exchange(process,frame):
         'eof':eof,'complete':primary is None and not any(discarded)and all(eof),
         'initial_complete':offset==len(frame),'bytes_sent':offset,'stdin_close_failed':close_failed}
 
+def reconciliation_role(action,value,outer):
+    """Pure routing; accepted parent/factory still verifies every exact binding."""
+    if action not in {'recover-publication','continue-version'}:
+        return 'publish-input'if action=='publish-input'else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action=='inspect'else'parent'
+    request=value['request'];manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
+    role=manifest['contract']['id']
+    need(type(request['request_id'])is str and 0<len(request['request_id'])<=128
+        and type(request['expected_intent_digest'])is str
+        and re.fullmatch('sha256:[0-9a-f]{64}',request['expected_intent_digest'])is not None,'fixed recovery identity')
+    if action=='recover-publication':
+        need(request['native_bundle_recovery_request_version']=='1.0'
+            and request['mode']in {'observe','commit_prepared'},'fixed recovery request')
+        if role in {'file_create.v1','file_create.v2','bundle_create.v1'}:
+            need(request['mode']=='observe','observe-only contract');return 'inspect-parent'
+        need(role=='bundle_create.v2'and manifest['native_read_installation_version']=='1.9','closed Bundle2 recovery generation')
+        return 'parent'
+    need(role in {'publish_new_version.v1','publish_new_version.v2'}
+        and request['native_version_continuation_request_version']=='1.0'
+        and type(request['original_run_id'])is str and request['original_run_id']not in {'.','..',value['run_id']}
+        and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',request['original_run_id'])is not None
+        and type(request['candidate_path'])is str and bool(request['candidate_path'])
+        and type(request['input_paths'])is dict
+        and all(type(k)is str and type(v)is str for k,v in request['input_paths'].items())
+        and type(request['maximum_candidate_bytes'])is int and 0<request['maximum_candidate_bytes']<=1024**2,
+        'fixed version continuation request')
+    expected=request['expected_inputs']
+    need(expected is None or type(expected)is dict and all(type(k)is str and type(v)is list and len(v)==2
+        and type(v[0])is str and re.fullmatch('sha256:[0-9a-f]{64}',v[0])is not None
+        and type(v[1])is int and v[1]>=0 for k,v in expected.items()),'fixed expected inputs')
+    return 'parent'
+
+
+def input_publication_refusal(candidate,request,outer):
+    fields={'native_input_publication_refusal_version','run_id','input_scope','role',
+        'source_locator','source_length','maximum_source_length','request_id','target_locator',
+        'source_handles_closed','preparation_started','refusal','exit_code','retry_authorized'}
+    need(set(candidate)==fields and candidate['native_input_publication_refusal_version']=='1.0',
+        'closed native input refusal required')
+    manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
+    expected={'file_create.v1':('File1',1024**2),'file_create.v2':('File2',2*1024**3)}
+    role,bound=expected.get(manifest['contract']['id'],(None,None))
+    need(role is not None and candidate['role']==role
+        and type(candidate['maximum_source_length'])is int and candidate['maximum_source_length']==bound
+        and type(candidate['source_length'])is int and bound<candidate['source_length']<2**63
+        and request['members']is None and request['expected_current_digest']is None
+        and candidate['source_locator']==request['source_locator']
+        and candidate['source_handles_closed']is True and candidate['preparation_started']is False
+        and candidate['retry_authorized']is False and candidate['exit_code']==10,'native input refusal binding')
+    code='input_stage.member_bound'
+    expected_refusal={'stage3_command_result_version':'1.0','command':'execute','success':False,
+        'run_id':None,'terminal_status':'rejected','execution_disposition':'not_executed',
+        'mutation_attempted':False,'effect_plan_digest':None,'intent_digest':None,'receipt_digest':None,
+        'target_verified':None,'blockers':[code],'error':code,'exit_code':10}
+    need(canon(candidate['refusal'])==canon(expected_refusal),'native input refusal payload')
+
+
 def main():
-    need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect','publish-bundle','publish-input'},'usage: cli.py execute|inspect|publish-bundle REQUEST_JSON|- NEW_CAPTURE_DIR')
+    need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect','publish-bundle','publish-input','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
     action,source,destination=sys.argv[1:];launcher,outer=bindings()
     raw=stdin_request()if source=='-'else ordinary(Path(source),MAX_REQUEST)
     value=strict(raw);need(type(value)is dict and set(value)=={'run_id','request'}
         and type(value['run_id'])is str and type(value['request'])is dict,'existing request envelope required')
-    request=value['request'];need(request.get('operation')==('publish_input'if action=='publish-input'else'publish_bundle'if action=='publish-bundle'else action),
+    request=value['request'];need(request.get('operation')==('continue_version'if action=='continue-version'else'recover_publication'if action=='recover-publication'else'publish_input'if action=='publish-input'else'publish_bundle'if action=='publish-bundle'else action),
         'command/action mismatch')
-    expected=({'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}if action=='publish-input'else{'operation','source_locator','target_locator','request_id','members'}if action=='publish-bundle'else
+    expected=({'operation','native_version_continuation_request_version','original_run_id','request_id','expected_intent_digest','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'}if action=='continue-version'else{'operation','native_bundle_recovery_request_version','request_id','expected_intent_digest','mode'}if action=='recover-publication'else{'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}if action=='publish-input'else{'operation','source_locator','target_locator','request_id','members'}if action=='publish-bundle'else
         {'operation'}if action=='inspect'else{'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'})
     need(set(request)==expected,'closed fixed CLI request required')
+    child_role=reconciliation_role(action,value,outer)
     body=canon(value);need(0<len(body)<=MAX_REQUEST,'bounded canonical request')
     requested_capture=Path(destination).absolute()
     need(requested_capture.name not in ('','.','..'),'ordinary new capture leaf required')
@@ -140,7 +197,7 @@ def main():
         'scope':'operational outer delivery only; not receipt/evidence, worker proof or caller ACK'}
     try:
         process=subprocess.Popen([sys.executable,'-I','-S','-B','-u',str(launcher),
-            'publish-input'if action=='publish-input'else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action=='inspect'else'parent'],cwd=str(HERE),
+            child_role],cwd=str(HERE),
             env={'SYSTEMROOT':os.environ['SYSTEMROOT'],'WINDIR':os.environ['WINDIR'],'PYTHONDONTWRITEBYTECODE':'1'},
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
             creationflags=subprocess.CREATE_NO_WINDOW)
@@ -169,10 +226,15 @@ def main():
                 and native['run_id']==value['run_id']and native['installation_digest']==outer['manifest_digest'],
                 'native input publication envelope correlation')
             candidate=native['result']
-            need(type(candidate)is dict and candidate.get('native_input_publication_result_version')=='1.0'
+            need(type(candidate)is dict
                 and candidate.get('run_id')==value['run_id']and candidate.get('request_id')==request['request_id']
                 and candidate.get('input_scope')==request['input_scope']
                 and candidate.get('target_locator')==request['target_locator'],'native input caller correlation')
+            if 'native_input_publication_refusal_version'in candidate:
+                input_publication_refusal(candidate,request,outer)
+            else:
+                need(candidate.get('native_input_publication_result_version')=='1.0',
+                    'native input result version')
         elif action=='publish-bundle':
             need(set(native)=={'protocol','version','run_id','installation_digest','result','exit_code'}
                 and native['protocol']=='phase.native.publication'and native['version']=='1.0'
@@ -182,12 +244,23 @@ def main():
             need(type(candidate)is dict and candidate.get('publish_bundle_result_version')=='1.1'
                 and candidate.get('run_id')==value['run_id']and candidate.get('request_id')==request['request_id']
                 and candidate.get('target_locator')==request['target_locator'],'native publication caller correlation')
+        elif action=='recover-publication':
+            need(set(native)=={'protocol','version','channel_id','run_id','result','exit_code'}
+                and native['protocol']=='phase.native.command'and native['version']==('1.4'if child_role=='inspect-parent'else'1.2')
+                and native['run_id']==value['run_id']and type(native['channel_id'])is str
+                and re.fullmatch('[0-9a-f]{32}',native['channel_id'])is not None,'native recovery envelope correlation')
+            candidate=native['result']
+            need(type(candidate)is dict and candidate.get('recovery_result_version')=='1.2'
+                and candidate.get('run_id')==value['run_id']and candidate.get('request_id')==request['request_id']
+                and candidate.get('intent_digest')in(None,request['expected_intent_digest'])
+                and(candidate.get('recovery_mutation_attempted')in(False,None)if child_role=='inspect-parent'else True),
+                'native recovery caller correlation')
         else:
             need(set(native)=={'protocol','version','channel_id','run_id','result','exit_code'}
                 and native['protocol']=='phase.native.command'and native['version']=='1.0'
                 and native['run_id']==value['run_id']and type(native['channel_id'])is str
                 and re.fullmatch('[0-9a-f]{32}',native['channel_id'])is not None,'native envelope correlation')
-            candidate=native['result'];need(type(candidate)is dict and candidate.get('command')==action
+            candidate=native['result'];need(type(candidate)is dict and candidate.get('command')==('execute'if action=='continue-version'else action)
                 and candidate.get('run_id')in (None,value['run_id']),'native command correlation')
         need(type(native['exit_code'])is int and type(candidate.get('exit_code'))is int
             and 0<=native['exit_code']<=255 and native['exit_code']==candidate['exit_code']==report['process_exit'],
@@ -196,6 +269,8 @@ def main():
         # This outer transport preserves nullable/negative/uncertain fields.
         result=candidate;report['child_delivery']=('COMPLETE_NATIVE_PUBLICATION_FRAME'if action=='publish-bundle'
             else'COMPLETE_NATIVE_COMMAND_FRAME')
+        if action=='publish-input'and 'native_input_publication_refusal_version'in candidate:
+            report['child_delivery']='COMPLETE_NATIVE_INPUT_REFUSAL_FRAME'
     except BaseException as error:report['error']={'type':type(error).__name__,'message':str(error)}
     report.update(stdout_bytes=len(out),stderr_bytes=len(err),stdout_sha256=sha(out),stderr_sha256=sha(err))
     try:

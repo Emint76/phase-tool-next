@@ -126,6 +126,9 @@ def _deliver_linux_frame(value,identities,*,_deadline=None):
 
 
 def run_native_core(launch):
+    if launch.invocation['request'].get('operation')=='continue_version':
+        from .recovery_frontdoor import run_version_continuation_core
+        return run_version_continuation_core(launch)
     from .bootstrap import _is_bundle_recovery_launch
     if (_is_bundle_recovery_launch(launch)
             and launch.invocation['request'].get('operation')=='recover_publication'):
@@ -371,6 +374,9 @@ def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root
 
 def run_native_inspection(launch):
     """One fresh read-only invocation; all target/Original verification is shared."""
+    if launch.invocation['request'].get('operation')=='recover_publication':
+        from .recovery_frontdoor import run_publication_observe_core
+        return run_publication_observe_core(launch)
     from ...application import PhaseApplication
     from ...command_result import validate_command_result
     from ...installation import _native_registry_for_launch,_native_installation_for_manifest

@@ -55,6 +55,10 @@ class PhaseApplication:
         from .recovery import recover_publication
         return recover_publication(self, **kwargs)
 
+    def continue_native_version(self, **kwargs) -> ApplicationResponse:
+        from .mutation.ntfs.recovery_frontdoor import continue_application
+        return continue_application(self, **kwargs)
+
     def contracts_list(self) -> ApplicationResponse:
         contracts = []
         for exact_binding, binding in sorted(self.registry.contract_bindings().items()):
@@ -116,9 +120,16 @@ class PhaseApplication:
         contract_digest: str | None = None,
         expected_inputs: Mapping[str, tuple[str, int]] | None = None,
         _expected_candidate_bytes: bytes | None = None,
+        _native_version_continuation=None,
     ) -> ApplicationResponse:
         try:
             from .installation import _NativeFileCreateInstallation
+            if _native_version_continuation is not None:
+                from .mutation.ntfs.recovery_frontdoor import _VersionContinuationArguments
+                if (type(_native_version_continuation) is not _VersionContinuationArguments
+                        or type(self.installation) is not _NativeFileCreateInstallation
+                        or operation != 'execute' or candidate is not None or timestamp is not None):
+                    raise PhaseError('recovery.version_scope_required')
             if type(self.installation) is _NativeFileCreateInstallation and candidate is not None:
                 # Fixed native startup accepts only already prepared ext4 paths.
                 # No application TemporaryDirectory cleanup may follow publication.
@@ -173,10 +184,14 @@ class PhaseApplication:
                 expected_inputs=expected_inputs,
                 _expected_candidate_bytes=_expected_candidate_bytes,
             )
-            outcome = PhaseCore(self.registry, self.installation).run(
-                request,
-                execute=operation == "execute",
-            )
+            core = PhaseCore(self.registry, self.installation)
+            if _native_version_continuation is None:
+                outcome = core.run(request, execute=operation == "execute")
+            else:
+                from .mutation.ntfs.version_continuation import continue_version
+                call = _native_version_continuation
+                outcome = continue_version(core, request, original_run_id=call.original_run_id,
+                    request_id=call.request_id, expected_intent_digest=call.expected_intent_digest)
             try:
                 blockers = outcome.receipt["blockers"]
                 payload = self._command_payload(

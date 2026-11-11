@@ -120,13 +120,31 @@ class Version1EffectAlgorithmTests(unittest.TestCase):
             self.assertFalse(any(name==f.archive and kind in {'write','create'} for kind,name in f.record.order))
             self.assertEqual(bytes(f.files[f.archive]),f.old)
 
-    def test_already_complete_is_zero_event_existing_contract_continuation(self):
+    def test_already_complete_has_zero_content_writes_and_checked_reflushes(self):
         for old,new in ((b'old',b'new'),(b'equal',b'equal'),(b'',b'')):
             with self.subTest(old=old,new=new),algorithm_fixture(old=old,new=new,complete=True) as f:
                 receipt,evidence=f.run();self.assertEqual(receipt['status'],'applied_verified')
-                self.assertEqual(receipt['bytes_written'],0);self.assertEqual(f.record.order,[])
+                self.assertEqual(receipt['bytes_written'],0)
+                self.assertFalse(any(kind in {'create','write','truncate'}for kind,name in f.record.order))
+                self.assertEqual(sum(kind=='flush_file'for kind,name in f.record.order),2)
+                self.assertEqual(sum(kind=='flush_namespace'for kind,name in f.record.order),2)
                 self.assertEqual(receipt['before'],state(old))
-                self.assertEqual(evidence['mutation_trace']['acknowledged_recorded_event_count'],0)
+                self.assertEqual(evidence['native_version_durability_version'],'1.1')
+                self.assertEqual(evidence['mutation_trace']['acknowledged_recorded_event_count'],6)
+                self.assertEqual(bytes(f.files[f.current]),new);self.assertEqual(bytes(f.files[f.archive]),old)
+                self.assertTrue(all(evidence[name]is True for name in('archive_data_flushed','current_data_flushed',
+                    'archive_namespace_flushed','current_namespace_flushed')))
+
+    def test_failed_reflush_is_not_promoted_from_equal_bytes_to_success(self):
+        for options in ({'complete':True},{'archive':True}):
+            with self.subTest(options=options),algorithm_fixture(fail_archive_flush=True,**options)as f:
+                before={name:bytes(value)for name,value in f.files.items()}
+                receipt,evidence=f.run();self.assertEqual(receipt['status'],'indeterminate')
+                self.assertIsNone(receipt['bytes_written'])
+                self.assertFalse(any(kind in{'create','write','truncate'}for kind,name in f.record.order))
+                self.assertEqual({name:bytes(value)for name,value in f.files.items()},before)
+                self.assertEqual(evidence['primary_error']['code'],'synthetic.archive_flush')
+                self.assertEqual(f.record.mutations_after_error,0);self.assertFalse(f.record.io._handles)
 
     def test_archive_flush_failure_never_truncates_current_or_claims_zero_written(self):
         with algorithm_fixture(fail_archive_flush=True) as f:

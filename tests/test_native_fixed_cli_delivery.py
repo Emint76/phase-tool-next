@@ -2,6 +2,7 @@
 
 Windows uses the real Popen process HANDLE; POSIX models only its Close field.
 """
+import base64
 import contextlib
 import hashlib
 import importlib.machinery
@@ -31,6 +32,32 @@ result={'command':'execute','run_id':request['run_id'],'exit_code':code,
 reply={'protocol':'phase.native.command','version':'1.0','channel_id':'a'*32,
  'run_id':'different-run'if mode=='wrong-run'else request['run_id'],'result':result,'exit_code':code}
 b=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
+if request['request']['operation']=='publish_input':
+    action=request['request']
+    if mode=='pending':
+        raise SystemExit(50)
+    role=action['input_scope'].split('.')[-1]
+    bound={'File1':1024**2,'File2':2*1024**3}[role]
+    code=10
+    error='input_stage.member_bound'
+    refusal={'stage3_command_result_version':'1.0','command':'execute','success':False,
+        'run_id':None,'terminal_status':'rejected','execution_disposition':'not_executed',
+        'mutation_attempted':False,'effect_plan_digest':None,'intent_digest':None,'receipt_digest':None,
+        'target_verified':None,'blockers':[error],'error':error,'exit_code':code}
+    result={'native_input_publication_refusal_version':'1.0','run_id':request['run_id'],
+        'input_scope':action['input_scope'],'role':role,'source_locator':action['source_locator'],
+        'source_length':bound+1,'maximum_source_length':bound,'request_id':action['request_id'],
+        'target_locator':action['target_locator'],'source_handles_closed':True,'preparation_started':False,
+        'refusal':refusal,'exit_code':code,'retry_authorized':False}
+    if mode=='wrong-role':result['role']='File9'
+    if mode=='wrong-run':result['run_id']='another-run'
+    if mode=='wrong-source':result['source_locator']='different.bin'
+    if mode=='pending-handle':result['source_handles_closed']=False
+    if mode=='fake-receipt':refusal['receipt_digest']='sha256:'+'1'*64
+    reply={'protocol':'phase.native.input.publication','version':'1.0','run_id':request['run_id'],
+        'installation_digest':'sha256:'+'b'*64,'result':result,'exit_code':code}
+    b=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
+    if mode=='wrong-exit':code=50
 frame=f'{len(b):08x}\n'.encode()+b+b'\n'
 sys.stdout.buffer.write(frame[:-3]if mode=='truncated'else frame);sys.stdout.buffer.flush()
 sys.stderr.buffer.write(b'modeled-child-diagnostic\n');sys.stderr.buffer.flush()
@@ -72,9 +99,19 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertTrue(self.root.name.startswith('phase-cli-delivery-model-'))
         self.temp.cleanup()
 
-    def call_model(self,mode):
+    def call_model(self,mode,*,input_role=None):
         (self.binding/'mode.json').write_text(json.dumps(mode))
-        capture=self.output/'fresh'
+        capture=self.output/('fresh'if input_role is None else input_role+'-'+mode)
+        outer={'manifest_digest':'sha256:'+'b'*64}
+        action='execute'
+        if input_role is not None:
+            action='publish-input'
+            contract={'File1':'file_create.v1','File2':'file_create.v2'}[input_role]
+            outer['manifest_base64']=base64.b64encode(json.dumps({'contract':{'id':contract}}).encode()).decode()
+            self.request.write_text(json.dumps({'run_id':'model-cli-run','request':{
+                'operation':'publish_input','input_scope':'inputs.'+input_role,'source_locator':'input.bin',
+                'target_locator':'target.bin','request_id':'request-a','members':None,
+                'expected_current_digest':None}}),encoding='utf-8')
         real_popen=subprocess.Popen
         def popen(argv,**kwargs):
             # Dependency injection models the OUTER pipe only. Native bindings are never loaded.
@@ -90,7 +127,7 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         stderr=io.TextIOWrapper(io.BytesIO(),encoding='utf-8')
         proxy=types.SimpleNamespace(Popen=popen,PIPE=subprocess.PIPE,
             CREATE_NO_WINDOW=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        with patch.object(self.cli,'HERE',self.binding),patch.object(self.cli,'bindings',return_value=(self.launcher,{'manifest_digest':'sha256:'+'b'*64})),patch.object(self.cli,'subprocess',proxy),patch.object(sys,'argv',['cli.py','execute',str(self.request),str(capture)]),patch.dict(os.environ,{'SYSTEMROOT':os.environ.get('SYSTEMROOT','/'),'WINDIR':os.environ.get('WINDIR','/')}),contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
+        with patch.object(self.cli,'HERE',self.binding),patch.object(self.cli,'bindings',return_value=(self.launcher,outer)),patch.object(self.cli,'subprocess',proxy),patch.object(sys,'argv',['cli.py',action,str(self.request),str(capture)]),patch.dict(os.environ,{'SYSTEMROOT':os.environ.get('SYSTEMROOT','/'),'WINDIR':os.environ.get('WINDIR','/')}),contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
             status=self.cli.main()
         stdout.flush();stderr.flush();out=stdout.buffer.getvalue();err=stderr.buffer.getvalue()
         stdout.close();stderr.close()
@@ -144,5 +181,31 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):self.call_model('positive')
         self.assertEqual(len(self.children),count)
         self.assertEqual({p.name:p.read_bytes()for p in capture.iterdir()},saved)
+
+    def test_input_size_refusal_frames_are_delivered_with_closed_outer_handle(self):
+        for role in ('File1','File2'):
+            with self.subTest(role=role):
+                code,out,_,capture=self.call_model('input-refusal',input_role=role)
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual(code,10)
+                value=json.loads(out);self.assertEqual(value['role'],role)
+                self.assertEqual(value,json.loads((capture/'stdout.bin').read_bytes()[9:-1])['result'])
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'COMPLETE_NATIVE_INPUT_REFUSAL_FRAME')
+                self.assertEqual(report['process_exit'],10)
+                self.assertEqual(report['outer_owner_finalization'],'closed')
+                self.assertIsNone(value['refusal']['receipt_digest'])
+                self.assertFalse(value['retry_authorized'])
+
+    def test_invalid_or_pending_input_refusals_preserve_raw_and_are_unknown(self):
+        for mode in ('pending','wrong-role','wrong-run','wrong-source','pending-handle','fake-receipt','wrong-exit'):
+            with self.subTest(mode=mode):
+                code,out,_,capture=self.call_model(mode,input_role='File2')
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,out),(50,b''))
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'UNKNOWN')
+                self.assertEqual(report['stdout_sha256'],'sha256:'+hashlib.sha256((capture/'stdout.bin').read_bytes()).hexdigest())
+                self.assertFalse(report['retry_authorized'])
 
 if __name__=='__main__':unittest.main()

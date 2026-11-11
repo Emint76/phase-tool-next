@@ -210,6 +210,15 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
+            if request.get('operation')=='continue_version' or (inspection_only and request.get('operation')=='recover_publication'):
+                from .recovery_frontdoor import validate_observe_delivery,validate_continuation_delivery
+                if inspection_only:validate_observe_delivery(response,launch)
+                else:validate_continuation_delivery(response,launch)
+                if (result.get('stage3_command_result_version')=='1.2'
+                        or result.get('inspection_required')is True or result['exit_code']==40):
+                    self._unavailable=True
+                else:self._held_launch=None
+                return result
             if _is_bundle_recovery_launch(launch) and not _include_bundle_manifest:
                 from ...installation import _native_registry_for_launch
                 registry=_native_registry_for_launch(launch)
@@ -287,7 +296,7 @@ class _InspectionMCPCallOwner:
         All data paths are Windows-relative under one installed input scope.
         """
         from .input_stage import (_InputOperationDeadline,_input_operation_scope,_left,
-            _stage_request,run_windows_input_stage,_staged_publication_request)
+            _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal)
         validate_run_id(run_id);_stage_request(input_scope,source_locator,members)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None;result=None
@@ -297,44 +306,56 @@ class _InspectionMCPCallOwner:
                 'input_stage.deadline_owner_required')
             token=_InputOperationDeadline()if _operation_deadline is None else _operation_deadline
             with _input_operation_scope(token):
-                prepared,role,scope,content=run_windows_input_stage(self,run_id,input_scope,source_locator,members,token.deadline_ns,
+                staged=run_windows_input_stage(self,run_id,input_scope,source_locator,members,token.deadline_ns,
                     request_id=request_id,target_locator=target_locator,expected_current_digest=expected_current_digest)
-                request=_staged_publication_request(role=role,prepared=prepared,input_scope=input_scope,
-                    request_id=request_id,target_locator=target_locator,members=members,
-                    expected_current_digest=expected_current_digest,content_utf8=content)
-                _left(token.deadline_ns)
-                ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
-                self._publication_ack=ack
-                result={'native_input_publication_result_version':'1.0','run_id':run_id,'input_scope':input_scope,
-                    'role':role,'source_digest':prepared['expected_digest'],'source_length':prepared['expected_length'],
-                    'request_id':request_id,'target_locator':target_locator,'command_ack':ack,'independent_inspection':None,
-                    'exit_code':ack['exit_code'],'retry_authorized':False}
-                if ack['exit_code']==0 and not self._unavailable:
-                    # The unchanged validated CommandResult1.0 has NO
-                    # inspection_required member. New/uncertain generations
-                    # cannot be treated as a legacy completed execute ACK.
-                    _require(ack.get('stage3_command_result_version')=='1.0'
-                        and 'inspection_required'not in ack and ack.get('success')is True
-                        and ack.get('terminal_status')=='succeeded_verified'
-                        and ack.get('execution_disposition')in {'executed','reused_existing'}
-                        and ack.get('error')is None and ack.get('blockers')==[]
-                        and all(ack.get(field)is not None for field in
-                            ('run_id','receipt_digest','intent_digest','effect_plan_digest')),
-                        'input_stage.execute_uncertain')
-                    self._held_launch=None  # Actual known finalized execute only.
-                    inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True)
-                    for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
-                        _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
-                            'input_stage.inspect_ack_mismatch')
-                    _require(inspected['exit_code']==0
-                        and inspected.get('stage3_command_result_version')=='1.0'
-                        and 'inspection_required'not in inspected and inspected.get('success')is True
-                        and inspected.get('terminal_status')=='succeeded_verified'
-                        and inspected.get('execution_disposition')in {'executed','reused_existing'}
-                        and inspected.get('target_verified')is True
-                        and inspected.get('error')is None and inspected.get('blockers')==[],
-                        'input_stage.inspect_unverified')
-                    result['independent_inspection']=inspected
+                if type(staged) is _ClosedInputFileRefusal:
+                    from ...application import PhaseApplication
+                    registry=_native_registry_for_manifest(self._startup['manifest_bytes'],self._startup['expected_manifest_digest'])
+                    refusal=PhaseApplication(registry=registry)._failure('execute',PhaseError('input_stage.member_bound'))
+                    validate_command_result(refusal.payload,registry)
+                    result={'native_input_publication_refusal_version':'1.0','run_id':run_id,'input_scope':input_scope,
+                        'role':staged.role,'source_locator':source_locator,'source_length':staged.length,
+                        'maximum_source_length':staged.maximum,'request_id':request_id,'target_locator':target_locator,
+                        'source_handles_closed':True,'preparation_started':False,'refusal':refusal.payload,
+                        'exit_code':refusal.exit_code,'retry_authorized':False}
+                else:
+                    prepared,role,scope,content=staged
+                    request=_staged_publication_request(role=role,prepared=prepared,input_scope=input_scope,
+                        request_id=request_id,target_locator=target_locator,members=members,
+                        expected_current_digest=expected_current_digest,content_utf8=content)
+                    _left(token.deadline_ns)
+                    ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
+                    self._publication_ack=ack
+                    result={'native_input_publication_result_version':'1.0','run_id':run_id,'input_scope':input_scope,
+                        'role':role,'source_digest':prepared['expected_digest'],'source_length':prepared['expected_length'],
+                        'request_id':request_id,'target_locator':target_locator,'command_ack':ack,'independent_inspection':None,
+                        'exit_code':ack['exit_code'],'retry_authorized':False}
+                    if ack['exit_code']==0 and not self._unavailable:
+                        # The unchanged validated CommandResult1.0 has NO
+                        # inspection_required member. New/uncertain generations
+                        # cannot be treated as a legacy completed execute ACK.
+                        _require(ack.get('stage3_command_result_version')=='1.0'
+                            and 'inspection_required'not in ack and ack.get('success')is True
+                            and ack.get('terminal_status')=='succeeded_verified'
+                            and ack.get('execution_disposition')in {'executed','reused_existing'}
+                            and ack.get('error')is None and ack.get('blockers')==[]
+                            and all(ack.get(field)is not None for field in
+                                ('run_id','receipt_digest','intent_digest','effect_plan_digest')),
+                            'input_stage.execute_uncertain')
+                        self._held_launch=None  # Actual known finalized execute only.
+                        inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True)
+                        for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
+                            _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
+                                'input_stage.inspect_ack_mismatch')
+                        _require(inspected['exit_code']==0
+                            and inspected.get('stage3_command_result_version')=='1.0'
+                            and 'inspection_required'not in inspected and inspected.get('success')is True
+                            and inspected.get('terminal_status')=='succeeded_verified'
+                            and inspected.get('execution_disposition')in {'executed','reused_existing'}
+                            and inspected.get('target_verified')is True
+                            and inspected.get('error')is None and inspected.get('blockers')==[],
+                            'input_stage.inspect_unverified')
+                        result['independent_inspection']=inspected
                 _left(token.deadline_ns)
                 _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
         except BaseException as error:
@@ -347,6 +368,24 @@ class _InspectionMCPCallOwner:
         if primary is not None:raise primary
         return result
 
+
+    def recover_publication(self,run_id,request_id,expected_intent_digest,mode='observe'):
+        from .recovery_frontdoor import publication_request,_manifest_role,_OBSERVE_ROLES
+        role=_manifest_role(parse_json_bytes(self._startup['manifest_bytes']))
+        _require(role in _OBSERVE_ROLES or role=='Bundle2','recovery.unsupported_contract')
+        _require(role=='Bundle2' or mode=='observe','recovery.unsupported_mode')
+        request=publication_request(request_id,expected_intent_digest,mode)
+        return self._call(run_id,request,inspection_only=role in _OBSERVE_ROLES)
+
+    def continue_version(self,run_id,original_run_id,request_id,expected_intent_digest,
+            candidate_path,input_paths,expected_inputs=None,maximum_candidate_bytes=1024**2):
+        from .recovery_frontdoor import continuation_request,_manifest_role,_VERSION_ROLES
+        _require(_manifest_role(parse_json_bytes(self._startup['manifest_bytes']))in _VERSION_ROLES,
+            'recovery.closed_native_version_required')
+        _require(run_id!=original_run_id,'recovery.version_continuation_run_conflict')
+        request=continuation_request(original_run_id,request_id,expected_intent_digest,candidate_path,
+            input_paths,expected_inputs,maximum_candidate_bytes)
+        return self._call(run_id,request,inspection_only=False)
 
     def inspect(self,run_id:StrictStr)->dict:
         """Inspect a known run using only fixed read-only installation bindings."""

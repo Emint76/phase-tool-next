@@ -412,6 +412,11 @@ class PhaseCore:
         _native_authority: object | None = None,
         _native_history_bindings: tuple | None = None,
     ) -> tuple[dict[str, Any], str] | None:
+        continuation_original = None
+        if _native_authority is not None:
+            from .mutation.ntfs.version_continuation import _check_version_continuation_request
+            continuation_original = _check_version_continuation_request(
+                store, contract, key, scope_digest, request_digest, _native_authority)
         if key is None:
             return None
         runs_root = store.evidence_root / ".phase" / "runs"
@@ -459,6 +464,23 @@ class PhaseCore:
                     # Immutable closure is not a fresh observation of a prior
                     # current file. No active-cap substitution for historical RO.
                     raise PhaseError('idempotency.prior_inspection_required',path.parent.name)
+                if path.parent.name == continuation_original:
+                    # The explicit continuation already checked this exact
+                    # Original, live classification and same request under
+                    # the common guard. Other Originals retain normal checks.
+                    continue
+                if (_native_authority is not None
+                        and intent['contract']['id'] in {'publish_new_version.v1', 'publish_new_version.v2'}
+                        and (path.parent / 'recovery').exists()):
+                    from .mutation.ntfs.version_original_closure import verify_closed_version_original
+                    from .mutation.ntfs.version_continuation import verify_saved_version_resolution
+                    binding = selected if _native_history_bindings is not None else _native_authority.read_binding
+                    original = verify_closed_version_original(binding, path.parent.name, key,
+                        profile_digest('intent', intent))
+                    verify_saved_version_resolution(binding, original)
+                    # Normal iteration must still inspect the successor and
+                    # its current target before returning an idempotent result.
+                    continue
                 receipt_path = path.parent / "receipt.json"
                 if not evidence_file_exists(receipt_path):
                     if intent.get("execution_requested") is False:
@@ -1292,6 +1314,10 @@ class PhaseCore:
             intent_path, _ = store.write_canonical("intent.json", intent)
             intent_digest = profile_digest("intent", intent)
             if execute and native_authority is not None:
+                from .mutation.ntfs.version_lineage import attach_version_continuation_lineage
+                lineage_digest=attach_version_continuation_lineage(store,intent)
+                if lineage_digest is not None:attachment_digests.append(lineage_digest)
+            if execute and native_authority is not None:
                 from .mutation.ntfs.experimental_bundle2_authority import _ExperimentalBundle2Authority
                 from .mutation.ntfs.experimental_bundle2_authority_v2 import _ExperimentalBundle2AuthorityV2
                 from .mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
@@ -1565,10 +1591,19 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
     static=tuple((row,parse_json_bytes(row.manifest_bytes,maximum_bytes=2*1024**2)) for row in bindings)
     if _recovery_selection is not None:
         from .mutation.ntfs.bundle_recovery_original import _NativeRecoverySelection
-        _require(type(_recovery_selection) is _NativeRecoverySelection
-            and _recovery_selection.binding is read_binding
-            and manifest['native_read_installation_version']=='1.9',
-            'recovery.selected_original_mismatch')
+        if type(_recovery_selection) is _NativeRecoverySelection:
+            _require(_recovery_selection.binding is read_binding
+                and manifest['native_read_installation_version']=='1.9',
+                'recovery.selected_original_mismatch')
+        else:
+            from .mutation.ntfs.version_original_closure import _NativeVersionContinuationSelection,version_original_role
+            from .mutation.ntfs.publication_observe import _NativePublicationObserveSelection,publication_observe_role
+            _require(_recovery_selection.binding is read_binding,'recovery.selected_original_mismatch')
+            if type(_recovery_selection)is _NativePublicationObserveSelection:
+                publication_observe_role(read_binding)
+            else:
+                _require(type(_recovery_selection)is _NativeVersionContinuationSelection,'recovery.selected_original_mismatch')
+                version_original_role(read_binding)
 
 
     per_run=any(row.experimental_admission is not None or row._owner_directory_context is not None
@@ -1769,7 +1804,15 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
                 if _recovery_selection is not None and entry.name==_recovery_selection.run_id:
                     # Exact fully verified original, re-read UNDER this common
                     # lock. Every other run keeps the original refusal barrier.
-                    _recovery_selection.check(run)
+                    selected_original=_recovery_selection.check(run)
+                    from .mutation.ntfs.version_original_closure import _NativeVersionContinuationSelection
+                    from .mutation.ntfs.publication_observe import _NativePublicationObserveSelection
+                    if type(_recovery_selection)in(_NativeVersionContinuationSelection,_NativePublicationObserveSelection):
+                        from .evidence import _confirm_native_immutable_files_durable
+                        check_anchors()
+                        _confirm_native_immutable_files_durable(root,(identity['device'],identity['inode']),
+                            run.name,selected_original['files'],_version_selection=_recovery_selection)
+                        check_anchors()
                     continue
                 if (run/'recovery').exists():
                     from .mutation.ntfs.bundle_recovery_original import verify_original
@@ -1777,10 +1820,40 @@ def _guard_native_original_intents(read_binding, *, history_bindings=None, _reco
                     recovered_intent,_=control(run/'intent.json')
                     native=recovered_intent.get('native_binding',{})
                     selected=historical_binding(recovered_intent.get('contract'),recovered_intent.get('core'),
-                        native.get('installation'),run_id=entry.name)
-                    verified=verify_original(selected,entry.name,recovered_intent['idempotency']['key'],
-                        profile_digest('intent',recovered_intent))
-                    verify_saved_recovery(selected,verified)
+                        native.get('installation'),run_id=entry.name,
+                        registry_snapshot_digest=recovered_intent.get('registry_snapshot_digest'))
+                    if recovered_intent['contract']['id']in{'publish_new_version.v1','publish_new_version.v2'}:
+                        from .mutation.ntfs.version_original_closure import verify_closed_version_original,closed_version_original_selection
+                        from .mutation.ntfs.version_continuation import verify_saved_version_resolution
+                        verified=verify_closed_version_original(selected,entry.name,recovered_intent['idempotency']['key'],
+                            profile_digest('intent',recovered_intent))
+                        verify_saved_version_resolution(selected,verified)
+                        # Durability is not a readonly observation shortcut. A
+                        # private token here scopes only exact full dependencies.
+                        token=closed_version_original_selection(selected,entry.name,recovered_intent['idempotency']['key'],
+                            profile_digest('intent',recovered_intent))
+                        from .evidence import _confirm_native_immutable_files_durable
+                        check_anchors()
+                        _confirm_native_immutable_files_durable(root,(identity['device'],identity['inode']),
+                            run.name,verified['files'],_version_selection=token)
+                        check_anchors()
+                    elif recovered_intent['contract']['id'] in {'file_create.v1', 'file_create.v2', 'bundle_create.v1'}:
+                        from .mutation.ntfs.publication_observe import (
+                            publication_observation_selection, verify_closed_publication_original,
+                            verify_saved_publication_observations)
+                        verified = verify_closed_publication_original(selected, entry.name,
+                            recovered_intent['idempotency']['key'], profile_digest('intent', recovered_intent))
+                        verify_saved_publication_observations(selected, verified)
+                        token = publication_observation_selection(selected, verified)
+                        from .evidence import _confirm_native_immutable_files_durable
+                        check_anchors()
+                        _confirm_native_immutable_files_durable(root, (identity['device'], identity['inode']),
+                            run.name, verified['files'], _version_selection=token)
+                        check_anchors()
+                    else:
+                        verified=verify_original(selected,entry.name,recovered_intent['idempotency']['key'],
+                            profile_digest('intent',recovered_intent))
+                        verify_saved_recovery(selected,verified)
                     continue
                 names,attachments=inventory(run)
                 abandoned=re.fullmatch(r'\.abandoned-(.+)-([0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15})',entry.name)

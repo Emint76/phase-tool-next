@@ -210,8 +210,10 @@ def validate_version1_parent_finalization(reply, checked, *, grant_data, effect)
         if before_current['state'] == expected_current and before_archive['state'] == expected_archive:
             # This is the only zero-mutation contract continuation. Physical
             # BEFORE is kept separate from receipt's logical archived-before.
-            _require(count == 0 and type(receipt['bytes_written']) is int
-                and receipt['bytes_written'] == 0,'ntfs.worker_physical_binding_mismatch')
+            _require(type(receipt['bytes_written'])is int and receipt['bytes_written']==0,
+                'ntfs.worker_physical_binding_mismatch')
+            if physical.get('native_version_durability_version')is None:
+                _require(count==0,'ntfs.worker_physical_binding_mismatch')
         else:
             expected_written = effect['content_length'] + (0 if before_archive['native']['exists'] else effect['archive_length'])
             _require(type(receipt['bytes_written']) is int and receipt['bytes_written'] == expected_written,
@@ -223,6 +225,30 @@ def validate_version1_parent_finalization(reply, checked, *, grant_data, effect)
                 _require(physical['archive_data_flushed'] is True
                     and physical['archive_namespace_flushed'] is True,
                     'ntfs.worker_physical_binding_mismatch')
+        if physical.get('native_version_durability_version')is not None:
+            from .version_durability import verify_version_durability
+            verify_version_durability(physical,'Version1',observed)
+    elif receipt['status'] == 'failed_no_effect':
+        from ..archive_then_publish import _same
+        from .file_create import _validate_no_effect_receipt
+        from .version1_effect import _NO_EFFECT_REFS
+        for name,field in (('current','before'),('archive','archive_before')):
+            sample = _version1_physical_sample(physical[field],grant_data,observed[name]['locator'])
+            _require(sample['state'] == receipt[field] == observed[name]['state']
+                and sample['native'] == observed[name]['native'],'ntfs.worker_observer_mismatch')
+        _require(physical['primary_error'] is None and physical.get('durability_bindings',{}) == {}
+            and all(physical[field] is False for field in ('archive_data_flushed',
+                'archive_namespace_flushed','current_data_flushed','current_namespace_flushed')),
+            'ntfs.worker_no_effect_binding_mismatch')
+        current,archive = receipt['before'],receipt['archive_before']
+        archive_exact = _same(archive,effect['archive_digest'],effect['archive_length'])
+        reason = None
+        if not (_same(current,effect['content_digest'],effect['content_length']) and archive_exact):
+            if not _same(current,effect['archive_digest'],effect['archive_length']):
+                reason = 'publish.current_mismatch'
+            elif archive['exists'] and not archive_exact:
+                reason = 'publish.archive_conflict'
+        _validate_no_effect_receipt(receipt,physical['mutation_trace'],references=_NO_EFFECT_REFS,reason=reason)
     return observed
 
 
@@ -301,10 +327,12 @@ def validate_version2_parent_finalization(reply,checked,*,grant_data,effect):
         before=samples['before'];after=samples['after']
         complete=all(before[name]['state']==expected[name] for name in targets)
         if complete:
-            _require(physical['replace_completed'] is False and physical['namespace_flushed']==[]
-                and physical['temporary_locators']=={} and trace['acknowledged_recorded_event_count']==0
-                and before==after and type(receipt['bytes_written']) is int and receipt['bytes_written']==0,
+            _require(physical['replace_completed']is False and physical['temporary_locators']=={}
+                and before==after and type(receipt['bytes_written'])is int and receipt['bytes_written']==0,
                 'ntfs.worker_physical_binding_mismatch')
+            if physical.get('native_version_durability_version')is None:
+                _require(physical['namespace_flushed']==[]and trace['acknowledged_recorded_event_count']==0,
+                    'ntfs.worker_physical_binding_mismatch')
         else:
             _require(before['current']['state']==expected['old_object']
                 and physical['replace_completed'] is True
@@ -322,6 +350,27 @@ def validate_version2_parent_finalization(reply,checked,*,grant_data,effect):
                     _require(name in physical['namespace_flushed'],'ntfs.worker_physical_binding_mismatch')
             _require(type(receipt['bytes_written']) is int and receipt['bytes_written']==written,
                 'ntfs.worker_receipt_binding_mismatch')
+        if physical.get('native_version_durability_version')is not None:
+            from .version_durability import verify_version_durability
+            verify_version_durability(physical,'Version2',observed)
+    elif receipt['status']=='failed_no_effect':
+        from ..object_store_publish import _same
+        from .file_create import _validate_no_effect_receipt
+        from .version2_effect import _NO_EFFECT_REFS
+        _require(samples['before']==samples['after'] and physical['primary_error'] is None
+            and physical['replace_completed'] is False and physical['temporary_locators']=={}
+            and physical['namespace_flushed']==[] and physical.get('durability_bindings',{})=={},
+            'ntfs.worker_no_effect_binding_mismatch')
+        current=receipt['before'];old_object=receipt['archive_before'];new_object=receipt['content_object_before']
+        old_exact=_same(old_object,effect['archive_digest'],effect['archive_length'])
+        new_exact=_same(new_object,effect['content_digest'],effect['content_length'])
+        reason=None
+        if not (_same(current,effect['content_digest'],effect['content_length']) and old_exact and new_exact):
+            if not _same(current,effect['archive_digest'],effect['archive_length']):
+                reason='publish.current_mismatch'
+            elif (old_object['exists'] and not old_exact) or (new_object['exists'] and not new_exact):
+                reason='publish.object_conflict'
+        _validate_no_effect_receipt(receipt,physical['mutation_trace'],references=_NO_EFFECT_REFS,reason=reason)
     return observed
 
 

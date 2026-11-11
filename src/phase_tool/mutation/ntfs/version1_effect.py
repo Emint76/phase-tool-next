@@ -26,6 +26,10 @@ from .version1_observation import observe_version1_file
 
 
 _LIMIT = 16*1024**2
+VERSION_CONTINUATION_DURABILITY_CAPABILITY = '1.1'
+
+
+_NO_EFFECT_REFS = ('native.current.before', 'native.current.after', 'native.archive.before', 'native.archive.after')
 
 
 def _version1_effect_binding(grant: NativeRootGrant, effect: dict, content: bytes) -> tuple[str,str]:
@@ -66,6 +70,8 @@ def _native_state(io, scope, handle, identity, length):
 
 def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
                      *, run_id: str, timestamp: str) -> tuple[dict,dict]:
+    from .version_durability import durability_binding
+    durability_bindings={}
     current_locator,archive_target = _version1_effect_binding(grant,effect,content)
     validate_run_id(run_id)
     _require(type(timestamp) is str and bool(timestamp),'ntfs.invalid_effect_timestamp')
@@ -99,9 +105,38 @@ def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
                     current_after = _same(before,effect['content_digest'],effect['content_length'])
                     archive_exact = _same(archive_before,effect['archive_digest'],effect['archive_length'])
                     if current_after and archive_exact:
-                        # Existing contract continuation. Receipt before is its
-                        # logical archived-before state, physical samples stay
-                        # separately truthful in the single Core attachment.
+                        # Same contract continuation, zero CONTENT writes.
+                        # Exact bytes do not establish data/namespace durability.
+                        current_id=NativeIdentity.parse(before_native['native_identity'])
+                        archive_id=NativeIdentity.parse(archive_before_native['native_identity'])
+                        try:
+                            current=pins.enter_context(io.open_writable(current_scope.parent,current_scope.name,
+                                expected_parent=current_scope.parent_identity,expected=current_id))
+                        finally:trace.collect(io)
+                        archive_scope=pins.enter_context(NativeScopedTarget(io,grant,archive_target,namespace_flush=True))
+                        scoped_archive,scoped_native=_observe(archive_scope,_maximum_bytes=_LIMIT)
+                        _require(scoped_archive==archive_before and scoped_native==archive_before_native,
+                            'publish.archive_changed_before_publication')
+                        try:
+                            archive=pins.enter_context(io.open_writable(archive_scope.parent,archive_scope.name,
+                                expected_parent=archive_scope.parent_identity,expected=archive_id))
+                        finally:trace.collect(io)
+                        for scope,handle,identity,role in((archive_scope,archive,archive_id,'archive'),
+                                                        (current_scope,current,current_id,'current')):
+                            lock.assert_held();scope.assert_file_name(handle,identity)
+                            try:io.flush_file(handle,identity)
+                            finally:trace.collect(io)
+                            try:io.flush_namespace(scope.parent,scope.parent_identity)
+                            finally:trace.collect(io)
+                            scope.assert_file_name(handle,identity)
+                            durability_bindings[role]=durability_binding(identity,scope.parent_identity)
+                        current_data_flushed=current_namespace_flushed=True
+                        archive_data_flushed=archive_namespace_flushed=True
+                        after,after_native=_native_state(io,current_scope,current,current_id,len(content))
+                        archive_after,archive_after_native=_native_state(io,archive_scope,archive,archive_id,effect['archive_length'])
+                        _require(after==before and archive_after==archive_before,'publish.version_changed_during_reflush')
+                        # Logical before remains archived-before; native samples
+                        # retain the physical already-published current object.
                         before = archive_before
                         status = 'applied_verified'
                     elif not current_before:
@@ -135,7 +170,16 @@ def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
                             _require(_same(scoped_archive,effect['archive_digest'],effect['archive_length']),
                                 'publish.archive_conflict')
                             archive_id = NativeIdentity.parse(scoped_native['native_identity'])
-                            archive = pins.enter_context(archive_scope.open_file(expected=archive_id))
+                            try:
+                                archive=pins.enter_context(io.open_writable(archive_scope.parent,archive_scope.name,
+                                    expected_parent=archive_scope.parent_identity,expected=archive_id))
+                            finally:trace.collect(io)
+                            try:
+                                io.flush_file(archive,archive_id);archive_data_flushed=True
+                            finally:trace.collect(io)
+                            try:
+                                io.flush_namespace(archive_scope.parent,archive_scope.parent_identity);archive_namespace_flushed=True
+                            finally:trace.collect(io)
                         else:
                             try:
                                 archive = pins.enter_context(io.create_exclusive(archive_scope.parent,
@@ -175,6 +219,7 @@ def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
                             archive_id,effect['archive_length'])
                         _require(_same(archive_after,effect['archive_digest'],effect['archive_length']),
                             'publish.archive_verification_failed')
+                        durability_bindings['archive']=durability_binding(archive_id,archive_scope.parent_identity)
                         latest,_ = _native_state(io,current_scope,current,current_id,effect['archive_length'])
                         _require(_same(latest,effect['archive_digest'],effect['archive_length']),
                             'publish.current_changed_during_archive')
@@ -211,6 +256,7 @@ def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
                         archive_after,archive_after_native = _native_state(io,archive_scope,archive,
                             archive_id,effect['archive_length'])
                         lock.assert_held()
+                        durability_bindings['current']=durability_binding(current_id,current_scope.parent_identity)
                         verified = _same(after,effect['content_digest'],effect['content_length']) and _same(
                             archive_after,effect['archive_digest'],effect['archive_length'])
                         status = 'applied_verified' if verified else 'applied_unverified'
@@ -264,7 +310,8 @@ def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
     if not closed:
         status,after,after_native,archive_after,archive_after_native = 'indeterminate',_unknown(),None,_unknown(),None
         error = {'code':'ntfs.worker_finalization_unknown','message':'ntfs.worker_finalization_unknown'}
-    evidence = {'native_version1_effect_version':'1.0','run_id':run_id,'effect_id':effect['effect_id'],
+    evidence = {'native_version1_effect_version':'1.0','native_version_durability_version':'1.1',
+        'durability_bindings':durability_bindings,'run_id':run_id,'effect_id':effect['effect_id'],
         'grant':grant.as_dict(),'locator':current_locator,'archive_locator':archive_target,
         'before':before_native,'after':after_native,'archive_before':archive_before_native,'archive_after':archive_after_native,
         'archive_data_flushed':archive_data_flushed,'archive_namespace_flushed':archive_namespace_flushed,
@@ -275,8 +322,13 @@ def execute_version1(grant: NativeRootGrant, effect: dict, content: bytes,
         'worker_exit_established':False}
     if not before['known'] or not archive_before['known']:
         raise NativeFileCreateOutcomeUnavailable(evidence)
+    refs = []
+    if status == 'applied_verified':
+        refs = ['native.current.after', 'native.archive.after']
+    elif status == 'failed_no_effect':
+        refs = list(_NO_EFFECT_REFS)
     receipt = _receipt(effect,run_id=run_id,timestamp=timestamp,status=status,attempted=True,
         before=before,after=after,archive_before=archive_before,archive_after=archive_after,
-        bytes_written=written,verification_refs=['native.current.after','native.archive.after'] if status == 'applied_verified' else [],
+        bytes_written=written,verification_refs=refs,
         error_code=None if error is None else error['code'],error_message=None if error is None else error['message'])
     return receipt,evidence

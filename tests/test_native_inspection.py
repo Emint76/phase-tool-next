@@ -216,6 +216,8 @@ class NativeInspectionBranchTests(unittest.TestCase):
 
     def test_read_spawn_consumes_single_slot_before_fallible_spawn(self):
         a = object.__new__(_NativeAcceptedLaunch); a._inspection_only = True; a._core_spawn_attempted = False
+        a._invocation_bytes = canonical_bytes({'run_id': 'synthetic-inspect', 'channel_id': '1' * 32,
+            'operation_nonce': '2' * 32, 'request': {'operation': 'inspect'}})
         with (patch.object(a, '_linux_command', return_value=['synthetic-fixed-inspect']) as command,
                 patch.object(a, '_spawn', side_effect=PhaseError('synthetic.spawn.failure')) as spawn):
             with self.assertRaisesRegex(PhaseError, 'synthetic.spawn.failure'): a.spawn_inspection()

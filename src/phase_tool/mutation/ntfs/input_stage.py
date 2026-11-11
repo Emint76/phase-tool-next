@@ -54,11 +54,18 @@ def _input_operation_scope(token):
         _OPERATION.reset(state)
 
 
-def _cap_input_deadline(fallback_ns):
+def _active_input_deadline_ns():
     token=_OPERATION.get()
-    if token is None:return fallback_ns
-    token.check();_left(token.deadline_ns)
-    return min(fallback_ns,token.deadline_ns)
+    if token is None:return None
+    token.check()
+    return token.deadline_ns
+
+
+def _cap_input_deadline(fallback_ns):
+    deadline=_active_input_deadline_ns()
+    if deadline is None:return fallback_ns
+    _left(deadline)
+    return min(fallback_ns,deadline)
 
 
 def _input_observation_timeout_ms(fallback_ms):

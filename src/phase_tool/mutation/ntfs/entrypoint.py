@@ -126,6 +126,7 @@ def _deliver_linux_frame(value,identities,*,_deadline=None):
 
 
 def run_native_core(launch):
+    _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     if launch.invocation['request'].get('operation')=='continue_version':
         from .recovery_frontdoor import run_version_continuation_core
         return run_version_continuation_core(launch)
@@ -139,7 +140,6 @@ def run_native_core(launch):
     from ...installation import (_native_registry_for_launch,
         _native_installation_for_manifest)
     from .uncertainty import _NativeLifecycleUnresolved
-    _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
     identities=_linux_stdio_identity()
     request=launch.invocation['request']

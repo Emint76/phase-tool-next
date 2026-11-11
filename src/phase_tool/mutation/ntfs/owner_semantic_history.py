@@ -7,6 +7,7 @@ provider, policy or callable is taken from evidence or operation JSON.
 """
 import base64
 from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes
+from ...registry import _native_schema_check_pass
 from .owner_directory_fixture import _need,_digest,_kinds,_ROLES,fixture_document,check_manifest
 from .owner_semantic_contracts import semantic_owner_contract
 
@@ -124,6 +125,7 @@ def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
     return tuple(buffers)
 
 
+@_native_schema_check_pass()
 def validate_owner3_history_bindings(active,bindings):
     from ...installation import _NativeFileCreateReadBinding,_native_experimental_read_binding
     _need(type(active)is _NativeFileCreateReadBinding and type(bindings)is tuple

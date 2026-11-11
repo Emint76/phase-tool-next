@@ -167,6 +167,19 @@ def input_publication_refusal(candidate,request,outer):
     need(canon(candidate['refusal'])==canon(expected_refusal),'native input refusal payload')
 
 
+def input_failure_line(raw=b'',*,timeout=False):
+    if 0<len(raw)<=64:
+        try:
+            value=strict(raw)
+            if (type(value)is dict and set(value)=={'phase','error_class'}
+                    and value['phase'] in ('stage','execute','inspect','delivery')
+                    and value['error_class'] in ('timeout','error') and canon(value)+b'\n'==raw):
+                return raw
+        except (ValueError,RuntimeError):
+            pass
+    return canon({'phase':'delivery','error_class':'timeout' if timeout else 'error'})+b'\n'
+
+
 def main():
     need(len(sys.argv)==4 and sys.argv[1]in {'execute','inspect','publish-bundle','publish-input','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
     action,source,destination=sys.argv[1:];launcher,outer=bindings()
@@ -277,12 +290,23 @@ def main():
         exclusive(capture_dir/'stdout.bin',out);exclusive(capture_dir/'stderr.bin',err)
         exclusive(capture_dir/'delivery.json',canon(report))
     except BaseException as error:
+        if action=='publish-input':
+            sys.stderr.buffer.write(input_failure_line(timeout=isinstance(error,TimeoutError)))
+            sys.stderr.buffer.flush();return 50
         sys.stderr.buffer.write(canon({'run_id':value['run_id'],'capture_error':type(error).__name__,
             'stdout_base64':base64.b64encode(out).decode(),'stderr_base64':base64.b64encode(err).decode(),
             'retry_authorized':False,'message':'Delivery diagnostics incomplete; inspect known run.'})+b'\n')
         sys.stderr.buffer.flush();return 50
-    if err:sys.stderr.buffer.write(err);sys.stderr.buffer.flush()
+    if err and action!='publish-input':sys.stderr.buffer.write(err);sys.stderr.buffer.flush()
     if result is None:
+        if action=='publish-input':
+            capture=report['capture'] or {}
+            timeout=any(type(record)is dict and record.get('type') in ('TimeoutError','TimeoutExpired')
+                for record in (report['error'],capture.get('primary')))
+            child_diagnostic=err if (report['process_exit']==50 and report['outer_owner_finalization']=='closed'
+                and capture.get('complete')is True and capture.get('initial_complete')is True) else b''
+            sys.stderr.buffer.write(input_failure_line(child_diagnostic,timeout=timeout))
+            sys.stderr.buffer.flush();return 50
         sys.stderr.buffer.write(canon({'run_id':value['run_id'],'child_delivery':'UNKNOWN','retry_authorized':False,
             'captures':str(capture_dir),'message':'No synthetic command result. Inspect the known run through its fixed reader.'})+b'\n')
         sys.stderr.buffer.flush();return 50
@@ -291,7 +315,10 @@ def main():
 if __name__=='__main__':
     try:status=main()
     except BaseException as error:
-        try:os.write(2,canon({'error':type(error).__name__,'message':str(error),'retry_authorized':False})+b'\n')
+        try:
+            if sys.argv[1:2]==['publish-input']:
+                os.write(2,input_failure_line(timeout=isinstance(error,TimeoutError)))
+            else:os.write(2,canon({'error':type(error).__name__,'message':str(error),'retry_authorized':False})+b'\n')
         except BaseException:pass
         status=50
     raise SystemExit(status)

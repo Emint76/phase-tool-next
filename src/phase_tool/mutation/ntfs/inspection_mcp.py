@@ -300,6 +300,7 @@ class _InspectionMCPCallOwner:
         validate_run_id(run_id);_stage_request(input_scope,source_locator,members)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None;result=None
+        self._input_publication_phase='stage'
         try:
             _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
             _require(_operation_deadline is None or type(_operation_deadline)is _InputOperationDeadline,
@@ -323,6 +324,7 @@ class _InspectionMCPCallOwner:
                     request=_staged_publication_request(role=role,prepared=prepared,input_scope=input_scope,
                         request_id=request_id,target_locator=target_locator,members=members,
                         expected_current_digest=expected_current_digest,content_utf8=content)
+                    self._input_publication_phase='execute'
                     _left(token.deadline_ns)
                     ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
                     self._publication_ack=ack
@@ -343,6 +345,7 @@ class _InspectionMCPCallOwner:
                                 ('run_id','receipt_digest','intent_digest','effect_plan_digest')),
                             'input_stage.execute_uncertain')
                         self._held_launch=None  # Actual known finalized execute only.
+                        self._input_publication_phase='inspect'
                         inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True)
                         for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
                             _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
@@ -356,6 +359,7 @@ class _InspectionMCPCallOwner:
                             and inspected.get('error')is None and inspected.get('blockers')==[],
                             'input_stage.inspect_unverified')
                         result['independent_inspection']=inspected
+                self._input_publication_phase='delivery'
                 _left(token.deadline_ns)
                 _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
         except BaseException as error:

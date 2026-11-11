@@ -462,20 +462,17 @@ class OwnerEvidenceIOModels(unittest.TestCase):
 class RecoveryAttachmentBridgeModels(unittest.TestCase):
     ROOT=OwnerEvidenceIOModels.ROOT
     def block(self,binding,run_id,names,io):
-        import ast
         from unittest.mock import patch
-        source=HERE.parent/'src/phase_tool/mutation/ntfs/bundle_recovery_original.py'
-        fn=next(node for node in ast.parse(source.read_bytes()).body if isinstance(node,ast.FunctionDef) and node.name=='verify_original')
-        start=next(index for index,node in enumerate(fn.body) if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='required' for t in node.targets))
-        end=next(index for index,node in enumerate(fn.body[start:],start) if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)
-            and isinstance(node.value.func,ast.Name) and node.value.func.id=='_require')
-        code=compile(ast.Module(body=fn.body[start:end+1],type_ignores=[]),str(source),'exec')
-        globals={'__package__':'phase_tool.mutation.ntfs','binding':binding,'run_id':run_id,'files':{'attachments/'+name:None for name in names},'_require':m._need}
+        from phase_tool.mutation.ntfs.bundle_recovery_original import _verify_original_attachments
+
         def verified(actual,run):
             with patch.object(type(actual),'check_evidence_root',return_value=self.ROOT):
                 return m.verify_fixture_attachments(actual.experimental_admission,actual,run,_io=io)
-        with patch.object(type(binding.experimental_admission),'verify_attachment',side_effect=verified):exec(code,globals)
-        return globals['required']
+
+        files = {'attachments/' + name: None for name in names}
+        with patch.object(type(binding.experimental_admission),'verify_attachment',side_effect=verified):
+            _verify_original_attachments(binding,run_id,files)
+
     def fixture_b2(self):
         value=fixture();raw=canonical_bytes(value);row=rows(raw)[5];state=capture(raw,role='Bundle2');intent,plan=original(row,state)
         record=m.attempt_record(type(row.experimental_admission),raw,row.manifest_digest,state,intent,plan)
@@ -486,10 +483,12 @@ class RecoveryAttachmentBridgeModels(unittest.TestCase):
     def test_recovery_old_extra_attachment_refused_new_fixture_exact_verified_name_allowed(self):
         old=LEGACY[5];run=old.experimental_admission.document()['run_id']
         required={'effect-plan.json','pre-validator-results.json','prepared-stage.json','native-parent-failure.json','experimental-admission.json'}
-        self.assertEqual(self.block(old,run,required,EvidenceMemoryIO()),required)
+        self.block(old,run,required,EvidenceMemoryIO())
+        with self.assertRaisesRegex(PhaseError,'recovery.original_attachment_mismatch'):
+            self.block(old,run,required-{'experimental-admission.json'},EvidenceMemoryIO())
         with self.assertRaises(PhaseError):self.block(old,run,required|{'experimental-attempt.json'},EvidenceMemoryIO())
         row,run,io=self.fixture_b2()
-        self.assertEqual(self.block(row,run,required|{'experimental-attempt.json'},io),required|{'experimental-attempt.json'})
+        self.block(row,run,required|{'experimental-attempt.json'},io)
     def test_recovery_fixture_missing_or_tampered_attempt_refused_before_name_extension(self):
         required={'effect-plan.json','pre-validator-results.json','prepared-stage.json','native-parent-failure.json','experimental-admission.json','experimental-attempt.json'}
         for change in ('missing','tampered'):

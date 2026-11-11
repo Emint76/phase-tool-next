@@ -541,10 +541,14 @@ def _resolve_native_history_bindings(active, raw, expected_digest):
         if type(active.experimental_admission) in _mixed_history_contexts():
             buffers = mixed_history_buffers(raw, expected_digest,
                 active_bytes=active.manifest_bytes, active_digest=active.manifest_digest)
-            bindings = tuple(_native_experimental_read_binding(manifest_bytes=leaf,
-                expected_manifest_digest=sha, admission=kind(cap))
-                for leaf, sha, cap, kind in buffers)
-            return _validate_native_history_bindings(active, bindings)
+            from contextlib import nullcontext
+            from .registry import _native_schema_check_pass
+            semantic = active.experimental_admission.document()['experimental_admission_version'] == '3.0'
+            with _native_schema_check_pass() if semantic else nullcontext():
+                bindings = tuple(_native_experimental_read_binding(manifest_bytes=leaf,
+                    expected_manifest_digest=sha, admission=kind(cap))
+                    for leaf, sha, cap, kind in buffers)
+                return _validate_native_history_bindings(active, bindings)
         from .mutation.ntfs.bootstrap import _native_experimental_history_buffers
         from .mutation.ntfs.experimental_history import (_ExperimentalHistoryFile1Admission,
             _ExperimentalHistoryVersion1Admission)

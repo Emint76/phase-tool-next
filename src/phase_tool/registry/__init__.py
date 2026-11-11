@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib import resources as package_resources
@@ -9,6 +13,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.validators import validator_for
 from referencing import Registry, Resource
 
 from ..canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
@@ -31,6 +36,80 @@ class ResolvedContract:
     registry_snapshot_digest: str
     entry: Mapping[str, Any]
     contract_hook: dict[str, Any] | None = None
+
+
+class _SchemaCheckPass:
+    """Successful JSON meta-schema checks in one fixed metadata resolution."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.checked = set()
+        self.active = True
+
+    @classmethod
+    def _schema_key(cls, value):
+        # JSON Schema compares exact codepoints and distinguishes JSON types.
+        # Copy container structure only. Leaves are immutable JSON scalars.
+        if type(value) is dict:
+            if not all(type(key) is str for key in value):
+                raise TypeError('non-JSON schema key')
+            return dict, tuple((key, cls._schema_key(child)) for key, child in value.items())
+        if type(value) is list:
+            return list, tuple(cls._schema_key(child) for child in value)
+        if type(value) in (str, int, bool, type(None)):
+            return type(value), value
+        raise TypeError('non-JSON schema value')
+
+    def check(self, schema):
+        if not self.active or self.owner != (os.getpid(), threading.get_ident()):
+            raise PhaseError('registry.schema_check_pass_owner_mismatch')
+
+        validator = Draft202012Validator
+        check = validator.check_schema
+        meta = validator.META_SCHEMA
+        formats = validator.FORMAT_CHECKER
+        if (type(meta) is not dict or type(formats) is not FormatChecker
+                or type(formats.checkers) is not dict or type(validator.VALIDATORS) is not dict
+                or validator_for(meta, default=validator) is not validator):
+            check(schema)
+            return
+
+        # The caller has already verified and parsed the actual resource.
+        # Compare an exact immutable JSON tree and checker state. No parsed document,
+        # result, package byte check or implementation read is shared.
+        try:
+            key = (check, self._schema_key(meta), tuple(formats.checkers.items()),
+                   tuple(validator.VALIDATORS.items()), self._schema_key(schema))
+            already_checked = key in self.checked
+        except (TypeError, RecursionError):
+            check(schema)
+            return
+        if not already_checked:
+            check(schema)
+            self.checked.add(key)
+
+
+_SCHEMA_CHECK_PASS = ContextVar('phase_native_schema_check_pass', default=None)
+
+
+@contextmanager
+def _native_schema_check_pass():
+    owner = os.getpid(), threading.get_ident()
+    current = _SCHEMA_CHECK_PASS.get()
+    if current is not None:
+        if not current.active or current.owner != owner:
+            raise PhaseError('registry.schema_check_pass_owner_mismatch')
+        yield
+        return
+
+    scope = _SchemaCheckPass(owner)
+    token = _SCHEMA_CHECK_PASS.set(scope)
+    try:
+        yield
+    finally:
+        scope.active = False
+        scope.checked.clear()
+        _SCHEMA_CHECK_PASS.reset(token)
 
 
 class RegistrySnapshot:
@@ -204,7 +283,11 @@ class RegistrySnapshot:
     def _check_schema(self, schema) -> None:
         context = self._qualification_context
         if context is None:
-            Draft202012Validator.check_schema(schema)
+            scope = _SCHEMA_CHECK_PASS.get()
+            if scope is None:
+                Draft202012Validator.check_schema(schema)
+            else:
+                scope.check(schema)
         else:
             from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
             if type(context) is not _CatalogRegistryContext:

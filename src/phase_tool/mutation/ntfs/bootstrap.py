@@ -8,7 +8,7 @@ environment override, journal, target retry, copy-out or receipt owner is added.
 Not installed, imported, executed or qualified.
 """
 from __future__ import annotations
-from .input_stage import _cap_input_deadline,_input_observation_timeout_ms
+from .input_stage import _active_input_deadline_ns,_cap_input_deadline,_input_observation_timeout_ms,_left
 from .owner_semantic_contracts import semantic_owner_contract
 
 import base64
@@ -792,9 +792,14 @@ class _NativeAcceptedLaunch:
                 _require(type(declared['mounts']) is list
                     and all(row['RW'] is False for row in declared['mounts']),
                     'ntfs.original_readonly_contour_required')
+            deadline = _active_input_deadline_ns()
+            timeout = 30 if deadline is None else min(30, (deadline - time.perf_counter_ns()) / 1e9)
+            _require(timeout > 0, 'input_stage.deadline')
             result=subprocess.run([config['docker_executable'],'inspect','--format',template,config[field]],
                 stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                timeout=30,check=True,creationflags=subprocess.CREATE_NO_WINDOW)
+                timeout=timeout,check=True,creationflags=subprocess.CREATE_NO_WINDOW)
+            if deadline is not None:
+                _left(deadline)
             _require(len(result.stdout)<=1024**2,'ntfs.accepted_linux_contour_required')
             actual=parse_json_bytes(result.stdout,maximum_bytes=1024**2)
             _require(canonical_bytes(_normalized_linux_contour(actual,keys))==canonical_bytes(declared),'ntfs.accepted_linux_contour_mismatch')

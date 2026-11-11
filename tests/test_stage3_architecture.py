@@ -260,9 +260,21 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and _call_name(n).startswith('subprocess.')]
     expected={
       'subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)':methods['_spawn'],
-      "subprocess.run([config['docker_executable'], 'inspect', '--format', template, config[field]], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=True, creationflags=subprocess.CREATE_NO_WINDOW)":methods['_check_linux_contours']}
+      "subprocess.run([config['docker_executable'], 'inspect', '--format', template, config[field]], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=True, creationflags=subprocess.CREATE_NO_WINDOW)":methods['_check_linux_contours']}
     if len(calls)!=2 or {ast.unparse(n) for n in calls}!=set(expected):return False
     if any(n not in ast.walk(expected[ast.unparse(n)]) for n in calls):return False
+    inspect_call=next(n for n in calls if n in ast.walk(methods['_check_linux_contours']))
+    inspect_path=parents[id(parents[id(inspect_call)])]
+    if not isinstance(inspect_path,ast.For):return False
+    inspect_index=inspect_path.body.index(parents[id(inspect_call)])
+    adjacent=(
+        'deadline = _active_input_deadline_ns()',
+        'timeout = 30 if deadline is None else min(30, (deadline - time.perf_counter_ns()) / 1e9)',
+        "_require(timeout > 0, 'input_stage.deadline')",
+        'if deadline is not None:\n    _left(deadline)',
+    )
+    actual=inspect_path.body[inspect_index-3:inspect_index]+inspect_path.body[inspect_index+1:inspect_index+2]
+    if [ast.dump(n) for n in actual]!=[ast.dump(ast.parse(s).body[0]) for s in adjacent]:return False
     # Every module reference must belong to its single reviewed call or exact
     # class-identity comparison. An alias inside an otherwise allowed method
     # cannot escape Popen/Handle or inherit this inventory exception.
@@ -283,15 +295,43 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
       "self._spawn(self._linux_command('core'))":methods['spawn_core'],
       "self._spawn(self._linux_command('prepare-input'))":methods['spawn_input_stage'],
       "self._spawn(self._linux_command('inspect'))":methods['spawn_inspection'],
+      "self._spawn(self._linux_command('observe-recovery'))":methods['spawn_inspection'],
       "self._spawn([sys.executable, '-I', '-S', '-B', '-u', launcher, 'worker'])":methods['spawn_worker'],
       "self._spawn(self._linux_command('original'))":methods['_query_original']}
     refs=[n for n in ast.walk(tree) if isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name)
         and n.value.id=='self' and n.attr=='_spawn']
-    if len(refs)!=5:return False
+    if len(refs)!=6:return False
     for n in refs:
         call=parents.get(id(n))
         if not isinstance(call,ast.Call) or call.func is not n or ast.unparse(call) not in spawn_expected:return False
         if n not in ast.walk(spawn_expected[ast.unparse(call)]):return False
+    # The sixth literal child role is the admitted recovery observer. Its
+    # operational flock needs the existing RW Core, but its owner is still
+    # inspection-only and cannot enter the ordinary Core/prepare/worker paths.
+    observer=ast.parse("""
+_require(self._inspection_only,'ntfs.fixed_inspection_role_required')
+_require(not self._core_spawn_attempted,'ntfs.core_spawn_consumed')
+self._core_spawn_attempted=True
+request=self.invocation['request']
+if request.get('operation')=='recover_publication':
+    from .recovery_frontdoor import _manifest_role,_OBSERVE_ROLES
+    from .bundle_recovery_entrypoint import validate_request
+    validate_request(request)
+    _require(_manifest_role(self.manifest)in _OBSERVE_ROLES and request['mode']=='observe',
+        'recovery.closed_publication_observer_required')
+    return self._spawn(self._linux_command('observe-recovery'))
+""").body
+    observer.append(ast.parse("def f():\n return self._spawn(self._linux_command('inspect'))").body[0].body[0])
+    if [ast.dump(n) for n in methods['spawn_inspection'].body]!=[ast.dump(n) for n in observer]:return False
+    fixed_roles=ast.parse("""
+_require(role in {'core','original','inspect','observe-recovery','prepare-input'},'ntfs.fixed_linux_role_required')
+config=self._config
+container=config['core_container_id' if role in {'core','prepare-input','observe-recovery'} else 'reader_container_id']
+""").body
+    if [ast.dump(n) for n in methods['_linux_command'].body[:3]]!=[ast.dump(n) for n in fixed_roles]:return False
+    mutation_guard=ast.parse("_require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')").body[0]
+    if any(ast.dump(methods[name].body[0])!=ast.dump(mutation_guard)
+           for name in ('spawn_core','spawn_input_stage','spawn_worker')):return False
     launcher=[n for n in ast.walk(methods['spawn_worker']) if isinstance(n,ast.Assign)
         and len(n.targets)==1 and ast.unparse(n.targets[0])=='launcher']
     if len(launcher)!=1 or ast.unparse(launcher[0].value)!="self._config['windows_launcher']":return False

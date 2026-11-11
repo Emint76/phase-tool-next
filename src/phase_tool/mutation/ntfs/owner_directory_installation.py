@@ -9,6 +9,7 @@ from dataclasses import replace
 import re
 
 from ...canonical import canonical_bytes
+from ...registry import _native_schema_check_pass
 from .native import _require
 from .owner_directory import (_DirectoryCatalog, _OwnerDirectoryContext, ROLES, _manifest_row,
     owner_directory_configuration, owner_directory_role_for_manifest, validate_owner_directory_history)
@@ -28,6 +29,7 @@ def _fixed_owner_directory_catalog():
     return _DirectoryCatalog(registry, _NATIVE_OWNER_DIRECTORY_CATALOG_DIGEST).check()
 
 
+@_native_schema_check_pass()
 def _owner_directory_bindings_with_catalog(*, configuration_bytes, expected_configuration_digest,
         manifest_bytes, expected_manifest_digest, _catalog):
     """Private pure resolver; fixed production factory is its only selector.
@@ -53,6 +55,7 @@ def _owner_directory_bindings_with_catalog(*, configuration_bytes, expected_conf
     return active, history
 
 
+@_native_schema_check_pass()
 def _native_owner_directory_bindings(*, configuration_bytes, expected_configuration_digest,
                                      manifest_bytes, expected_manifest_digest):
     # Deliberately first: no channel/authority import or filesystem/evidence I/O

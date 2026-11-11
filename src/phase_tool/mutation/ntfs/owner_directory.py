@@ -15,7 +15,7 @@ from uuid import UUID
 
 from ...canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
-from ...registry import RegistrySnapshot
+from ...registry import RegistrySnapshot, _native_schema_check_pass
 from ..guarantees import GuaranteeProfileBinding, verify_guarantee_coverage
 from .native import _require
 from .owner_semantic_contracts import semantic_owner_contract
@@ -313,6 +313,7 @@ def is_owner_directory_authority(value, role):
     return True
 
 
+@_native_schema_check_pass()
 def validate_owner_directory_history(active, bindings):
     from ...installation import _NativeFileCreateReadBinding, _resolve_native_file_create_read_binding
     _require(type(active) is _NativeFileCreateReadBinding and type(bindings) is tuple

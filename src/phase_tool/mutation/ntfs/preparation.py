@@ -207,6 +207,14 @@ def _prepare_staged_publication(application,launch,request):
             total+=captured[1]
         inputs={'payload':source}
         expected={'payload':(request['source_digest'],request['source_length'])}
+    elif role=='File2':
+        from .input_stage import _role_bounds
+        from ...streaming import hash_file
+        # Verify the retained input stage. Core owns the independent capture.
+        captured=hash_file(source,_role_bounds(role)[1])
+        _require(captured==(request['source_digest'],request['source_length']),
+            'input_stage.preparation_digest_mismatch')
+        inputs={'payload':source};expected={'payload':captured}
     elif role=='Version2':
         # Contract deliberately has no FrozenInput. Read independently staged
         # bytes with the normal bounded frozen reader, compare to candidate.
@@ -217,9 +225,7 @@ def _prepare_staged_publication(application,launch,request):
         revalidate_frozen(frozen);inputs={};expected={}
     else:
         from .input_stage import _role_bounds
-        from ...streaming import copy_and_hash_stream
-        capture=copy_and_hash_stream if role=='File2'else copy_and_hash
-        frozen=capture('payload',preparation,request['source_locator'],scratch,
+        frozen=copy_and_hash('payload',preparation,request['source_locator'],scratch,
             frozen_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),maximum_bytes=_role_bounds(role)[1])
         _require(frozen.digest==request['source_digest']and frozen.length==request['source_length'],
             'input_stage.preparation_digest_mismatch')

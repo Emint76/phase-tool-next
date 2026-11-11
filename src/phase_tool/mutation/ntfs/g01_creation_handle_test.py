@@ -154,7 +154,8 @@ class _G01Kernel:
 
 
 class _G01CreationHandleTest:
-    __slots__=('_launch','_owner','_deadline','_binding_bytes','_binding','_consumed','_initialized','_transfer')
+    __slots__=('_launch','_owner','_deadline','_binding_bytes','_binding','_consumed','_initialized','_transfer',
+               '_original_reader_attempted','_original_reader_intent')
 
     def __init__(self,launch,*,_initial_deadline_ns):
         from .bootstrap import _NativeAcceptedLaunch
@@ -163,6 +164,7 @@ class _G01CreationHandleTest:
         _require(not getattr(self,'_initialized',False),'ntfs.g01_test_initialization_consumed')
         self._initialized=True;self._launch=launch;self._owner=os.getpid(),threading.get_ident()
         self._deadline=_initial_deadline_ns;self._consumed=False;self._transfer=None
+        self._original_reader_attempted=False;self._original_reader_intent=None
         _require(type(self._deadline)is int and 0<self._deadline-time.perf_counter_ns()<=30_000_000_000,
             'ntfs.g01_test_deadline_required')
         self.check_launch(launch)
@@ -229,6 +231,61 @@ class _G01CreationHandleTest:
             and DIGEST.fullmatch(harness['image_sha256'])is not None,'ntfs.g01_test_harness_shape')
         return value
 
+    def _record_original_reader(self,launch,process,witness,request,first_wait,close_wait):
+        """Retain this exact earlier reader's successful two-wait ownership chain."""
+        _require(type(self)is _G01CreationHandleTest and launch is self._launch
+            and self._owner==(os.getpid(),threading.get_ident()) and not self._consumed
+            and launch._g01_original_reader is self and not self._original_reader_attempted,
+            'ntfs.g01_test_original_reader_owner')
+        self._original_reader_attempted=True
+        _require(type(witness)is WindowsProcessWitness and witness.process is process
+            and witness._owner==self._owner and witness._popen is True
+            and witness._handle_object is process._handle and process._handle.closed is True
+            and all(stream.closed for stream in (process.stdin,process.stdout,process.stderr))
+            and type(process.returncode)is int and process.returncode==0,
+            'ntfs.g01_test_original_reader_finalization')
+        _require(type(request)is dict and request['action']=='read_executing'
+            and request['run_id']==launch.run_id and request['operation_nonce']==launch.operation_nonce
+            and request['installation_digest']==launch.installation_digest
+            and DIGEST.fullmatch(request['intent_digest'])is not None,
+            'ntfs.g01_test_original_reader_request')
+        keys={'process_witness_version','pid','creation_filetime','wait_result','worker_exit_established',
+              'exit_code','scope','events'}
+        required=('GetProcessId','GetProcessTimes','WaitForSingleObject','GetExitCodeProcess',
+                  'GetProcessId','GetProcessTimes')
+        for fact in (first_wait,close_wait):
+            _require(type(fact)is dict and set(fact)==keys and fact['process_witness_version']=='1.0'
+                and type(fact['pid'])is int and fact['pid']==witness.pid==process.pid
+                and type(fact['creation_filetime'])is int and fact['creation_filetime']==witness.creation_filetime
+                and type(fact['wait_result'])is int and fact['wait_result']==0
+                and fact['worker_exit_established'] is True and type(fact['exit_code'])is int and fact['exit_code']==0,
+                'ntfs.g01_test_original_reader_wait')
+            events=fact['events']
+            _require(type(events)is list and 6<=len(events)<=16 and tuple(row['api'] for row in events[-6:])==required
+                and events[-4]['result']==0 and events[-3]['result']==1
+                and all(row['outcome']=='returned' and type(row['started_ns'])is int and type(row['returned_ns'])is int
+                        and 0<row['started_ns']<=row['returned_ns'] for row in events),
+                'ntfs.g01_test_original_reader_wait_events')
+        _require(first_wait['events']==witness.events
+            and first_wait['events'][-1]['returned_ns']<=close_wait['events'][0]['started_ns'],
+            'ntfs.g01_test_original_reader_same_handle_order')
+        observed=time.perf_counter_ns()
+        _require(self._binding['case_started_ns']<=observed<self._deadline,
+            'ntfs.g01_test_original_reader_deadline')
+        value={'g01_original_reader_close_version':'1.0','campaign':_CAMPAIGN,'fixture_uuid':self._binding['fixture_uuid'],
+            'role':self._binding['role'],'repeat':self._binding['repeat'],'nonce':self._binding['nonce'],
+            'run_id':launch.run_id,'installation_digest':launch.installation_digest,
+            'reader_container_id':launch._config['reader_container_id'],'request':request,
+            'first_wait':first_wait,'close_wait':close_wait,'all_streams_closed':True,'creation_handle_closed':True,
+            'observed_perf_counter_ns':observed,'scope':'G01_PRE_WORKER_ORIGINAL_READER_CLOSURE_ONLY',
+            'final_acceptance':None,'qualification_credit':0}
+        _require(len(canonical_bytes(value))<=65536,'ntfs.g01_test_original_reader_record_bound')
+        path=Path(launch._config['windows_launcher']).parent/'g01-before-original-query-close.json'
+        _write_raw(path,value)
+        _require(time.perf_counter_ns()<self._deadline,'ntfs.g01_test_original_reader_deadline')
+        self._original_reader_intent=request['intent_digest']
+
+
     def worker_job_bound(self,launch,process,parsed,*,_exchange_deadline_ns=None):
         self.check_launch(launch);self._consumed=True  # BEFORE native/offer/wait errors.
         deadline=self._deadline
@@ -249,7 +306,8 @@ class _G01CreationHandleTest:
             'ntfs.g01_test_live_worker_required')
         context=parse_json_bytes(parsed.context_bytes,maximum_bytes=4096)
         _require(context['run_id']==launch.run_id and context['operation_nonce']==launch.operation_nonce
-            and context['installation_digest']==launch.installation_digest and DIGEST.fullmatch(context['intent_digest'])is not None,
+            and context['installation_digest']==launch.installation_digest and DIGEST.fullmatch(context['intent_digest'])is not None
+            and self._original_reader_intent==context['intent_digest'],
             'ntfs.g01_test_original_binding')
         control=_G01Kernel();transfer=_SenderOwnership();self._transfer=transfer
         primary=None

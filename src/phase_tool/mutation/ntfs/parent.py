@@ -102,6 +102,8 @@ class _NativeWindowsParent:
                 and _prepared_ack_test is None and _dynamic_a05_test is None,
                 'ntfs.g01_test_role_required')
             _g01_creation_handle_test.check_launch(launch)
+            _require(launch._g01_original_reader is None,'ntfs.g01_test_original_reader_consumed')
+            launch._g01_original_reader=_g01_creation_handle_test
         self._g01_creation_handle_test=_g01_creation_handle_test
         self._owner=os.getpid(),threading.get_ident()
         self._launch,self._pipe=launch,core_pipe

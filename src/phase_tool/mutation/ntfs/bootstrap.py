@@ -349,6 +349,7 @@ class _NativeAcceptedLaunch:
         self._core_spawn_attempted = False
         self._original_query_attempted = False
         self._staged_a05_reader = None
+        self._g01_original_reader = None
         self._pipe_created = set()
         self._linux_contours_checked = False
         self._held = []
@@ -756,6 +757,7 @@ class _NativeAcceptedLaunch:
                 try:primary.add_note('Native owner secondary close: '+type(error).__name__)
                 except BaseException:pass
             raise primary
+        return fact
 
     def _query_original(self,action,digest,*,_original_nonce=None):
         _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
@@ -768,6 +770,11 @@ class _NativeAcceptedLaunch:
             from .staged_dynamic_a05 import _StagedDynamicA05Test
             _require(type(staged) is _StagedDynamicA05Test and action == 'read_executing'
                      and _original_nonce is None, 'ntfs.staged_dynamic_a05_binding')
+        g01=getattr(self,'_g01_original_reader',None) if action=='read_executing' else None
+        if g01 is not None:
+            from .g01_creation_handle_test import _G01CreationHandleTest
+            _require(type(g01)is _G01CreationHandleTest and staged is None and _original_nonce is None,
+                'ntfs.g01_test_original_reader_binding')
         request=_original_query_request(self,action,digest)
         if _original_nonce is not None:
             _require(self.manifest['native_read_installation_version']=='1.9' and action in {'read_executing','read_recovery'}
@@ -800,7 +807,7 @@ class _NativeAcceptedLaunch:
                 fact=witness.wait_for_exit(_input_observation_timeout_ms(60000))
                 _require(fact['worker_exit_established'] is True and fact['exit_code']==0,
                     'ntfs.reader_owner_exit_not_established')
-                self._finalize_exited(process,pipe)
+                close_wait=self._finalize_exited(process,pipe)
             except BaseException as error:
                 if primary is None:primary=error
                 else:
@@ -816,6 +823,8 @@ class _NativeAcceptedLaunch:
                      and all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
                      and process.returncode == 0, 'ntfs.staged_dynamic_a05_reader_finalization')
             staged._record_original_reader(self, request, fact)
+        if g01 is not None:
+            g01._record_original_reader(self,process,witness,request,fact,close_wait)
         return answer if type(answer) in (ParsedNativeVersion1,ParsedNativeVersion2) else answer['value']
 
     def read_original(self,intent_digest):

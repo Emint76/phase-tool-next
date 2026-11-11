@@ -183,7 +183,7 @@ class _InspectionMCPCallOwner:
         if primary is not None:raise primary
         return value
 
-    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,_retain_launch=False):
+    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,_retain_launch=False,_staged_a05=None):
         from .parent_result import _native_file_result_mode,_native_bundle_result_mode
         from .bootstrap import _is_bundle_recovery_launch
         _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
@@ -208,7 +208,13 @@ class _InspectionMCPCallOwner:
             launch=_NativeAcceptedLaunch(**self._startup,
                 invocation_bytes=canonical_bytes(invocation),_inspection_only=inspection_only)
             self._held_launch=launch  # Retain BEFORE any process/pipe can be created.
-            response=run_native_parent(launch)
+            if _staged_a05 is None:
+                response=run_native_parent(launch)
+            else:
+                from .staged_dynamic_a05 import _StagedA05Selection
+                _require(type(_staged_a05) is _StagedA05Selection and _retain_launch and not inspection_only,
+                    'ntfs.staged_dynamic_a05_binding')
+                response=run_native_parent(launch,_dynamic_a05_test=_staged_a05.attach(launch))
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
@@ -292,7 +298,7 @@ class _InspectionMCPCallOwner:
         return (result,reference) if _include_canonical_result else result
 
     def publish_input(self,run_id,input_scope,source_locator,target_locator,request_id,members=None,expected_current_digest=None,
-            *,_operation_deadline=None,_file_assertions=None):
+            *,_operation_deadline=None,_file_assertions=None,_staged_a05=None):
         """One Windows input stage, genuine execute and fresh unary inspection.
 
         A transient delivery pairs actual native results; it is never a receipt.
@@ -311,6 +317,13 @@ class _InspectionMCPCallOwner:
                 'input_stage.deadline_owner_required')
             token=_InputOperationDeadline()if _operation_deadline is None else _operation_deadline
             with _input_operation_scope(token):
+                if _staged_a05 is not None:
+                    from .staged_dynamic_a05 import _StagedA05Selection
+                    _require(type(_staged_a05) is _StagedA05Selection and _file_assertions is None,
+                        'ntfs.staged_dynamic_a05_binding')
+                    _staged_a05.begin(self._startup,run_id=run_id,deadline_ns=token.deadline_ns,call=dict(
+                        input_scope=input_scope,source_locator=source_locator,target_locator=target_locator,
+                        request_id=request_id,members=members,expected_current_digest=expected_current_digest))
                 stage_options={}
                 if _file_assertions is not None:
                     _require(type(_file_assertions)is _FileInputAssertions,'publish_file.file_input_assertions_required')
@@ -353,7 +366,10 @@ class _InspectionMCPCallOwner:
                         expected_current_digest=expected_current_digest,content_utf8=content)
                     self._input_publication_phase='execute'
                     _left(token.deadline_ns)
-                    ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
+                    if _staged_a05 is None:
+                        ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
+                    else:
+                        ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True,_staged_a05=_staged_a05)
                     self._publication_ack=ack
                     result={'native_input_publication_result_version':'1.0','run_id':run_id,'input_scope':input_scope,
                         'role':role,'source_digest':prepared['expected_digest'],'source_length':prepared['expected_length'],
@@ -775,14 +791,23 @@ class _InputScopeSession:
     """
     def __init__(self,**startup):
         self.startup=dict(startup);self.gate=threading.Lock();self.unknown=False;self.held=[]
+        self._staged_a05=None
     def _invoke(self,method,arguments):
         _require(self.gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         owner=None
         try:
             _require(not self.unknown,'ntfs.inspection_mcp_unavailable')
+            selection=None
+            if self._staged_a05 is not None:
+                selection,bound_run=self._staged_a05
+                _require(method in {'publish_input','inspect'} and arguments.get('run_id')==bound_run,
+                    'ntfs.staged_dynamic_a05_binding')
             owner=_InspectionMCPCallOwner(**self.startup);self.held.append(owner)
             if method=='publish_input':
-                result=owner.publish_input(**arguments)
+                if selection is None:
+                    result=owner.publish_input(**arguments)
+                else:
+                    result=owner.publish_input(**arguments,_staged_a05=selection)
             elif method=='publish_staged_file':
                 result=owner.publish_staged_file(**arguments)
             else:
@@ -831,6 +856,19 @@ def run_native_input_mcp(**startup):
     if is_file:
         server.tool(name='phase_publish_file')(owner.publish_staged_file)
     server.tool(name='phase_inspect')(owner.inspect_file if is_file else owner.inspect)
+    _closed_arguments(server).run(transport='stdio');return 0
+
+
+def _run_staged_a05_input_mcp(*,_staged_a05,**startup):
+    """Closed startup3 fixture entry. Ordinary MCP registration stays separate."""
+    from .staged_dynamic_a05 import _StagedA05Selection
+    _require(type(_staged_a05) is _StagedA05Selection,'ntfs.staged_dynamic_a05_binding')
+    owner=_InputScopeSession(**startup)
+    bound_run=_staged_a05._require_mcp_startup(owner.startup)
+    owner._staged_a05=(_staged_a05,bound_run)
+    server=FastMCP('phase-native-input')
+    server.tool(name='phase_publish_input')(owner.publish_input)
+    server.tool(name='phase_inspect')(owner.inspect)
     _closed_arguments(server).run(transport='stdio');return 0
 
 

@@ -5,6 +5,8 @@ import os
 import re
 import sys
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -419,6 +421,76 @@ def _native_inspection_file_create_registry():
         'sha256:75d6086ad78a84946c140ae6aa138b09be02a9fa70934a9cd421f3d6f707415a')
 
 
+
+_OWNER3_REGISTRY_CORPUS = ContextVar('phase_owner3_registry_corpus', default=None)
+
+
+@dataclass
+class _Owner3RegistryCorpus:
+    owner: tuple[int, int]
+    resources: Mapping[str, bytes] | None
+
+
+@contextmanager
+def _owner3_registry_corpus(expected_wheel_digest):
+    """Own one exact wheel corpus for one pure six-row Owner3 pass."""
+    import io
+    import stat
+    import threading
+    from types import MappingProxyType
+    import zipfile
+    import zipimport
+    from .canonical import digest_bytes
+    from .evidence import _read_qualification_catalog_chunk
+    from .mutation.ntfs.native import _require
+    from .streaming import fingerprint
+
+    spec = getattr(sys.modules.get('phase_tool'), '__spec__', None)
+    loader = getattr(spec, 'loader', None)
+    if type(loader) is not zipimport.zipimporter:
+        # Preserve existing source-tree/library behavior outside an installed wheel.
+        yield
+        return
+    code = 'ntfs.owner3_registry_corpus_changed'
+    path = Path(loader.archive)
+    _require(path.is_absolute() and type(spec.origin) is str and Path(spec.origin) == path/'phase_tool/__init__.py'
+        and _OWNER3_REGISTRY_CORPUS.get() is None, code)
+    before = path.lstat()
+    _require(stat.S_ISREG(before.st_mode), code)
+    identity = fingerprint(before)
+    raw = _read_qualification_catalog_chunk(path, 16*1024**2)
+    _require(digest_bytes(raw) == expected_wheel_digest and fingerprint(path.lstat()) == identity, code)
+
+    resources = {}
+    prefix = 'phase_tool/data/'
+    with zipfile.ZipFile(io.BytesIO(raw)) as package:
+        for entry in package.infolist():
+            if entry.is_dir() or not entry.filename.startswith(prefix):
+                continue
+            name = entry.filename[len(prefix):]
+            if name == 'registry.json':
+                continue
+            _require(name not in resources and '\\' not in name
+                and all(part not in {'', '.', '..'} for part in name.split('/'))
+                and not stat.S_ISLNK(entry.external_attr >> 16)
+                and entry.file_size <= 2*1024**2, code)
+            resources[name] = package.read(entry)
+    _require(bool(resources), code)
+    owner = os.getpid(), threading.get_ident()
+    scope = _Owner3RegistryCorpus(owner, MappingProxyType(resources))
+    token = _OWNER3_REGISTRY_CORPUS.set(scope)
+    try:
+        yield
+        # Confirm exact current bytes and physical identity before returning any
+        # validated rows. All rows used bytes from the original pinned capture.
+        observed = _read_qualification_catalog_chunk(path, 16*1024**2)
+        _require((os.getpid(), threading.get_ident()) == owner
+            and fingerprint(path.lstat()) == identity and observed == raw, code)
+    finally:
+        scope.resources = None  # Also invalidates a captured copy of the context.
+        _OWNER3_REGISTRY_CORPUS.reset(token)
+
+
 def _load_native_file_create_registry(resource, expected_digest, contract_digest):
     """Shared byte/trust resolver; only the two fixed factories select inputs.
 
@@ -429,7 +501,14 @@ def _load_native_file_create_registry(resource, expected_digest, contract_digest
     from .canonical import canonical_bytes, digest_bytes, parse_json_bytes
     from .registry import BundledRegistry, RegistrySnapshot
 
-    resources = BundledRegistry.resources()
+    corpus = _OWNER3_REGISTRY_CORPUS.get()
+    if corpus is None:
+        resources = BundledRegistry.resources()
+    else:
+        import threading
+        if corpus.owner != (os.getpid(), threading.get_ident()) or corpus.resources is None:
+            raise PhaseError('ntfs.owner3_registry_corpus_changed')
+        resources = corpus.resources
     try:
         raw = resources[resource]
     except KeyError as exc:

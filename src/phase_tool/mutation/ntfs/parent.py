@@ -90,8 +90,10 @@ class _NativeWindowsParent:
         self._prepared_ack_test=_prepared_ack_test
         if _dynamic_a05_test is not None:
             from .dynamic_a05_test import _DynamicA05Test
-            _require(type(_dynamic_a05_test) is _DynamicA05Test and _prepared_ack_test is None,
-                'ntfs.dynamic_a05_test_role_required')
+            _require(_prepared_ack_test is None,'ntfs.dynamic_a05_test_role_required')
+            if type(_dynamic_a05_test) is not _DynamicA05Test:
+                from .staged_dynamic_a05 import _StagedDynamicA05Test
+                _require(type(_dynamic_a05_test) is _StagedDynamicA05Test,'ntfs.dynamic_a05_test_role_required')
             _dynamic_a05_test.check_launch(launch)
         self._dynamic_a05_test=_dynamic_a05_test
         self._owner=os.getpid(),threading.get_ident()
@@ -377,7 +379,9 @@ class _NativeWindowsParent:
         token=getattr(self,'_dynamic_a05_test',None)
         if token is None:return
         from .dynamic_a05_test import _DynamicA05Test
-        _require(type(token) is _DynamicA05Test,'ntfs.dynamic_a05_test_role_required')
+        if type(token) is not _DynamicA05Test:
+            from .staged_dynamic_a05 import _StagedDynamicA05Test
+            _require(type(token) is _StagedDynamicA05Test,'ntfs.dynamic_a05_test_role_required')
         token.original_read_complete(self._launch,parsed,intent_digest,
             _exchange_deadline_ns=self._file2_exchange_deadline)
 

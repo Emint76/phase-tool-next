@@ -125,19 +125,42 @@ def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
     return tuple(buffers)
 
 
+
+def _owner3_history_corpus(active, rows):
+    """Select only the exact six current roles of one synthetic Owner3 fixture."""
+    from contextlib import nullcontext
+    from ...installation import _NativeFileCreateReadBinding, _owner3_registry_corpus
+    from .owner_directory_fixture import is_fixture
+
+    if (type(active) is not _NativeFileCreateReadBinding
+            or active._owner_directory_context is not None
+            or active._qualification_context is not None
+            or type(rows) is not tuple or len(rows) != 6):
+        return nullcontext()
+    admission = active.experimental_admission
+    if type(admission) not in _kinds().values() or not is_fixture(admission.raw):
+        return nullcontext()
+    document = fixture_document(admission.raw)
+    if document['experimental_admission_version'] != '3.0':
+        return nullcontext()
+    return _owner3_registry_corpus(document['wheel_digest'])
+
+
 @_native_schema_check_pass()
 def _resolve_owner3_history_bindings(active, buffers):
     """Resolve the closed buffer set and validate its common domain in one call."""
     from ...installation import _native_experimental_read_binding
-    bindings = tuple(_native_experimental_read_binding(manifest_bytes=raw,
-        expected_manifest_digest=digest, admission=kind(cap)) for raw, digest, cap, kind in buffers)
-    return _check_owner3_history_domain(active, bindings, recheck_registry=False)
+    with _owner3_history_corpus(active, buffers):
+        bindings = tuple(_native_experimental_read_binding(manifest_bytes=raw,
+            expected_manifest_digest=digest, admission=kind(cap)) for raw, digest, cap, kind in buffers)
+        return _check_owner3_history_domain(active, bindings, recheck_registry=False)
 
 
 @_native_schema_check_pass()
 def validate_owner3_history_bindings(active, bindings):
     """Independently reconstruct every registry for externally supplied bindings."""
-    return _check_owner3_history_domain(active, bindings, recheck_registry=True)
+    with _owner3_history_corpus(active, bindings):
+        return _check_owner3_history_domain(active, bindings, recheck_registry=True)
 
 
 def _check_owner3_history_domain(active, bindings, *, recheck_registry):

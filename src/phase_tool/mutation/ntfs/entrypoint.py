@@ -474,8 +474,10 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
         _prepared_ack_test.check_launch(launch)
     if _dynamic_a05_test is not None:
         from .dynamic_a05_test import _DynamicA05Test
-        _require(type(_dynamic_a05_test) is _DynamicA05Test and _prepared_ack_test is None,
-            'ntfs.dynamic_a05_test_role_required')
+        _require(_prepared_ack_test is None,'ntfs.dynamic_a05_test_role_required')
+        if type(_dynamic_a05_test) is not _DynamicA05Test:
+            from .staged_dynamic_a05 import _StagedDynamicA05Test
+            _require(type(_dynamic_a05_test) is _StagedDynamicA05Test,'ntfs.dynamic_a05_test_role_required')
         _dynamic_a05_test.check_launch(launch)
     launch.check_runtime()
     process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())

@@ -778,31 +778,54 @@ class _NativeAcceptedLaunch:
             and config['core_container_id']!=config['reader_container_id'],
             'ntfs.accepted_linux_contour_required')
         template='{"id":{{json .Id}},"image":{{json .Image}},"user":{{json .Config.User}},"readonly_rootfs":{{json .HostConfig.ReadonlyRootfs}},"cap_drop":{{json .HostConfig.CapDrop}},"security_options":{{json .HostConfig.SecurityOpt}},"network_mode":{{json .HostConfig.NetworkMode}},"mounts":{{json .Mounts}},"pids_limit":{{json .HostConfig.PidsLimit}},"memory":{{json .HostConfig.Memory}},"nano_cpus":{{json .HostConfig.NanoCpus}},"running":{{json .State.Running}}}'
-        for role,field in [('core','core_container_id'),('original','reader_container_id')]:
-            declared=_normalized_linux_contour(expected[role],keys)
-            _require(type(declared) is dict and set(declared)==keys
-                and declared['id']==config[field] and declared['image']==config['image_digest']
-                and declared['user']=='10001:10001' and declared['readonly_rootfs'] is True
-                and declared['network_mode']=='none' and declared['cap_drop']==['ALL']
-                and declared['security_options']==['no-new-privileges']
-                and declared['pids_limit']==128 and declared['memory']==2*1024**3
-                and declared['nano_cpus']==2*10**9 and declared['running'] is True,
-                'ntfs.accepted_linux_contour_required')
-            if role=='original':
-                _require(type(declared['mounts']) is list
-                    and all(row['RW'] is False for row in declared['mounts']),
-                    'ntfs.original_readonly_contour_required')
-            deadline = _active_input_deadline_ns()
+        roles=(('core','core_container_id'),('original','reader_container_id'))
+        deadline = _active_input_deadline_ns()
+        # Input publication already has one absolute budget. Keep each legacy
+        # standalone inspect's separate 30-second bound outside that scope.
+        batches=(roles,) if deadline is not None else tuple((role,) for role in roles)
+        for batch in batches:
+            declared_by_id={}
+            for role,field in batch:
+                declared=_normalized_linux_contour(expected[role],keys)
+                _require(type(declared) is dict and set(declared)==keys
+                    and declared['id']==config[field] and declared['image']==config['image_digest']
+                    and declared['user']=='10001:10001' and declared['readonly_rootfs'] is True
+                    and declared['network_mode']=='none' and declared['cap_drop']==['ALL']
+                    and declared['security_options']==['no-new-privileges']
+                    and declared['pids_limit']==128 and declared['memory']==2*1024**3
+                    and declared['nano_cpus']==2*10**9 and declared['running'] is True,
+                    'ntfs.accepted_linux_contour_required')
+                if role=='original':
+                    _require(type(declared['mounts']) is list
+                        and all(row['RW'] is False for row in declared['mounts']),
+                        'ntfs.original_readonly_contour_required')
+                if deadline is not None:
+                    _require(type(config[field]) is str and re.fullmatch('[0-9a-f]{64}',config[field]) is not None,
+                        'ntfs.accepted_linux_contour_required')
+                declared_by_id[config[field]]=declared
             timeout = 30 if deadline is None else min(30, (deadline - time.perf_counter_ns()) / 1e9)
             _require(timeout > 0, 'input_stage.deadline')
-            result=subprocess.run([config['docker_executable'],'inspect','--format',template,config[field]],
+            result=subprocess.run([config['docker_executable'],'inspect','--format',template,*declared_by_id],
                 stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                 timeout=timeout,check=True,creationflags=subprocess.CREATE_NO_WINDOW)
             if deadline is not None:
                 _left(deadline)
-            _require(len(result.stdout)<=1024**2,'ntfs.accepted_linux_contour_required')
-            actual=parse_json_bytes(result.stdout,maximum_bytes=1024**2)
-            _require(canonical_bytes(_normalized_linux_contour(actual,keys))==canonical_bytes(declared),'ntfs.accepted_linux_contour_mismatch')
+            raw=result.stdout
+            _require(len(raw)<=len(batch)*1024**2,'ntfs.accepted_linux_contour_required')
+            records=(raw,) if len(batch)==1 else raw.splitlines(keepends=True)
+            _require(len(records)==len(batch) and all(0<len(row)<=1024**2 for row in records)
+                and (len(batch)==1 or all(row.endswith(b'\n') for row in records)),
+                'ntfs.accepted_linux_contour_required')
+            for row in records:
+                actual=_normalized_linux_contour(parse_json_bytes(row,maximum_bytes=1024**2),keys)
+                identifier=actual['id']
+                _require(type(identifier) is str and identifier in declared_by_id
+                    and canonical_bytes(actual)==canonical_bytes(declared_by_id[identifier]),
+                    'ntfs.accepted_linux_contour_mismatch')
+                del declared_by_id[identifier]
+            _require(not declared_by_id,'ntfs.accepted_linux_contour_required')
+            if deadline is not None:
+                _left(deadline)
         self._linux_contours_checked=True
 
 def _receive_version1_original(launch,pipe,request,deadline,*,_version2=False):

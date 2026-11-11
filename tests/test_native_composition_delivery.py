@@ -156,6 +156,46 @@ class NativeLinuxContourComparisonTests(unittest.TestCase):
                 patch.object(bootstrap.subprocess,'run',side_effect=inspect) as inspect_call):
             yield launch,inspect_call
 
+    def test_active_input_checks_two_exact_contours_in_one_bounded_call(self):
+        config = self.config()
+        rows = tuple(config['expected_linux_contours'].values())
+        arguments = [config['core_container_id'], config['reader_container_id']]
+        deadline = 4_000_000_000
+
+        def model(observations, *, expected_error=None, finish_late=False):
+            launch = object.__new__(_NativeAcceptedLaunch)
+            launch._config_bytes = canonical_bytes(config)
+            launch._linux_contours_checked = False
+            raw = b''.join(canonical_bytes(row) + b'\n' for row in observations)
+            clock = Mock(return_value=1_000_000_000)
+
+            def inspect(*args, **kwargs):
+                if finish_late:
+                    clock.return_value = deadline
+                return SimpleNamespace(stdout=raw)
+
+            with (patch.object(bootstrap, '_active_input_deadline_ns', return_value=deadline),
+                  patch.object(bootstrap.time, 'perf_counter_ns', clock),
+                  patch.object(bootstrap.time, 'monotonic_ns', clock),
+                  patch.object(bootstrap.subprocess, 'CREATE_NO_WINDOW', 0, create=True),
+                  patch.object(bootstrap.subprocess, 'run', side_effect=inspect) as inspect_call):
+                if expected_error is None:
+                    launch._check_linux_contours()
+                    launch._check_linux_contours()
+                else:
+                    with self.assertRaisesRegex(PhaseError, expected_error):
+                        launch._check_linux_contours()
+            inspect_call.assert_called_once()
+            self.assertEqual(inspect_call.call_args.args[0][4:], arguments)
+            self.assertEqual(inspect_call.call_args.kwargs['timeout'], 3.0)
+            return launch._linux_contours_checked
+
+        self.assertTrue(model(tuple(reversed(rows))))
+        self.assertFalse(model(rows[:1], expected_error='ntfs.accepted_linux_contour_required'))
+        self.assertFalse(model((rows[0], rows[0]), expected_error='ntfs.accepted_linux_contour_mismatch'))
+        self.assertFalse(model((rows[0], dict(rows[1], id='f'*64)), expected_error='ntfs.accepted_linux_contour_mismatch'))
+        self.assertFalse(model(rows, expected_error='input_stage.deadline', finish_late=True))
+
     def test_reordered_full_mount_maps_match_and_completed_check_is_cached(self):
         config=self.config();actual=deepcopy(config['expected_linux_contours'])
         for row in actual.values():row['mounts'].reverse()

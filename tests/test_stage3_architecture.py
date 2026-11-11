@@ -260,20 +260,36 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and _call_name(n).startswith('subprocess.')]
     expected={
       'subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)':methods['_spawn'],
-      "subprocess.run([config['docker_executable'], 'inspect', '--format', template, config[field]], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=True, creationflags=subprocess.CREATE_NO_WINDOW)":methods['_check_linux_contours']}
+      "subprocess.run([config['docker_executable'], 'inspect', '--format', template, *declared_by_id], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=True, creationflags=subprocess.CREATE_NO_WINDOW)":methods['_check_linux_contours']}
     if len(calls)!=2 or {ast.unparse(n) for n in calls}!=set(expected):return False
     if any(n not in ast.walk(expected[ast.unparse(n)]) for n in calls):return False
     inspect_call=next(n for n in calls if n in ast.walk(methods['_check_linux_contours']))
     inspect_path=parents[id(parents[id(inspect_call)])]
-    if not isinstance(inspect_path,ast.For):return False
+    if not isinstance(inspect_path,ast.For) or ast.unparse(inspect_path.target)!='batch' or ast.unparse(inspect_path.iter)!='batches':return False
+    shape=(
+        "roles = (('core', 'core_container_id'), ('original', 'reader_container_id'))",
+        'deadline = _active_input_deadline_ns()',
+        'batches = (roles,) if deadline is not None else tuple(((role,) for role in roles))',
+    )
+    scope=methods['_check_linux_contours'].body
+    if inspect_path not in scope:return False
+    path_index=scope.index(inspect_path)
+    if [ast.dump(n) for n in scope[path_index-3:path_index]]!=[ast.dump(ast.parse(s).body[0]) for s in shape]:return False
+    if len(inspect_path.body)<3 or ast.unparse(inspect_path.body[0])!='declared_by_id = {}':return False
+    role_loop=inspect_path.body[1]
+    if (not isinstance(role_loop,ast.For) or ast.unparse(role_loop.target)!='(role, field)'
+            or ast.unparse(role_loop.iter)!='batch'):return False
+    stores=[n for n in ast.walk(inspect_path) if isinstance(n,ast.Subscript) and isinstance(n.ctx,ast.Store)
+            and ast.unparse(n.value)=='declared_by_id']
+    if (len(stores)!=1 or ast.unparse(stores[0])!='declared_by_id[config[field]]'
+            or stores[0] not in ast.walk(role_loop)):return False
     inspect_index=inspect_path.body.index(parents[id(inspect_call)])
     adjacent=(
-        'deadline = _active_input_deadline_ns()',
         'timeout = 30 if deadline is None else min(30, (deadline - time.perf_counter_ns()) / 1e9)',
         "_require(timeout > 0, 'input_stage.deadline')",
         'if deadline is not None:\n    _left(deadline)',
     )
-    actual=inspect_path.body[inspect_index-3:inspect_index]+inspect_path.body[inspect_index+1:inspect_index+2]
+    actual=inspect_path.body[inspect_index-2:inspect_index]+inspect_path.body[inspect_index+1:inspect_index+2]
     if [ast.dump(n) for n in actual]!=[ast.dump(ast.parse(s).body[0]) for s in adjacent]:return False
     # Every module reference must belong to its single reviewed call or exact
     # class-identity comparison. An alias inside an otherwise allowed method

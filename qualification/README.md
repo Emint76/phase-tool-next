@@ -79,6 +79,29 @@ an exceeded bound, or uncertain closure. Preserve the actual bytes and outstandi
 allocation for unknown outcomes. Settle an unused reservation only after exact
 ownership, closure, coverage and independent readback have been established.
 
+The portable [scenario index](scenario_resource_index_v1.json) covers the 47
+original cases and eight later resource groups. It records applicability and
+inputs needed for review. Actual admission requires the complete retained ledger
+and a fixed, independently reviewed matrix for the exact plan and deployment.
+
+The [resource controller](unified_resources_v4.py) computes per-case floors
+and checks supplied observations, reservations and closure. The
+[reviewed plan binding](resource_review_binding_v3.py) verifies exact matrix
+and source-graph pins supplied by the fixed test deployment. Together they
+reuse the existing [B08 arithmetic](b08_resources.py). Run the numeric models
+from the repository root.
+
+```sh
+python -B -m unittest discover -s qualification -p "test_*resources*.py"
+```
+
+The portable modules do not collect live measurements or start cases. The
+physical sampler, backing-identity checks, raw evidence capture and closure
+binding still come from the separately reviewed isolated qualification
+deployment. Its real C:, S:, ext4 and Docker VHDX observations are required
+before and during each case. The models do not admit any deployment or grant
+qualification credit.
+
 The prior B08 REF result remains valid within its recorded scope. Its historical
 floors below apply to that exact route. Recalculate the Windows-input MIX route
 by boundary variant from its complete driver and current ledger. At the current

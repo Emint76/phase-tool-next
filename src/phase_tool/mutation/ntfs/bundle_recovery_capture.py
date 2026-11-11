@@ -125,6 +125,8 @@ def execute_original_with_capture(parent, intent_digest, *, common):
     try:
         witness = WindowsProcessWitness(parent._worker)
         pipe = parent._launch.worker_pipe(parent._worker)
+        if getattr(parent,'_g01_creation_handle_test',None) is not None:
+            parent._after_worker_job_bound(parent._worker,parsed,parent._file2_exchange_deadline)
         parent._launch.send_worker_original(pipe, parsed,
             _handshake_deadline_ns=parent._file2_exchange_deadline)
         early = parent._transfer_bundle(pipe, parsed, parent._file2_exchange_deadline, common)

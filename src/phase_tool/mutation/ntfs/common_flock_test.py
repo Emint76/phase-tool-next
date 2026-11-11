@@ -13,9 +13,11 @@ from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from ...errors import PhaseError
 
 _LAUNCHER = 'sha256:c13f905261304fc7c9b7089043b521bac6b7f10f3ffcd1436f62ea26800b2931'
+_TIMEOUT_LAUNCHER = 'sha256:85f63625f18679c8db5d0419d51d09dfd605a5a117cf149bf951bea001f318fa'
+_TIMEOUT_RUN = 'od3-de456bc6-f16a-5a4a-8e69-6c20d64c3613-c01-contender-000'
 _SELECTED=ContextVar('phase_closed_c01_flock_test',default=None)
 _PROTOCOL='phase.test.common-core-flock/1'
-_STAGES={'hello','bound','acquire_return','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish'}
+_STAGES={'hello','bound','acquire_return','acquire_timeout','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish'}
 
 def _need(value,code='ntfs.c01_flock_test_binding'):
     if not value:raise PhaseError(code)
@@ -79,6 +81,85 @@ class _PosixFlockIPC:
         if self.socket is not None:self.socket.close()
 
 
+def _closed_timeout_launcher(launch, fixture):
+    config=launch._config
+    if config['native_launch_version']=='2.0' and fixture['experimental_admission_version']=='2.0':
+        return _LAUNCHER
+    from .owner_directory_fixture import _kinds
+    from .owner_semantic_contracts import semantic_owner_contract
+    _need(config['native_launch_version']=='3.0' and fixture['experimental_admission_version']=='3.0'
+        and fixture['fixture_uuid']=='de456bc6-f16a-5a4a-8e69-6c20d64c3613' and launch.run_id==_TIMEOUT_RUN
+        and type(launch._experimental_admission_context)is _kinds()['File2']
+        and launch.manifest['contract']==semantic_owner_contract('File2'),'ntfs.c01_flock_test_scope')
+    return _TIMEOUT_LAUNCHER
+
+
+_TIMEOUT_CASE = 'de456bc6-f16a-5a4a-8e69-6c20d64c3613'
+_TIMEOUT_SCOPE = 'owner3-input-de456bc6-f16a-5a4a-8e69-6c20d64c3613-file2'
+_TIMEOUT_SOURCE = 'file2.bin'
+_TIMEOUT_TARGET = 'c01-timeout-file2.bin'
+_TIMEOUT_DIGEST = 'sha256:65b8df4a0d55dbcb861b8584fde023f745e515c75ed9ad09798767e2c4f05c21'
+_TIMEOUT_BYTES = 65536
+_TIMEOUT_REQUEST = 'c01.file2.timeout.component.v1'
+_TIMEOUT_CONTRACT = {'id':'file_create.v2','version':'1.0.1',
+    'package_digest':'sha256:5fa188c4b19696156bfe1dd3ee4105c5292ba3a48e1ad150fc76682bddf037d2'}
+
+
+def _require_timeout_startup(config, manifest, admission):
+    from .owner_directory_fixture import fixture_document, _kinds
+    from .owner_semantic_contracts import semantic_owner_contract
+    _need(type(admission) is _kinds()['File2'] and config['native_launch_version']=='3.0'
+        and config['artifact_graph']['launcher_digest']==_TIMEOUT_LAUNCHER
+        and manifest['contract']==_TIMEOUT_CONTRACT==semantic_owner_contract('File2'),'ntfs.c01_timeout_scope')
+    fixture=fixture_document(admission.raw)
+    _need(fixture['fixture_uuid']==_TIMEOUT_CASE and fixture['experimental_admission_version']=='3.0',
+        'ntfs.c01_timeout_scope')
+
+
+def _require_timeout_frontend(value):
+    _need(type(value) is dict and value=={'run_id':_TIMEOUT_RUN,'request':{
+        'operation':'publish_file','input_scope':_TIMEOUT_SCOPE,'source_locator':_TIMEOUT_SOURCE,
+        'target_locator':_TIMEOUT_TARGET,'request_id':_TIMEOUT_REQUEST,'publication_version':'2.0',
+        'expected_digest':_TIMEOUT_DIGEST,'root_binding':'phase_result_root'}},'ntfs.c01_timeout_frontend_request')
+
+
+def _require_timeout_stage(launch, scope, role, header):
+    _require_timeout_startup(launch._config,launch.manifest,launch._experimental_admission_context)
+    rows=header['members']
+    _need(launch.run_id==_TIMEOUT_RUN and role=='File2' and scope['scope_id']==_TIMEOUT_SCOPE
+        and header['run_id']==_TIMEOUT_RUN and header['input_scope']==_TIMEOUT_SCOPE and header['role']=='File2'
+        and header['source_locator']==_TIMEOUT_SOURCE and header['payload_kind']=='file'
+        and type(header['member_count']) is int and header['member_count']==1
+        and type(header['total_length']) is int and header['total_length']==_TIMEOUT_BYTES
+        and type(rows) is list and len(rows)==1 and rows[0]['path']=='payload'
+        and type(rows[0]['length']) is int and rows[0]['length']==_TIMEOUT_BYTES,
+        'ntfs.c01_timeout_stage_request')
+
+
+def _require_timeout_stage_payload(raw):
+    _need(type(raw) is bytes and len(raw)==_TIMEOUT_BYTES and digest_bytes(raw)==_TIMEOUT_DIGEST,
+        'ntfs.c01_timeout_stage_payload')
+
+
+def _require_timeout_core(value):
+    _need(type(value) is dict and set(value)=={'run_id','request','channel_id','operation_nonce'}
+        and value['run_id']==_TIMEOUT_RUN and all(type(value[key]) is str and
+        re.fullmatch('[0-9a-f]{32}',value[key]) is not None for key in ('channel_id','operation_nonce')),
+        'ntfs.c01_timeout_core_invocation')
+    request=value['request']
+    _need(type(request) is dict and set(request)=={'operation','native_staged_publication_request_version','input_scope',
+        'stage_header_digest','source_locator','source_digest','source_length','request_id','target_locator','members',
+        'expected_current_digest','content_utf8'},'ntfs.c01_timeout_core_request')
+    header=request['stage_header_digest']
+    _need(type(header) is str and re.fullmatch('sha256:[0-9a-f]{64}',header) is not None,
+        'ntfs.c01_timeout_core_stage_identity')
+    _need(type(request['source_length']) is int and request=={'operation':'execute','native_staged_publication_request_version':'1.0','input_scope':_TIMEOUT_SCOPE,
+        'stage_header_digest':header,'source_locator':'phase-native-input-'+header[7:39]+'/payload/payload',
+        'source_digest':_TIMEOUT_DIGEST,'source_length':_TIMEOUT_BYTES,'request_id':_TIMEOUT_REQUEST,
+        'target_locator':_TIMEOUT_TARGET,'members':None,'expected_current_digest':None,'content_utf8':None},
+        'ntfs.c01_timeout_core_request')
+
+
 class _CommonCoreFlockTest:
     """Opaque one-shot token. Its observations never establish Phase success."""
     __slots__=('_initialized','_owner','_launch','_selected','_taken','_bound','_fd','_acquired',
@@ -104,9 +185,10 @@ class _CommonCoreFlockTest:
             and launch.invocation['request'].get('operation')=='execute','ntfs.c01_flock_test_scope')
         fixture=fixture_document(launch._experimental_admission_context.raw)
         launch.check_runtime();config=launch._config;graph=config['artifact_graph']
-        _need(config['native_launch_version']=='2.0' and graph['launcher_digest']==_LAUNCHER,
+        selected_launcher=_closed_timeout_launcher(launch,fixture)
+        _need(graph['launcher_digest']==selected_launcher,
             'ntfs.c01_flock_test_launcher')
-        launcher=Path(config['linux_launcher']);_need(digest_bytes(read_bounded_file(launcher,2*1024**2))==_LAUNCHER,
+        launcher=Path(config['linux_launcher']);_need(digest_bytes(read_bounded_file(launcher,2*1024**2))==selected_launcher,
             'ntfs.c01_flock_test_launcher')
         path=launcher.parent/'common-core-flock-test.json';raw=read_bounded_file(path,65536)
         _need(digest_bytes(raw)==config['dependency_file_digests'].get(str(path))
@@ -193,9 +275,19 @@ class _CommonCoreFlockTest:
             interrupted=not succeeded and error_number==errno.EINTR,
             acquire_deadline_float_hex=self._lock_deadline.hex(),acquire_deadline_ns=int(self._lock_deadline*1e9))
 
+    def observed_acquire_timeout(self,descriptor,deadline):
+        if getattr(self,'_run',None)!=_TIMEOUT_RUN:return
+        self._owner_check()
+        _need(self._bound and not self._acquired and descriptor==self._fd and deadline==self._lock_deadline,
+            'ntfs.c01_flock_test_timeout_binding')
+        self._record('acquire_timeout',descriptor=descriptor,reason_code='lock.acquire_timeout',
+            acquire_deadline_ns=int(deadline*1e9))
+
     def acquired(self,descriptor):
         self._owner_check();_need(descriptor==self._fd and not self._acquired);self._acquired=True
         self._record('acquired',strict=True,descriptor=descriptor,namespace_checked=True)
+        if getattr(self,'_run',None)==_TIMEOUT_RUN:
+            raise PhaseError('ntfs.c01_timeout_unexpected_acquisition')
         if self._mode=='holder':
             reply=self._ipc.receive(min(self._deadline,self._lock_deadline))
             _need(type(reply) is dict and set(reply)=={'protocol','action','campaign_id','run_id','operation_nonce'}
@@ -270,12 +362,13 @@ class _CommonCoreFlockTest:
             and launch.run_id==self._run and launch.installation_digest==self._manifest_digest,
             'ntfs.c01_raw_snapshot_binding')
         config=launch._config
-        _need(config['native_launch_version']=='2.0' and config['artifact_graph']['launcher_digest']==_LAUNCHER
-            and digest_bytes(read_bounded_file(Path(config['linux_launcher']),2*1024**2))==_LAUNCHER,
+        fixture=parse_json_bytes(launch._experimental_admission_context.raw,maximum_bytes=32768)
+        selected_launcher=_closed_timeout_launcher(launch,fixture)
+        _need(config['artifact_graph']['launcher_digest']==selected_launcher
+            and digest_bytes(read_bounded_file(Path(config['linux_launcher']),2*1024**2))==selected_launcher,
             'ntfs.c01_flock_test_launcher')
         _remaining(self._deadline)
-        fixture=parse_json_bytes(launch._experimental_admission_context.raw,maximum_bytes=32768)
-        _need(fixture['experimental_admission_version']=='2.0'
+        _need(fixture['experimental_admission_version']==config['native_launch_version']
             and re.fullmatch('[a-z0-9-]{1,64}',self._campaign) is not None
             and type(self._case) is int and 0<=self._case<100 and self._mode in {'holder','contender'}
             and self._run==fixture['request_limits']['run_prefix']+'c01-'+self._mode+'-'+str(self._case).zfill(3),

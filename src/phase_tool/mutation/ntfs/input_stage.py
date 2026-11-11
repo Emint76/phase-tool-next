@@ -423,14 +423,14 @@ class _InputStageReceiver:
 
 
 def run_linux_input_stage_startup(*,config_bytes,expected_config_digest,manifest_bytes,expected_manifest_digest,
-        _experimental_admission_context):
+        _experimental_admission_context,_c01_timeout_stage=False):
     """One literal preparation role, same wheel/container, no Core invocation."""
     from .entrypoint import _linux_stdio_identity
     from .bootstrap import _NativeAcceptedLaunch
     from ...evidence import _InputStageFrames,_OwnedInputStageSink
     from ...installation import _native_read_binding_for_launch,_linux_filesystem_type,_require_native_no_descendant_mounts
     from ...installation import qualify_host_authority_roots
-    _require(os.name!='nt','input_stage.linux_role_required')
+    _require(os.name!='nt' and type(_c01_timeout_stage)is bool,'input_stage.linux_role_required')
     deadline=time.monotonic_ns()+30_000_000_000
     _linux_stdio_identity()
     frames=_InputStageFrames(deadline);sink=None;primary=None;result=None
@@ -449,6 +449,9 @@ def run_linux_input_stage_startup(*,config_bytes,expected_config_digest,manifest
             [row['path']for row in header['members']]if role in{'Bundle1','Bundle2'}else None)
         expected=_header(launch,scope,role,scope_digest,normal,header['members'])
         _require(canonical_bytes(header)==expected,'input_stage.accepted_header_binding')
+        if _c01_timeout_stage:
+            from .common_flock_test import _require_timeout_stage,_require_timeout_stage_payload
+            _require_timeout_stage(launch,scope,role,header)
         prep=Path(scope['preparation_root'])
         qualify_host_authority_roots({'phase_preparation_root':prep})
         _require(_linux_filesystem_type(prep)=='ext4','input_stage.ext4_preparation_required')
@@ -458,7 +461,10 @@ def run_linux_input_stage_startup(*,config_bytes,expected_config_digest,manifest
         sink=_OwnedInputStageSink(prep,{key:scope['preparation_identity'][key]for key in('device','inode')},stage_name,deadline)
         receiver=_InputStageReceiver(expected,sink,deadline)
         while receiver.state!='complete':
-            raw=frames.receive_frame(receiver.wanted()or _CONTROL)
+            wanted=receiver.wanted()
+            raw=frames.receive_frame(wanted or _CONTROL)
+            if _c01_timeout_stage and wanted:
+                _require_timeout_stage_payload(raw)
             result=receiver.feed(raw)
         launch.check_runtime();_left(deadline)
         response={'protocol':_PROTOCOL,'version':_VERSION,'kind':'prepared','run_id':launch.run_id,

@@ -348,6 +348,7 @@ class _NativeAcceptedLaunch:
         self._worker_job = None
         self._core_spawn_attempted = False
         self._original_query_attempted = False
+        self._staged_a05_reader = None
         self._pipe_created = set()
         self._linux_contours_checked = False
         self._held = []
@@ -431,37 +432,43 @@ class _NativeAcceptedLaunch:
         _require(digest_bytes(raw)==config['phase_wheel_digest'],'ntfs.accepted_wheel_mismatch')
         # The qualified immutable namespace is essential: this one rehash is
         # NOT a lifetime immutability check or executable authentication.
-        with zipfile.ZipFile(io.BytesIO(raw)) as package:
-            entries=package.infolist()
-            names=[row.filename for row in entries]
-            _require(len(names)==len(set(names)) and all(not name.startswith('/')
-                and '\\' not in name and '..' not in name.split('/') for name in names),
-                'ntfs.accepted_wheel_shape')
-            source={}
-            for row in entries:
-                _require(not stat.S_ISLNK(row.external_attr>>16),'ntfs.accepted_wheel_shape')
-                if not row.filename.startswith('phase_tool/'):continue
-                _require(not row.is_dir() and not row.filename.endswith(('.pyc','.pyo','.pyd','.so'))
-                    and row.file_size<=2*1024**2,'ntfs.accepted_wheel_shape')
-                if row.filename.endswith('.py'):
-                    source[row.filename]=package.read(row)
-            _require('phase_tool/__init__.py' in source,'ntfs.accepted_wheel_shape')
-            for name,module in tuple(sys.modules.items()):
-                if name=='phase_tool' or name.startswith('phase_tool.'):
-                    spec=getattr(module,'__spec__',None)
-                    _require(spec is not None and type(spec.loader) is zipimport.zipimporter,
-                        'ntfs.accepted_phase_origin_required')
-                    relative=name.replace('.','/')
-                    is_package=spec.submodule_search_locations is not None
-                    member=relative+('/__init__.py' if is_package else '.py')
-                    origin=os.path.normcase(os.path.normpath(str(wheel/member)))
-                    _require(member in source and os.path.normcase(os.path.normpath(spec.origin))==origin
-                        and spec.loader.get_data(spec.origin)==source[member],
-                        'ntfs.accepted_phase_origin_mismatch')
-                    if is_package:
-                        _require([os.path.normcase(os.path.normpath(p)) for p in module.__path__]
-                            ==[os.path.normcase(os.path.normpath(str(wheel/relative)))],
-                            'ntfs.accepted_phase_namespace_mismatch')
+        snapshot = getattr(self, "_verified_phase_source_snapshot", None)
+        if snapshot is None:
+            from types import MappingProxyType
+            with zipfile.ZipFile(io.BytesIO(raw)) as package:
+                entries=package.infolist()
+                names=[row.filename for row in entries]
+                _require(len(names)==len(set(names)) and all(not name.startswith('/')
+                    and '\\' not in name and '..' not in name.split('/') for name in names),
+                    'ntfs.accepted_wheel_shape')
+                source={}
+                for row in entries:
+                    _require(not stat.S_ISLNK(row.external_attr>>16),'ntfs.accepted_wheel_shape')
+                    if not row.filename.startswith('phase_tool/'):continue
+                    _require(not row.is_dir() and not row.filename.endswith(('.pyc','.pyo','.pyd','.so'))
+                        and row.file_size<=2*1024**2,'ntfs.accepted_wheel_shape')
+                    if row.filename.endswith('.py'):
+                        source[row.filename]=package.read(row)
+                _require('phase_tool/__init__.py' in source,'ntfs.accepted_wheel_shape')
+        else:
+            _require(snapshot[0] == raw, "ntfs.accepted_wheel_mismatch")
+            source = snapshot[1]
+        for name,module in tuple(sys.modules.items()):
+            if name=='phase_tool' or name.startswith('phase_tool.'):
+                spec=getattr(module,'__spec__',None)
+                _require(spec is not None and type(spec.loader) is zipimport.zipimporter,
+                    'ntfs.accepted_phase_origin_required')
+                relative=name.replace('.','/')
+                is_package=spec.submodule_search_locations is not None
+                member=relative+('/__init__.py' if is_package else '.py')
+                origin=os.path.normcase(os.path.normpath(str(wheel/member)))
+                _require(member in source and os.path.normcase(os.path.normpath(spec.origin))==origin
+                    and spec.loader.get_data(spec.origin)==source[member],
+                    'ntfs.accepted_phase_origin_mismatch')
+                if is_package:
+                    _require([os.path.normcase(os.path.normpath(p)) for p in module.__path__]
+                        ==[os.path.normcase(os.path.normpath(str(wheel/relative)))],
+                        'ntfs.accepted_phase_namespace_mismatch')
         # Same complete code graph is bound by the original composition,
         # independent of OS-specific deployment paths/container identity. Config
         # and graph are installation data, never an acceptance/qualification flag.
@@ -520,6 +527,9 @@ class _NativeAcceptedLaunch:
             _require(type(expected) is str and re.fullmatch('sha256:[0-9a-f]{64}',expected)
                 and digest_bytes(Path(origin).read_bytes())==expected,
                 'ntfs.accepted_dependency_graph_mismatch')
+
+        if snapshot is None:
+            self._verified_phase_source_snapshot = (raw, MappingProxyType(source))
 
     def _windows_required(self):
         self.check_runtime()
@@ -753,6 +763,11 @@ class _NativeAcceptedLaunch:
         self._windows_required()
         _require(not self._original_query_attempted,'ntfs.original_query_consumed')
         self._original_query_attempted=True
+        staged = getattr(self, '_staged_a05_reader', None)
+        if staged is not None:
+            from .staged_dynamic_a05 import _StagedDynamicA05Test
+            _require(type(staged) is _StagedDynamicA05Test and action == 'read_executing'
+                     and _original_nonce is None, 'ntfs.staged_dynamic_a05_binding')
         request=_original_query_request(self,action,digest)
         if _original_nonce is not None:
             _require(self.manifest['native_read_installation_version']=='1.9' and action in {'read_executing','read_recovery'}
@@ -793,6 +808,14 @@ class _NativeAcceptedLaunch:
                     except BaseException:pass
         if primary is not None:raise primary
         self.check_runtime()
+        if staged is not None:
+            # Existing successful finalization already sealed the pipe and closed
+            # the actual creation HANDLE and streams. Keep the real first wait
+            # result for this private staged token only.
+            _require(process is witness.process and process._handle.closed is True
+                     and all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+                     and process.returncode == 0, 'ntfs.staged_dynamic_a05_reader_finalization')
+            staged._record_original_reader(self, request, fact)
         return answer if type(answer) in (ParsedNativeVersion1,ParsedNativeVersion2) else answer['value']
 
     def read_original(self,intent_digest):

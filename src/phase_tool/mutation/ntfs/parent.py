@@ -76,7 +76,7 @@ class _NativeWindowsParent:
     endpoint obtains the original tuple from existing Core evidence and parser.
     Separate native RO calls are performed by this owner, never by the worker.
     """
-    def __init__(self, launch, core_pipe, *, _prepared_ack_test=None, _dynamic_a05_test=None):
+    def __init__(self, launch, core_pipe, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None):
         from .bootstrap import _NativeAcceptedLaunch
         _require(not getattr(self,'_initialization_attempted',False),
             'ntfs.parent_initialization_consumed')
@@ -96,6 +96,13 @@ class _NativeWindowsParent:
                 _require(type(_dynamic_a05_test) is _StagedDynamicA05Test,'ntfs.dynamic_a05_test_role_required')
             _dynamic_a05_test.check_launch(launch)
         self._dynamic_a05_test=_dynamic_a05_test
+        if _g01_creation_handle_test is not None:
+            from .g01_creation_handle_test import _G01CreationHandleTest
+            _require(type(_g01_creation_handle_test) is _G01CreationHandleTest
+                and _prepared_ack_test is None and _dynamic_a05_test is None,
+                'ntfs.g01_test_role_required')
+            _g01_creation_handle_test.check_launch(launch)
+        self._g01_creation_handle_test=_g01_creation_handle_test
         self._owner=os.getpid(),threading.get_ident()
         self._launch,self._pipe=launch,core_pipe
         self._sequence=0
@@ -121,6 +128,11 @@ class _NativeWindowsParent:
         self._partial_bytes=None
         self._ready_wire=None
         self._completion_wire=None
+
+    def _after_worker_job_bound(self, process, parsed, deadline):
+        token=getattr(self,'_g01_creation_handle_test',None)
+        if token is not None:
+            token.worker_job_bound(self._launch,process,parsed,_exchange_deadline_ns=deadline)
 
     def _usable(self):
         _require(self._owner==(os.getpid(),threading.get_ident())
@@ -246,6 +258,7 @@ class _NativeWindowsParent:
         try:
             witness=WindowsProcessWitness(self._worker)
             pipe=self._launch.worker_pipe(self._worker)
+            self._after_worker_job_bound(self._worker,parsed,handshake_deadline)
             if self._version1 or self._version2 or self._file2 or self._bundle:
                 self._launch.send_worker_original(pipe,parsed,_handshake_deadline_ns=handshake_deadline)
             else:

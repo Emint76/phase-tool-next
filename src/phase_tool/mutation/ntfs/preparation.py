@@ -178,7 +178,6 @@ def _prepare_staged_publication(application,launch,request):
     from .native import _require
     from .input_stage import _read_staged_input_marker,_publication_candidate
     from ...paths import contained_read_path
-    from ...bundle import freeze_bundle
     installation=application.installation
     _require(type(installation)is _NativeFileCreateInstallation
         and application.registry is installation.read_binding.registry,
@@ -194,13 +193,20 @@ def _prepare_staged_publication(application,launch,request):
     preparation=Path(scope['preparation_root']);source=contained_read_path(preparation,request['source_locator'])
     scratch=Path(mkdtemp(prefix='phase-native-staged-',dir=preparation))
     if role in{'Bundle1','Bundle2'}:
-        # Existing manifest capture owns member nofollow/hash/membership. Core
-        # will independently capture again against this exact digest+length.
-        frozen=freeze_bundle('payload',source,request['members'],scratch,
-            frozen_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'))
-        _require(frozen.digest==request['source_digest']and frozen.length==request['source_length'],
-            'input_stage.preparation_digest_mismatch')
-        inputs={'payload':source};expected={'payload':(frozen.digest,frozen.length)}
+        from ...bundle import FILE_LIMIT,MAX_TOTAL_BYTES
+        from ...streaming import hash_file
+        # The checked marker already binds the canonical manifest. Keep the
+        # prior capture's physical bounds while verifying its exact members.
+        # Core still freezes the same source and matches the asserted digest.
+        total=0
+        for member in marker['members']:
+            path=contained_read_path(source,member['path'])
+            captured=hash_file(path,min(FILE_LIMIT,MAX_TOTAL_BYTES-total))
+            _require(captured==(member['digest'],member['length']),
+                'input_stage.preparation_digest_mismatch')
+            total+=captured[1]
+        inputs={'payload':source}
+        expected={'payload':(request['source_digest'],request['source_length'])}
     elif role=='Version2':
         # Contract deliberately has no FrozenInput. Read independently staged
         # bytes with the normal bounded frozen reader, compare to candidate.

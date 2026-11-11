@@ -125,7 +125,11 @@ class _OperationalFileLock:
                         raise
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise PhaseError("lock.acquire_timeout", str(self.path)) from error
+                        primary = PhaseError("lock.acquire_timeout", str(self.path))
+                        if self._common_flock_test is not None:
+                            try:self._common_flock_test.observed_acquire_timeout(descriptor,deadline)
+                            except BaseException:primary.add_note('C01 timeout telemetry unavailable')
+                        raise primary from error
                     if error.errno != errno.EINTR:
                         time.sleep(min(_OPERATIONAL_LOCK_RETRY_SECONDS, remaining))
                 else:

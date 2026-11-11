@@ -212,7 +212,20 @@ class StagedDynamicA05Tests(unittest.TestCase):
             parent_owner._dynamic_a05_test = cut
             parent_owner._launch = launch
             parent_owner._file2_exchange_deadline = exchange
+            # Recording boundary only. The focused forwarding models exercise
+            # the real owner method; these six retain their real Original parser.
+            with self.assertRaisesRegex(PhaseError, 'ntfs.staged_dynamic_a05_reader_witness_required'):
+                # Do not consume the attached token to test a prerequisite.
+                cut._original_reader_observation({}, record['intent_digest'])
+            with patch.object(input_stage, '_scope_for_launch', return_value=({}, role, header)):
+                query = bootstrap._original_query_request(launch, 'read_executing', record['intent_digest'])
+            fact = {'process_witness_version': '1.0', 'pid': 741, 'creation_filetime': 123456,
+                    'wait_result': 0, 'worker_exit_established': True, 'exit_code': 0,
+                    'scope': 'recording component; no native reader launched', 'events': []}
+            cut._record_original_reader(launch, query, fact)
             parent_owner._after_original_read(parsed, record['intent_digest'])
+            self.assertEqual(self.reports[0][1]['original_reader_witness']['reader_exit_fact'], fact)
+            self.assertIs(self.reports[0][1]['original_reader_witness']['owner_finalized'], True)
             with self.assertRaises(PhaseError):
                 selection.attach(launch)
             with self.assertRaises(PhaseError):

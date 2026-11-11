@@ -166,13 +166,15 @@ class _StagedA05Selection:
         _require(all(checked[key] == call[key] for key in _REQUEST_FIELDS if key != 'source_locator'), _CODE)
         cut = _StagedDynamicA05Test(self, launch)
         cut.check_launch(launch)
+        _require(launch._staged_a05_reader is None, _CODE)
+        launch._staged_a05_reader = cut
         return cut
 
 
 class _StagedDynamicA05Test:
     """Typed adapter to the original cut implementation and event protocol."""
     __slots__ = ('_selection', '_launch', '_owner', '_binding_bytes', '_initial_deadline',
-                 '_consumed', '_intent_digest', '_telemetry_parent', '_invocation_bytes')
+                 '_consumed', '_intent_digest', '_telemetry_parent', '_invocation_bytes', '_reader_witness')
 
     def __init__(self, selection, launch):
         _require(type(self) is _StagedDynamicA05Test and not hasattr(self, '_launch')
@@ -181,6 +183,7 @@ class _StagedDynamicA05Test:
         self._selection, self._launch, self._owner = selection, launch, selection._owner
         self._binding_bytes, self._initial_deadline = selection._raw, selection._deadline
         self._consumed, self._intent_digest = False, None
+        self._reader_witness = None
         self._telemetry_parent = selection._path.parent
         self._invocation_bytes = launch._invocation_bytes
 
@@ -200,5 +203,33 @@ class _StagedDynamicA05Test:
     def _binding(self, launch):
         _require(launch is self._launch, _CODE)
         return self._selection._binding
+
+    def _record_original_reader(self, launch, query, fact):
+        # Only called by the exact accepted query owner after real closure.
+        from .input_stage import _active_input_deadline_ns
+        _require(type(self) is _StagedDynamicA05Test and launch is self._launch
+            and launch._staged_a05_reader is self and self._reader_witness is None
+            and not self._consumed and self._owner == (os.getpid(), threading.get_ident())
+            and _active_input_deadline_ns() == self._initial_deadline, _CODE)
+        recorded = time.perf_counter_ns()
+        _require(recorded < self._initial_deadline and query['action'] == 'read_executing'
+            and query['native_original_query_version'] == '1.4' and query['run_id'] == launch.run_id
+            and query['installation_digest'] == launch.installation_digest
+            and query['operation_nonce'] == launch.operation_nonce and query['channel_id'] == launch.channel_id
+            and type(fact) is dict and type(fact['wait_result']) is int and fact['wait_result'] == 0
+            and fact['worker_exit_established'] is True and type(fact['exit_code']) is int and fact['exit_code'] == 0, _CODE)
+        self._reader_witness = canonical_bytes({
+            'schema': 'phase.test.staged-a05-original-reader/1', 'reader_query_digest': canonical_digest(query),
+            'run_id': query['run_id'], 'intent_digest': query['intent_digest'], 'installation_digest': query['installation_digest'],
+            'operation_nonce': query['operation_nonce'], 'channel_id': query['channel_id'],
+            'reader_exit_fact': fact, 'owner_finalized': True, 'recorded_ns': recorded,
+        })
+
+    def _original_reader_observation(self, context, intent_digest):
+        _require(type(self._reader_witness) is bytes, 'ntfs.staged_dynamic_a05_reader_witness_required')
+        observed = parse_json_bytes(self._reader_witness, maximum_bytes=16384)
+        _require(observed['intent_digest'] == intent_digest and all(
+            observed[key] == context[key] for key in ('run_id', 'intent_digest', 'installation_digest', 'operation_nonce')), _CODE)
+        return observed
 
     original_read_complete = _DynamicA05Test.original_read_complete

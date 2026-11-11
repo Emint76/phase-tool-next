@@ -192,6 +192,10 @@ class _DynamicA05Test:
                  'ntfs.dynamic_a05_test_binding')
         return value
 
+    def _original_reader_observation(self, context, intent_digest):
+        # Historical exact launchers retain their original Raw schema.
+        return None
+
     def original_read_complete(self, launch, parsed, intent_digest, *, _exchange_deadline_ns=None):
         self.check_launch(launch)
         _require(not self._consumed, 'ntfs.dynamic_a05_test_consumed')
@@ -226,6 +230,10 @@ class _DynamicA05Test:
             'return_established': None, 'final_acceptance': None,
             'interpretation': 'Pre-return observations only. No value in this file establishes successful return, deadline compliance, worker exit, effect or acceptance. Require outer Phase outcome/native proof and complete clock/finalization evidence.',
             'scope': 'raw test event/token observations; not Core evidence, receipt, worker-exit proof or native qualification'}
+        reader = self._original_reader_observation(context, intent_digest)
+        if reader is not None:
+            record['original_reader_exit_basis'] = 'existing retained Original reader creation HANDLE, exited and finalized'
+            record['original_reader_witness'] = reader
         api = None
         primary = None
         close_errors = []

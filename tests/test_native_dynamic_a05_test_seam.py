@@ -134,12 +134,16 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     fixed = ast.parse(need)
     normal_functions = {n.name: n for n in normal.body if isinstance(n, ast.FunctionDef)}
     fixed_functions = {n.name: n for n in fixed.body if isinstance(n, ast.FunctionDef)}
-    assert normal_functions.keys() == fixed_functions.keys()
     # The historical A05 launcher stays byte-pinned at startup1.1/1.2.
-    # Closed owner3/input startup deliberately changed exactly these four
-    # helpers. Pin both complete ASTs, including every admission check;
-    # compare every other helper directly. Empty type_params is the
-    # sole AST serialization difference between CPython3.11 and3.12.
+    # Closed owner3/input startup has two additional ordinary-only helpers.
+    # Pin their complete ASTs and both entrypoints, including admission and
+    # dispatch. Empty type_params differs between CPython 3.11 and 3.12.
+    ordinary_only = {
+        '_input_failure_diagnostic': '2147636962eb6821917d77d00ed5687956b28f997e8e8985b1c492116008c378',
+        '_publish_input_cli': 'f7ed9abffe64759a7fac7bb05cd967eeaa14c67f597ec3660a79ba1889e970c4',
+    }
+    assert normal_functions.keys() == fixed_functions.keys() | ordinary_only.keys()
+    assert fixed_functions.keys().isdisjoint(ordinary_only)
     from hashlib import sha256
     reviewed_owner_delta = {'fixed_admission': {'ordinary': 'c2558cdb925497f1c9397a831c080baaf2a2d45b8a507e1ba6c31bb5db7791dd', 'historical_a05': 'b0ec48f145a99e1e5f2b77885212a799a2f3def65afd1e3cb6c5fde2a2742f49'}, 'fixed_windows_mcp_sdk_bootstrap': {'ordinary': 'f4761e8035b4a278afd90bcbd1d683b7fc7466ddfc1a129e9b0e579bd267a4bc', 'historical_a05': '9c160d04f16c3253f0b422606f9d2e57b55faa3d898bd6ecce33bf62de2e9d25'}, 'fixed_startup': {'ordinary': 'e100a1b4a9483ca3151f8d139fdf6ad6d8fd133039df67ea823f5b26ed85446d', 'historical_a05': 'a3a96a44d8ecc92ec55350fc4aed159ab838a2ac29f99005aec36d5f3592c53d'}, 'fixed_startup_version': {'ordinary': '1c3ac0f5f14fc3d012b1a058a2e200c4519592e6f5b0f855abe86df64fa96c0d', 'historical_a05': '0ab49cbb580624cd803b3d29a6729ca3a02f2be71b068bf688f8eed241bd2f7d'}}
     def stable_ast(node):
@@ -148,7 +152,15 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
             if isinstance(part, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and getattr(part, 'type_params', None) == []:
                 delattr(part, 'type_params')
         return ast.dump(normalized, include_attributes=False)
-    for name in normal_functions.keys()-{'main'}:
+    for name, expected in ordinary_only.items():
+        assert sha256(stable_ast(normal_functions[name]).encode()).hexdigest() == expected, name
+    main_digests = (
+        'bb4d3b397490915a39977f8700791995c9802aef806f5b83493f1bddf789ed49',
+        'e0046e7d09f2e123349cf0b37d51ab796c14a56e390f6246a1d562fcd4dc3268',
+    )
+    assert tuple(sha256(stable_ast(group['main']).encode()).hexdigest()
+                 for group in (normal_functions, fixed_functions)) == main_digests
+    for name in fixed_functions.keys() - {'main'}:
         if name in reviewed_owner_delta:
             expected = reviewed_owner_delta[name]
             assert sha256(stable_ast(normal_functions[name]).encode()).hexdigest() == expected['ordinary'], name

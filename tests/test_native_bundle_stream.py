@@ -432,3 +432,115 @@ def test_bundle_formatter_fault_cannot_skip_closes_or_replace_original(tmp_path,
     assert len(outcome.finalization_errors)==(3 if mode=='cleanup'else 0)
     for fd in fds:
         with pytest.raises(OSError):os.fstat(fd)
+
+
+def test_native_bundle_binary_actual_frozen_sources_rewind_and_close(tmp_path):
+    from phase_tool.mutation.ntfs.file2_stream import _BINARY_CHUNK_TAG, _CHUNK
+
+    data=b'p'*_CHUNK+b'z'
+    blobs,metadata,values=fixture(tmp_path,{'a.bin':b'','b.bin':data,'nested/c.bin':data})
+    output={name:bytearray() for name in values}
+    options=dict(context_bytes=_CONTEXT,channel_id=_CHANNEL,manifest_bytes=metadata)
+    receiver=bundle._BundleTwoPassReceiver(**options,_binary_chunks=True)
+    with bundle._bundle_verified_source(blobs,**options) as snapshot:
+        snapshot._bind_channel_chunk_mode(True)
+        descriptors=tuple(child._fd for child in snapshot._sources)
+        assert len(set(descriptors))==len(values)
+        first=tuple(snapshot.first_frames())
+        assert len([raw for raw in first if raw.startswith(_BINARY_CHUNK_TAG)])==4
+        assert all(receiver.feed(raw) is None for raw in first)
+        ready=receiver.ready_frame()
+        receiver.accept_rewound(snapshot.rewind_after_ready(ready))
+        receiver.accept_go(bundle._bundle_token(snapshot._header_raw,'go'))
+        for raw in snapshot.replay_frames():
+            item=receiver.feed(raw)
+            if item is not None:
+                name,offset,content=item
+                assert offset==len(output[name])
+                output[name].extend(content)
+        assert receiver.finish()['accepted_payload_length']==2*len(data)
+        assert snapshot._state=='emitted'
+    assert {name:bytes(body) for name,body in output.items()}==values
+    for descriptor in descriptors:
+        with pytest.raises(OSError) as failure:os.fstat(descriptor)
+        assert failure.value.errno==errno.EBADF
+    with pytest.raises(PhaseError):snapshot.replay_frames()
+
+
+@pytest.mark.parametrize('role,legacy_channel', [('Bundle1',False),('Bundle2',False),('Bundle2',True)])
+@pytest.mark.parametrize('semantic', [False, True])
+def test_native_bundle_core_channel_selects_only_accepted_original_on_real_snapshots(tmp_path,role,legacy_channel,semantic):
+    from threading import Lock
+    from unittest.mock import Mock
+
+    from phase_tool.mutation.ntfs import bundle_execution as worker
+    from phase_tool.mutation.ntfs.bundle2_channel import LinuxNativeBundle2Channel
+    from phase_tool.mutation.ntfs.bundle_recovery_channel import LinuxNativeBundleRecoveryChannel
+    from phase_tool.mutation.ntfs.channel_v4 import LinuxNativeBundleChannel
+    from .test_native_bundle_binary_codec import installed, payload_frames
+    from .test_native_bundle_protocol import CHANNEL, VALUES
+
+    project,_=installed(role,semantic=semantic)
+    blobs,metadata,_=fixture(tmp_path,VALUES)
+    assert metadata==project.manifest_bytes
+    context=parse_json_bytes(project.context_bytes)
+    compact=canonical_bytes({key:context[key] for key in ('run_id','intent_digest','installation_digest','operation_nonce')})
+    channel_type=LinuxNativeBundleChannel if role=='Bundle1' else (
+        LinuxNativeBundle2Channel if legacy_channel else LinuxNativeBundleRecoveryChannel)
+    channel=object.__new__(channel_type)
+    channel.channel_id=CHANNEL
+    channel._inspection_only=channel._finish_attempted=channel._possible_dispatch=channel._failed=False
+    channel._sequence=0;channel._gate=Lock();channel._usable=Mock()
+    channel._prepare_bundle_exchange=Mock()
+    ready=worker._bundle_ready_value(project,CHANNEL,123)
+    channel._receive_bound=Mock(return_value={'bundle_stage':'ready','worker_ready':ready})
+    channel._bundle_terminal=Mock(return_value={'modeled_terminal':True})
+    sent=[]
+
+    def record(raw,deadline):
+        assert channel._gate.locked() and channel._possible_dispatch
+        sent.append((raw,deadline))
+
+    channel._send_frame=record
+    with bundle._bundle_verified_source(blobs,context_bytes=compact,channel_id=CHANNEL,manifest_bytes=metadata) as snapshot:
+        descriptors=[child._fd for child in snapshot._sources]
+        assert all(child._binary_header is None for child in snapshot._sources)
+        result=channel.execute_bundle(run_id=context['run_id'],intent_digest=context['intent_digest'],
+                                      projection=project,source=snapshot)
+        assert snapshot._state=='emitted'
+    assert result=={'modeled_terminal':True}
+    assert not channel._gate.locked() and channel._possible_dispatch and channel._sequence==1
+    common=parse_json_bytes(sent[0][0]);deadline=sent[0][1]
+    assert common['kind']=='execute_bundle' and common['version']==channel._PROTOCOL_VERSION
+    rewind=bundle._bundle_token(worker._bundle_wire_header(project,CHANNEL),'rewound')
+    binary=semantic and not legacy_channel
+    assert [raw for raw,_ in sent[1:]]==payload_frames(project,1,binary)+[rewind]+payload_frames(project,2,binary)
+    assert all(value==deadline for _,value in sent)
+    channel._prepare_bundle_exchange.assert_called_once_with(project)
+    channel._bundle_terminal.assert_called_once_with(common,deadline,projection=project,expected_pid=123)
+    for descriptor in descriptors:
+        with pytest.raises(OSError) as failure:os.fstat(descriptor)
+        assert failure.value.errno==errno.EBADF
+
+
+def test_native_bundle_chunk_mode_partial_bind_failure_poisoned_before_any_frame(tmp_path,monkeypatch):
+    from phase_tool.mutation.ntfs.file2_stream import _File2SnapshotSource
+
+    blobs,metadata,_=fixture(tmp_path)
+    original=_File2SnapshotSource._bind_channel_chunk_mode
+    with source(blobs,metadata) as snapshot:
+        blocked=snapshot._sources[1]
+        descriptors=[child._fd for child in snapshot._sources]
+
+        def bind(child,binary_chunks):
+            if child is blocked:raise PhaseError('test.mode_bind_failure')
+            return original(child,binary_chunks)
+
+        monkeypatch.setattr(_File2SnapshotSource,'_bind_channel_chunk_mode',bind)
+        with pytest.raises(PhaseError,match='test.mode_bind_failure'):snapshot._bind_channel_chunk_mode(True)
+        assert snapshot._state=='failed' and snapshot._sources[0]._binary_header is not None
+        with pytest.raises(PhaseError):snapshot.first_frames()
+        with pytest.raises(PhaseError):snapshot.replay_frames()
+    for descriptor in descriptors:
+        with pytest.raises(OSError) as failure:os.fstat(descriptor)
+        assert failure.value.errno==errno.EBADF

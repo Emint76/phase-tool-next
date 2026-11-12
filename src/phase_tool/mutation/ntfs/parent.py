@@ -445,7 +445,7 @@ class _NativeWindowsParent:
         receiver.finish()
 
     def _transfer_bundle(self,pipe,parsed,deadline,common):
-        from .bundle_stream import _BundleTwoPassReceiver,_bundle_token
+        from .bundle_stream import _BundleTwoPassReceiver,_bundle_token,_bundle_binary_chunks_for_original
         from .bundle_execution import _bundle_projection_value,_bundle_wire_header,validate_bundle_worker_ready
         from .bootstrap import _is_bundle_recovery_launch
         from ...bundle import parse_manifest
@@ -453,7 +453,8 @@ class _NativeWindowsParent:
         value=_bundle_projection_value(parsed);context=value['context'];manifest=parse_manifest(parsed.manifest_bytes)
         compact={k:context[k]for k in ('run_id','intent_digest','installation_digest','operation_nonce')}
         receiver=_BundleTwoPassReceiver(context_bytes=canonical_bytes(compact),
-            channel_id=self._launch.channel_id,manifest_bytes=parsed.manifest_bytes)
+            channel_id=self._launch.channel_id,manifest_bytes=parsed.manifest_bytes,
+            _binary_chunks=_bundle_binary_chunks_for_original(self._launch.manifest,parsed.contract_bytes))
         frames=2+sum((m['length']+256*1024-1)//(256*1024)+2 for m in manifest['members'])
         for _ in range(frames):
             raw,_=self._pipe.receive_frame(deadline,maximum_bytes=2*1024**2)

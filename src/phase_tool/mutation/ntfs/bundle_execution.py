@@ -100,7 +100,7 @@ def validate_bundle_worker_ready(raw,*,projection,channel_id,expected_pid):
 
 class _BundleWorkerInput:
     """One borrowed worker pipe, exact ordered occurrences, no spool or owner."""
-    def __init__(self,pipe,projection,channel_id,deadline_ns):
+    def __init__(self,pipe,projection,channel_id,deadline_ns,*,_binary_chunks=False):
         _require(os.name=='nt' and type(pipe) is WindowsPipeFrames,'ntfs.windows_worker_pipe_required')
         _require(type(deadline_ns) is int and 0<deadline_ns-time.perf_counter_ns()<=30_000_000_000,
             'ntfs.worker_go_deadline')
@@ -111,7 +111,7 @@ class _BundleWorkerInput:
         self.projection,self.channel_id=projection,channel_id
         self._context=context;self._manifest=parse_manifest(projection.manifest_bytes)
         self._receiver=_BundleTwoPassReceiver(context_bytes=canonical_bytes(compact),
-            channel_id=channel_id,manifest_bytes=projection.manifest_bytes)
+            channel_id=channel_id,manifest_bytes=projection.manifest_bytes,_binary_chunks=_binary_chunks)
         self._header=_bundle_wire_header(projection,channel_id)
         self._first_attempted=self._go_attempted=False
         self._failed=self._complete=False;self._summary=None
@@ -222,7 +222,7 @@ class _BundleWorkerInput:
             raise
 
 
-def run_bundle_worker(pipe,projection,channel_id,*,_transfer_deadline_ns):
+def run_bundle_worker(pipe,projection,channel_id,*,_transfer_deadline_ns,_binary_chunks=False):
     from .file_create import NativeFileCreateOutcomeUnavailable
     from .bundle_effect import execute_bundle_create
     from .uncertainty import _diagnostic
@@ -231,7 +231,8 @@ def run_bundle_worker(pipe,projection,channel_id,*,_transfer_deadline_ns):
     primary=transport_error=close_error=None
     try:
         try:
-            source=_BundleWorkerInput(pipe,projection,channel_id,_transfer_deadline_ns)
+            source=_BundleWorkerInput(pipe,projection,channel_id,_transfer_deadline_ns,
+                _binary_chunks=_binary_chunks)
             source.first_pass()
             pipe.send_frame(canonical_bytes(_bundle_ready_value(projection,channel_id,os.getpid())),_transfer_deadline_ns)
             raw,_=pipe.receive_frame(_transfer_deadline_ns,maximum_bytes=16384)

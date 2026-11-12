@@ -27,6 +27,27 @@ _VERSION = '1.0'
 _HEADER_LIMIT = 2*1024**2
 
 
+def _bundle_binary_contract_role(contract: dict) -> str | None:
+    from .owner_semantic_contracts import semantic_owner_contract
+    if type(contract) is dict:
+        for role in ('Bundle1', 'Bundle2'):
+            if contract == semantic_owner_contract(role):
+                return role
+    return None
+
+
+def _bundle_binary_chunks_for_original(manifest: dict, contract_bytes: bytes) -> bool:
+    """Representation only, after the existing accepted installation/Original checks."""
+    _require(type(manifest) is dict, 'ntfs.original_bundle_projection_binding')
+    contract = manifest.get('contract')
+    role = _bundle_binary_contract_role(contract)
+    if role is None or manifest.get('native_read_installation_version') != {'Bundle1': '1.6', 'Bundle2': '1.9'}[role]:
+        return False
+    _require(type(contract_bytes) is bytes and canonical_bytes(contract) == contract_bytes,
+        'ntfs.original_bundle_projection_binding')
+    return True
+
+
 def _bundle_header(*, context_bytes, channel_id, manifest_bytes):
     _require(type(manifest_bytes) is bytes, 'ntfs.bundle_manifest_required')
     manifest = parse_manifest(manifest_bytes)
@@ -91,7 +112,8 @@ def _bundle_source_bounds(manifest_bytes):
 class _BundleTwoPassReceiver:
     """Bounded data checker only; no worker, pipe, sink or GO ownership."""
 
-    def __init__(self, *, context_bytes, channel_id, manifest_bytes):
+    def __init__(self, *, context_bytes, channel_id, manifest_bytes, _binary_chunks=False):
+        _require(type(_binary_chunks) is bool, 'ntfs.bundle_chunk_mode_required')
         self._manifest,self._header_raw = _bundle_header(context_bytes=context_bytes,
             channel_id=channel_id,manifest_bytes=manifest_bytes)
         self._headers = _member_headers(self._header_raw,self._manifest)
@@ -100,7 +122,7 @@ class _BundleTwoPassReceiver:
         self._children = tuple(_File2TwoPassReceiver(
             context_bytes=context_bytes,
             channel_id=parse_json_bytes(h)['channel_id'],
-            content_digest=m['digest'],content_length=m['length'])
+            content_digest=m['digest'],content_length=m['length'],_binary_chunks=_binary_chunks)
             for h,m in zip(self._headers,self._manifest['members']))
         self._state='header'
         self._index=self._in_member=self._released=self._offset=0
@@ -217,6 +239,16 @@ class _BundleSnapshotSource:
     def _check(self, state):
         _require(self._state==state and self._sources is not None,
             'ntfs.bundle_source_unavailable')
+
+    def _bind_channel_chunk_mode(self, binary_chunks: bool):
+        try:
+            self._check('first-unused')
+            _require(type(binary_chunks) is bool, 'ntfs.bundle_chunk_mode_required')
+            for child in self._sources:
+                child._bind_channel_chunk_mode(binary_chunks)
+        except BaseException:
+            self._state='failed'
+            raise
 
     def _frames(self, phase):
         state='first-active' if phase==1 else 'replay-active'

@@ -169,7 +169,7 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
 
     def execute_bundle(self,*,run_id,intent_digest,projection,source):
         from .bundle_execution import _bundle_projection_value, _bundle_wire_header, validate_bundle_worker_ready
-        from .bundle_stream import _BundleSnapshotSource
+        from .bundle_stream import _BundleSnapshotSource, _bundle_binary_contract_role
         acquired=False;primary=None;request_raw=None;answer=None
         try:
             self._usable()
@@ -184,7 +184,10 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
                 and type(source) is _BundleSnapshotSource
                 and source._header_raw==_bundle_wire_header(projection,self.channel_id),
                 'ntfs.original_current_invocation_mismatch')
-            source._check('first-unused')
+            role=_bundle_binary_contract_role(value['contract'])
+            binary_chunks=((role=='Bundle1' and self._PROTOCOL_VERSION=='1.5')
+                or (role=='Bundle2' and self._PROTOCOL_VERSION=='1.7'))
+            source._bind_channel_chunk_mode(binary_chunks)
             common={'protocol':'phase.native.pipe','version':self._PROTOCOL_VERSION,
                 'channel_id':self.channel_id,'sequence':self._sequence+1,
                 'kind':'execute_bundle','run_id':run_id,'intent_digest':intent_digest}

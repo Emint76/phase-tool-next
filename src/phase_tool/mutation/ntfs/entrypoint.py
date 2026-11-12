@@ -581,6 +581,7 @@ def _run_file2_worker_transfer(launch,original,pipe,deadline):
 def _run_bundle_worker_transfer(launch,original,pipe,deadline):
     """Metadata initial frame; fixed worker verifies first-pass bytes before native I/O."""
     from .bundle_execution import _bundle_projection_from_value,run_bundle_worker
+    from .bundle_stream import _bundle_binary_chunks_for_original
     from .bootstrap import _is_bundle_recovery_launch
     recovery_launch=_is_bundle_recovery_launch(launch)
     if recovery_launch and type(original) is dict and original.get('native_worker_original_version')=='4.0':
@@ -603,11 +604,14 @@ def _run_bundle_worker_transfer(launch,original,pipe,deadline):
     primary=None
     try:
         launch.check_runtime()
+        binary_chunks=_bundle_binary_chunks_for_original(launch.manifest,parsed.contract_bytes)
         if recovery_launch:
             from .bundle_recovery_capture import run_bundle_worker_capture
-            run_bundle_worker_capture(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline)
+            run_bundle_worker_capture(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline,
+                _binary_chunks=binary_chunks)
         else:
-            run_bundle_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline)
+            run_bundle_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline,
+                _binary_chunks=binary_chunks)
         launch.check_runtime()
     except BaseException as error:primary=error
     _close_worker_stdio(primary)

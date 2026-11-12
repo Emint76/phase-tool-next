@@ -39,7 +39,7 @@ def wire_record(raw):
             'bytes_base64': base64.b64encode(raw).decode('ascii')}
 
 
-def run_bundle_worker_capture(pipe, projection, channel_id, *, _transfer_deadline_ns):
+def run_bundle_worker_capture(pipe, projection, channel_id, *, _transfer_deadline_ns, _binary_chunks=False):
     """Existing effect finishes/seals BEFORE a separate terminal-only window."""
     from .bundle_execution import _BundleWorkerInput, _bundle_projection_value, _bundle_ready_value
     from .bundle_effect import execute_bundle_create
@@ -53,7 +53,8 @@ def run_bundle_worker_capture(pipe, projection, channel_id, *, _transfer_deadlin
     primary = transport_error = close_error = None
     try:
         try:
-            source = _BundleWorkerInput(pipe, projection, channel_id, _transfer_deadline_ns)
+            source = _BundleWorkerInput(pipe, projection, channel_id, _transfer_deadline_ns,
+                                        _binary_chunks=_binary_chunks)
             source.first_pass()
             pipe.send_frame(canonical_bytes(_bundle_ready_value(projection, channel_id, os.getpid())),
                             _transfer_deadline_ns)

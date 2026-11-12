@@ -11,10 +11,10 @@ from pathlib import Path
 import re
 from tempfile import NamedTemporaryFile, mkdtemp
 
-from ...canonical import canonical_bytes, parse_json_bytes
+from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
 from ...evidence import validate_run_id
-from ...freeze import copy_and_hash, revalidate_frozen
+from ...freeze import _read_copy_input, copy_and_hash, revalidate_frozen
 from ...paths import safe_relative_locator
 from ...publish_file import CONTRACT_BINDING, MAX_BYTES, _file_publication_candidate
 
@@ -207,6 +207,16 @@ def _prepare_staged_publication(application,launch,request):
             total+=captured[1]
         inputs={'payload':source}
         expected={'payload':(request['source_digest'],request['source_length'])}
+    elif role == 'File1':
+        from .input_stage import _role_bounds
+        # Preserve File1's bounded capture and error surface. Core still freezes
+        # the retained stage independently and checks the asserted digest/length.
+        source, data = _read_copy_input(preparation, request['source_locator'], _role_bounds(role)[1])
+        captured = digest_bytes(data), len(data)
+        _require(captured == (request['source_digest'], request['source_length']),
+                 'input_stage.preparation_digest_mismatch')
+        inputs = {'payload': source}
+        expected = {'payload': captured}
     elif role=='File2':
         from .input_stage import _role_bounds
         from ...streaming import hash_file

@@ -36,13 +36,16 @@ class _FailFirstPreparedAck:
 
     This is neither a request option nor a Core fault/qualification grant. The
     accepted installation still owns code identity, admission and all effects.
-    It can only withhold the original worker ACK after Core's validated reply.
+    The legacy test withholds the validated ACK. The separate Owner3 fixture
+    can send one fully framed ACK with a deliberately wrong PREPARED digest.
     """
-    __slots__=('_launch','_consumed')
+    __slots__=('_launch','_consumed','_refuse_ack')
 
-    def __init__(self,launch):
+    def __init__(self,launch,*,_refuse_ack=False):
+        _require(type(_refuse_ack) is bool,'ntfs.prepared_ack_test_role_required')
         self._launch=launch
         self._consumed=False
+        self._refuse_ack=_refuse_ack
         self.check_launch(launch)
 
     def check_launch(self,launch):
@@ -53,10 +56,16 @@ class _FailFirstPreparedAck:
         _require(launch._inspection_only is False and launch._bundle is True
             and type(request) is dict and request.get('operation')=='execute',
             'ntfs.prepared_ack_test_role_required')
+        if self._refuse_ack:
+            from .owner_semantic_contracts import semantic_owner_contract
+            _require(launch._config.get('native_launch_version')=='3.0'
+                and launch.manifest['contract']==semantic_owner_contract('Bundle2'),
+                'ntfs.prepared_ack_test_role_required')
         launch.check_runtime()
 
     def fail(self,launch,message,ack_raw):
         self.check_launch(launch)
+        _require(not self._refuse_ack,'ntfs.prepared_ack_test_role_required')
         _require(not self._consumed,'ntfs.prepared_ack_test_consumed')
         self._consumed=True  # Sticky BEFORE constructing/raising the deliberate error.
         raise PhaseError('ntfs.test_prepared_ack_delivery_failed',details={
@@ -66,6 +75,25 @@ class _FailFirstPreparedAck:
             'prepared_message_digest':digest_bytes(canonical_bytes(message)),
             'ack_digest':digest_bytes(ack_raw),'bytes_sent':0,
             'ack_send_attempted':False,'fault_consumed':True})
+
+
+    def refusal_frame(self,launch,message,ack_raw):
+        """Consume this test token and return inert data to the actual pipe owner."""
+        self.check_launch(launch)
+        _require(self._refuse_ack,'ntfs.prepared_ack_test_role_required')
+        _require(not self._consumed,'ntfs.prepared_ack_test_consumed')
+        self._consumed=True
+        from .bundle_prepared import validate_prepared_ack
+        ack=validate_prepared_ack(ack_raw,message=message)
+        original=ack['prepared_message_digest']
+        ack['prepared_message_digest']=original[:-1]+('1' if original[-1]=='0' else '0')
+        refused=canonical_bytes(ack)
+        details={'test_fault_version':'1.0','fault':'refuse_first_prepared_ack',
+            'context':parse_json_bytes(canonical_bytes(message['context'])),
+            'channel_id':message['channel_id'],'prepared_message_digest':original,
+            'ack_digest':digest_bytes(ack_raw),'refusal_frame_digest':digest_bytes(refused),
+            'valid_ack_send_attempted':False,'fault_consumed':True}
+        return refused,details
 
 
 class _NativeWindowsParent:
@@ -503,6 +531,23 @@ class _NativeWindowsParent:
         test=getattr(self,'_prepared_ack_test',None)
         if test is not None:
             _require(type(test) is _FailFirstPreparedAck,'ntfs.prepared_ack_test_role_required')
+            if test._refuse_ack:
+                _require(type(pipe) is WindowsPipeFrames and self._worker is self._launch._worker
+                    and pipe._streams[0] is self._worker.stdout and pipe._streams[1] is self._worker.stdin
+                    and self._bundle_ack_relay_entered is True and self._go_attempted is True
+                    and type(deadline) is int and deadline==self._file2_exchange_deadline,
+                    'ntfs.prepared_ack_test_role_required')
+                from .uncertainty import _diagnostic
+                refused,details=test.refusal_frame(self._launch,message,ack_raw)
+                try:
+                    progress=pipe.send_frame(refused,deadline)
+                    _require(progress['wire_bytes']==progress['expected_wire_bytes']==len(refused)+10,
+                        'ntfs.prepared_ack_test_frame_unproven')
+                except BaseException as error:
+                    raise PhaseError('ntfs.test_prepared_ack_refusal_unproven',
+                        details=details|{'transport':_diagnostic(error)}) from error
+                raise PhaseError('ntfs.test_prepared_ack_refusal_frame_sent',
+                    details=details|{'wire_bytes':progress['wire_bytes']})
             test.fail(self._launch,message,ack_raw)
         pipe.send_frame(ack_raw,deadline)
 

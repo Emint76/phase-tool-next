@@ -5,19 +5,25 @@ NativeIO, process, pipe or installation; runtime identity is an explicit modeled
 boundary. Source213 must preserve these sources before their first execution.
 """
 import ast
+import os
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 
 from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch,_is_bundle_recovery_launch
 from phase_tool.mutation.ntfs.bundle_execution import _BUNDLE2_CONTRACT_V2
-from phase_tool.mutation.ntfs.bundle_prepared import prepared_message,prepared_ack
+from phase_tool.mutation.ntfs.bundle_prepared import prepared_message,prepared_ack,validate_prepared_ack
 from phase_tool.mutation.ntfs.entrypoint import run_native_parent
 from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
 from phase_tool.mutation.ntfs.parent import _FailFirstPreparedAck,_NativeWindowsParent
+from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+from phase_tool.mutation.ntfs.windows_pipe import WindowsPipeFrames
 from .test_native_bundle2_prepared import b2_projection,native_stage
 from .test_native_bundle_protocol import CHANNEL
 from ._native_startup_shell import legacy_config_bytes
@@ -190,6 +196,127 @@ class PreparedAckTestSeamComponentTests(unittest.TestCase):
             and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Name)
             and n.func.value.id=='launch' and n.func.attr=='check_runtime')
         self.assertLess(startup_check,calls[0].lineno)
+
+
+class PreparedAckRefusalOwnerTests(unittest.TestCase):
+    """Exact token and parent selector with borrowed pipe I/O modeled."""
+
+    def refusal_owner(self):
+        launch, project = launch_shell()
+        contract = semantic_owner_contract('Bundle2')
+        project = replace(project, contract_bytes=canonical_bytes(contract))
+        launch._config_bytes = canonical_bytes({'native_launch_version': '3.0'})
+        launch._manifest_bytes = canonical_bytes(dict(launch.manifest, contract=contract))
+        launch._worker = SimpleNamespace(stdin=object(), stdout=object())
+        token = _FailFirstPreparedAck(launch, _refuse_ack=True)
+        owner = relay_shell(launch, token)
+        owner._worker = launch._worker
+        owner._go_attempted = owner._bundle_ack_relay_entered = True
+        owner._file2_exchange_deadline = time.perf_counter_ns() + 29_000_000_000
+        pipe = object.__new__(WindowsPipeFrames)
+        pipe._streams = launch._worker.stdout, launch._worker.stdin
+        pipe._gate = threading.Lock()
+        pipe._owner = os.getpid(), threading.get_ident()
+        pipe._failed = pipe._sealed = False
+        pipe._last_frame_failure = None
+        pipe._identities = ((4, 5), (6, 7))
+        pipe._pipe = lambda side: pipe._identities[side]
+
+        def record(data, deadline, progress):
+            progress['wire_bytes'] = len(data)
+
+        pipe._write = Mock(side_effect=record)
+        return owner, token, pipe, *checkpoint(project)
+
+    def test_direct_token_produces_inert_data_and_cannot_send_or_rearm(self):
+        owner, token, pipe, message, raw = self.refusal_owner()
+        self.assertFalse(hasattr(token, 'send_refusal'))
+        body, details = token.refusal_frame(owner._launch, message, raw)
+        self.assertIsInstance(body, bytes)
+        self.assertEqual(details['refusal_frame_digest'], digest_bytes(body))
+        self.assertIs(details['valid_ack_send_attempted'], False)
+        with self.assertRaisesRegex(PhaseError, 'ntfs.prepared_ack_test_consumed'):
+            owner._relay_prepared_ack(pipe, message, raw, owner._file2_exchange_deadline)
+        pipe._write.assert_not_called()
+
+    def test_only_current_owner_sends_one_refused_frame_on_original_deadline(self):
+        owner, token, pipe, message, raw = self.refusal_owner()
+        deadline = owner._file2_exchange_deadline
+        with self.assertRaisesRegex(PhaseError, 'ntfs.test_prepared_ack_refusal_frame_sent') as caught:
+            owner._relay_prepared_ack(pipe, message, raw, deadline)
+        pipe._write.assert_called_once()
+        wire, actual_deadline, progress = pipe._write.call_args.args
+        body = wire[9:-1]
+        self.assertEqual(wire, f'{len(body):08x}\n'.encode('ascii') + body + b'\n')
+        self.assertEqual((actual_deadline, progress['wire_bytes']), (deadline, len(wire)))
+        before, after = parse_json_bytes(raw), parse_json_bytes(body)
+        changed = after.pop('prepared_message_digest')
+        self.assertNotEqual(changed, before.pop('prepared_message_digest'))
+        self.assertEqual(after, before)
+        with self.assertRaisesRegex(PhaseError, 'ntfs.bundle_prepared_ack_binding_mismatch'):
+            validate_prepared_ack(body, message=message)
+        self.assertEqual(caught.exception.details['ack_digest'], digest_bytes(raw))
+        self.assertEqual(caught.exception.details['refusal_frame_digest'], digest_bytes(body))
+        self.assertEqual(caught.exception.details['wire_bytes'], len(wire))
+        self.assertIs(caught.exception.details['valid_ack_send_attempted'], False)
+        self.assertIs(token._consumed, True)
+        with self.assertRaisesRegex(PhaseError, 'ntfs.prepared_ack_test_consumed'):
+            owner._relay_prepared_ack(pipe, message, raw, deadline)
+        pipe._write.assert_called_once()
+
+    def test_refuses_unreached_or_foreign_parent_and_preserves_unused_token(self):
+        for boundary in ('go', 'prepared', 'process', 'stdin', 'stdout', 'pipe', 'deadline'):
+            with self.subTest(boundary=boundary):
+                owner, token, pipe, message, raw = self.refusal_owner()
+                actual_pipe, deadline = pipe, owner._file2_exchange_deadline
+                if boundary == 'go':
+                    owner._go_attempted = False
+                elif boundary == 'prepared':
+                    owner._bundle_ack_relay_entered = False
+                elif boundary == 'process':
+                    owner._worker = SimpleNamespace(stdin=pipe._streams[1], stdout=pipe._streams[0])
+                elif boundary == 'stdin':
+                    pipe._streams = pipe._streams[0], object()
+                elif boundary == 'stdout':
+                    pipe._streams = object(), pipe._streams[1]
+                elif boundary == 'pipe':
+                    actual_pipe = Mock()
+                else:
+                    deadline += 1
+                with self.assertRaisesRegex(PhaseError, 'ntfs.prepared_ack_test_role_required'):
+                    owner._relay_prepared_ack(actual_pipe, message, raw, deadline)
+                self.assertIs(token._consumed, False)
+                pipe._write.assert_not_called()
+                if boundary == 'pipe':
+                    actual_pipe.send_frame.assert_not_called()
+        legacy, _ = launch_shell()
+        with self.assertRaisesRegex(PhaseError, 'ntfs.prepared_ack_test_role_required'):
+            _FailFirstPreparedAck(legacy, _refuse_ack=True)
+        legacy.spawn_core.assert_not_called()
+
+    def test_exact_expired_deadline_or_partial_transport_consumes_without_second_send(self):
+        for boundary in ('expired', 'partial'):
+            with self.subTest(boundary=boundary):
+                owner, token, pipe, message, raw = self.refusal_owner()
+                deadline = owner._file2_exchange_deadline
+                expected = 0 if boundary == 'expired' else 19
+
+                def fail_after_prefix(data, sent_deadline, progress):
+                    self.assertEqual(sent_deadline, deadline)
+                    progress['wire_bytes'] = expected
+                    raise OSError('modeled pipe failure')
+
+                pipe._write.side_effect = fail_after_prefix
+                now = deadline if boundary == 'expired' else deadline - 1
+                with patch('phase_tool.mutation.ntfs.windows_pipe.time.perf_counter_ns', return_value=now):
+                    with self.assertRaisesRegex(PhaseError, 'ntfs.test_prepared_ack_refusal_unproven') as caught:
+                        owner._relay_prepared_ack(pipe, message, raw, deadline)
+                self.assertEqual(caught.exception.details['transport']['details']['progress']['wire_bytes'], expected)
+                self.assertIs(caught.exception.details['valid_ack_send_attempted'], False)
+                self.assertIs(token._consumed, True)
+                with self.assertRaisesRegex(PhaseError, 'ntfs.prepared_ack_test_consumed'):
+                    owner._relay_prepared_ack(pipe, message, raw, deadline)
+                self.assertEqual(pipe._write.call_count, int(boundary == 'partial'))
 
 
 class NativeRecoveryDispatchSelectionComponentTests(unittest.TestCase):

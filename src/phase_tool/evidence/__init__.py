@@ -983,7 +983,7 @@ def _write_native_parent_failure(store,binding,value):
     return _write_native_canonical(store,binding,'attachments/native-parent-failure.json',value)
 
 
-def _open_native_recovery_store(binding, run_id, *, _publication_selection=None):
+def _open_native_recovery_store(binding, run_id, *, _publication_selection=None, _expected_commit_checkpoint=None):
     """Open ONE existing original; never call the reserving constructor.
 
     The caller already holds the native common guard and has fully verified
@@ -1020,6 +1020,13 @@ def _open_native_recovery_store(binding, run_id, *, _publication_selection=None)
             parent = current
             current = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC, dir_fd=parent)
             opened.append((current, parent, name))
+        if _expected_commit_checkpoint is not None:
+            # A terminal writer reopens the already existing checkpoint only.
+            # Never create a replacement directory when its identity drifted.
+            parent = opened[3][0]  # The selected run, not its attachment directory.
+            name = 'recovery'
+            current = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC, dir_fd=parent)
+            opened.append((current, parent, name))
         identities = []
         for fd, parent, name in opened:
             info = os.fstat(fd)
@@ -1036,13 +1043,16 @@ def _open_native_recovery_store(binding, run_id, *, _publication_selection=None)
         store.attachment_root = store.run_root/'attachments'
         store.blob_root = store.run_root/'blobs'
         store.operational_lock_root = root/'.phase/locks'
-        store._owned_run_identity = identities[-2]
-        store._native_owned_attachment_identity = identities[-1]
+        store._owned_run_identity = identities[3]
+        store._native_owned_attachment_identity = identities[4]
         store._authoritative_evidence_published = True
         store._native_recovery_only = True
         store._native_recovery_owner = os.getpid(), threading.get_ident()
         store._native_recovery_fds = [list(row)+[identity] for row,identity in zip(opened,identities)]
         store._native_recovery_binding = binding
+        if _expected_commit_checkpoint is not None:
+            _require(_native_recovery_checkpoint_identity(store) == _expected_commit_checkpoint,
+                     'recovery.commit_checkpoint_identity_changed')
         return store
     except BaseException as primary:
         from ..mutation.ntfs.uncertainty import _diagnostic
@@ -1071,6 +1081,22 @@ def _check_native_recovery_store(store):
                  and identity==(current.st_dev,current.st_ino)==(named.st_dev,named.st_ino),
                  'ntfs.original_evidence_identity_mismatch')
     store._native_recovery_binding.check_evidence_root()
+
+
+def _native_recovery_checkpoint_identity(store):
+    """Identify the existing Bundle2 commit checkpoint through its owned descriptors."""
+    from ..mutation.ntfs.native import _require
+    _check_native_recovery_store(store)
+    records = store._native_recovery_fds
+    _require(len(records) == 6 and records[-1][1:3] == [records[3][0], 'recovery'],
+             'recovery.commit_checkpoint_identity_changed')
+    info = os.stat('commit-intent.json', dir_fd=records[-1][0], follow_symlinks=False)
+    _require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode&0o022
+             and info.st_nlink == 1 and info.st_dev == records[0][3][0]
+             and 0 < info.st_size <= 2*1024**2, 'recovery.commit_checkpoint_identity_changed')
+    return (tuple(row[3] for row in records),
+            (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size,
+             info.st_mtime_ns, info.st_ctime_ns))
 
 
 def _write_native_recovery_canonical(store, leaf, value):

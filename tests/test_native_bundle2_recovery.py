@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import threading
 import time
@@ -452,6 +453,272 @@ class RecoveryGenerationBoundaryTests(unittest.TestCase):
         profile=parse_json_bytes(resources['descriptors/guarantee/phase.native.ntfs.experiment.bundle2.authority.v1-1.0.2.json'])
         self.assertEqual(profile['provided_guarantees'],[]);self.assertEqual(profile['conformance'],[])
         self.assertEqual(profile['classification'],'qualification_candidate')
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'Linux recovery authority imports required')
+class CanonicalRecoveryTerminalGuardTests(unittest.TestCase):
+    """Real selection, continuation and result serializers with recorded IO."""
+
+    CHECKPOINT = 'commit-intent.json'
+    PROOF = 'native-commit-proof.json'
+    RECEIPT = 'commit-receipt.json'
+    CHECKPOINT_IDENTITY = (tuple((71, inode) for inode in range(1, 7)), (71, 9, 0o100600, 1, 1, 1, 1, 1))
+
+    @classmethod
+    def setUpClass(cls):
+        from phase_tool.installation import _native_experimental_bundle2_registry_v3
+        cls.registry = _native_experimental_bundle2_registry_v3()
+
+    def setUp(self):
+        self.reset_model()
+
+    def reset_model(self):
+        from phase_tool.canonical import profile_digest
+        from phase_tool.mutation.ntfs.bundle_recovery import _expected_continuation
+
+        self.run_id = 'model-native-recovery'
+        self.root = Path('modeled-evidence')
+        self.run_root = self.root / '.phase/runs' / self.run_id
+        self.target_root = 'modeled-target'
+        self.request_id = 'modeled-request'
+        self.target = native_stage(b2_projection())
+        self.identity = self.CHECKPOINT_IDENTITY
+        self.intent = {'run_id': self.run_id, 'effect_plan_digest': 'sha256:' + '1'*64,
+                       'idempotency': {'key': self.request_id}, 'contract': _BUNDLE2_CONTRACT_V2}
+        self.intent_digest = profile_digest('intent', self.intent)
+        self.plan = {'effects': [{'target': {'relative_locator': 'bundle'}}]}
+        self.original = {'intent': self.intent, 'plan': self.plan, 'contract': object(),
+                         'run': self.run_root, 'projection': object(), 'original_receipt': None,
+                         'prepared': self.target['stat_identity'], 'parent': {'completion': {
+                             'physical_evidence': {'stage_identity': self.target['native_identity']}}}}
+        self.expected_checkpoint = _expected_continuation(self.original)
+        self.binding = SimpleNamespace(manifest_bytes=canonical_bytes({
+            'evidence_root': str(self.root), 'root_projections': {'phase_result_root': self.target_root}}),
+            manifest_digest='sha256:' + '2'*64, registry=self.registry)
+        self.records = {}
+        self.events = []
+        self.stores = []
+        self.guard = None
+        self.guard_count = 0
+        self.dispatches = 0
+        self.parent = None
+        self.failure = None
+        self.original_bytes = canonical_bytes(self.intent)
+        self.after_first_guard = lambda: None
+        self.projected = {'grant': {}, 'context': {'operation_nonce': '3'*32},
+                          'effect': self.plan['effects'][0]}
+
+    def inventory(self):
+        rows = {'intent.json': (digest_bytes(self.original_bytes), len(self.original_bytes))}
+        rows.update({'recovery/' + leaf: (digest_bytes(raw), len(raw)) for leaf, raw in self.records.items()})
+        return rows
+
+    def verify_original(self, binding, run_id, request_id, intent_digest):
+        self.assertIs(binding, self.binding)
+        self.assertEqual((run_id, request_id, intent_digest), (self.run_id, self.request_id, self.intent_digest))
+        return {**self.original, 'files': self.inventory()}
+
+    def shared_guard(self, binding, *, history_bindings, _recovery_selection):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def owned():
+            self.assertIs(binding, self.binding)
+            self.assertIs(history_bindings, self)
+            self.assertIsNone(self.guard)
+            self.guard_count += 1
+            generation = self.guard_count
+            self.guard = generation
+            self.events.append(('guard', generation))
+            try:
+                _recovery_selection.check(self.run_root)
+                yield
+                if self.failure == ('unlock', generation):
+                    raise OSError('modeled common guard unlock uncertainty')
+            finally:
+                self.guard = None
+                if generation == 1:
+                    self.after_first_guard()
+        return owned()
+
+    def open_store(self, binding, run_id, *, _expected_commit_checkpoint=None):
+        self.assertIs(binding, self.binding)
+        self.assertEqual(run_id, self.run_id)
+        self.assertIsNotNone(self.guard)
+        if _expected_commit_checkpoint is not None:
+            self.assertTrue(self.stores[0].closed)
+            if self.identity != _expected_commit_checkpoint:
+                raise PhaseError('recovery.commit_checkpoint_identity_changed')
+        store = SimpleNamespace(owner=self.guard, closed=False)
+        self.stores.append(store)
+        return store
+
+    def close_store(self, store):
+        self.assertFalse(store.closed)
+        store.closed = True
+        self.events.append(('close', store.owner, self.guard))
+        if self.failure == ('close', store.owner):
+            raise OSError('modeled Evidence close uncertainty')
+
+    def checkpoint_identity(self, store):
+        self.assertEqual(self.guard, store.owner)
+        self.assertFalse(store.closed)
+        self.assertEqual(parse_json_bytes(self.records[self.CHECKPOINT]), self.expected_checkpoint)
+        return self.identity
+
+    def write_record(self, store, leaf, value):
+        self.assertFalse(store.closed)
+        self.events.append(('write', leaf, self.guard))
+        if self.guard != store.owner:
+            raise PhaseError('model.unguarded_recovery_write')
+        if self.failure == ('write', leaf):
+            raise OSError('modeled terminal receipt uncertainty')
+        raw = canonical_bytes(value)
+        self.assertEqual(self.records.setdefault(leaf, raw), raw)
+        return self.run_root / 'recovery' / leaf, digest_bytes(raw)
+
+    def read_record(self, path):
+        try:
+            return parse_json_bytes(self.records[path.name])
+        except KeyError as error:
+            raise PhaseError('model.terminal_record_absent') from error
+
+    def resume(self, *_args, _native_checkpoint):
+        _native_checkpoint.persist({'pid': 123})
+        self.dispatches += 1
+        context = _native_checkpoint.context
+        rename = {'api': 'NtSetInformationFile', 'class': 10, 'return_status': '0x00000000',
+                  'io_status': '0x00000000', 'effect_state': 'committed'}
+        trace = {'capture_complete': True, 'capture_errors': [], 'unacknowledged_records_upper_bound': 0,
+                 'raw_records_complete': True, 'omitted_middle_records': 0, 'records': [rename],
+                 'acknowledged_recorded_event_count': 1,
+                 'canonical_jsonl_digest': digest_bytes(canonical_bytes(rename) + b'\n')}
+        completion = {'context': context, 'mutation_attempted': True, 'mutation_trace': trace}
+        self.parent = {'context': context, 'completion': completion,
+                       'completion_wire': wire_record(canonical_bytes(completion))}
+        return self.parent
+
+    def recover(self):
+        from contextlib import ExitStack
+        from phase_tool import continuation, core, evidence, recovery
+        from phase_tool.installation import _NativeFileCreateInstallation
+        from phase_tool.mutation import broker
+        from phase_tool.mutation.ntfs import bundle_execution, bundle_recovery, bundle_recovery_original
+        from phase_tool.mutation.ntfs.experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
+
+        authority = object.__new__(_ExperimentalBundle2AuthorityV3)
+        channel = SimpleNamespace(_sealed=False, channel_id='4'*32)
+        channel.seal = lambda: setattr(channel, '_sealed', True)
+        channel.captured_file2_completion = lambda: None if self.parent is None else canonical_bytes(self.parent)
+        authority._inspection_only, authority._run_id = False, self.run_id
+        authority._operation_nonce, authority._server_ingress_sealed = '5'*32, False
+        authority.read_binding, authority.profile, authority.channel = self.binding, object(), channel
+        authority.observe = Mock(return_value={'native': self.target})
+        installation = object.__new__(_NativeFileCreateInstallation)
+        installation.read_binding, installation.authority, installation.history_bindings = self.binding, authority, self
+        with ExitStack() as boundaries:
+            for module, name, implementation in (
+                (core, '_guard_native_original_intents', self.shared_guard),
+                (evidence, '_open_native_recovery_store', self.open_store),
+                (evidence, '_close_native_recovery_store', self.close_store),
+                (evidence, '_write_native_recovery_canonical', self.write_record),
+                (evidence, '_native_recovery_checkpoint_identity', self.checkpoint_identity),
+                (bundle_recovery_original, 'verify_original', self.verify_original),
+                (bundle_recovery_original, '_record', self.read_record),
+                (bundle_recovery, 'native_inventory', lambda *_: self.inventory()),
+                (bundle_recovery, 'verify_completion', lambda *_: self.target),
+                (bundle_recovery, 'validate_recovery_ready', Mock()),
+                (bundle_execution, '_bundle_projection_value', lambda _: self.projected),
+                (bundle_execution, 'validate_bundle_observation', lambda observed, *_a, **_k: observed),
+                (continuation, 'validate_record_schema', Mock()),
+                (recovery, 'read_record', self.read_record),
+                (broker, 'EffectBroker', lambda *_a, **_k: SimpleNamespace(resume_prepared_bundle=self.resume)),
+            ):
+                boundaries.enter_context(patch.object(module, name, implementation,
+                    create=name == '_native_recovery_checkpoint_identity'))
+            # Only filesystem presence is modeled here. Selection and canonical
+            # record verification use the retained byte map and real parsers.
+            directory = self.run_root / 'recovery'
+            exists, iterdir = Path.exists, Path.iterdir
+
+            def model_exists(path, *args, **kwargs):
+                if path == directory:
+                    return bool(self.records)
+                return path.name in self.records if path.parent == directory else exists(path, *args, **kwargs)
+
+            def model_iterdir(path):
+                return iter(directory / leaf for leaf in self.records) if path == directory else iterdir(path)
+
+            boundaries.enter_context(patch.object(Path, 'exists', model_exists))
+            boundaries.enter_context(patch.object(Path, 'iterdir', model_iterdir))
+            self.parent = None
+            return bundle_recovery.recover_native(SimpleNamespace(installation=installation), authority,
+                evidence_root=self.root, run_id=self.run_id, target_root=self.target_root, request_id=self.request_id,
+                expected_intent_digest=self.intent_digest, mode='commit_prepared')
+
+    def test_terminal_pair_uses_second_guard_then_repeat_observes_without_effect(self):
+        first = self.recover()
+        self.assertEqual((first.exit_code, first.payload['success']), (0, True), self.events)
+        self.assertEqual(parse_json_bytes(self.records[self.CHECKPOINT]), self.expected_checkpoint)
+        self.assertLess(self.events.index(('close', 1, None)), self.events.index(('guard', 2)))
+        self.assertEqual([row[1:] for row in self.events if row[0] == 'write'][:3],
+                         [(self.CHECKPOINT, 1), (self.PROOF, 2), (self.RECEIPT, 2)])
+        self.assertIn(('close', 2, 2), self.events)
+        terminal = {leaf: self.records[leaf] for leaf in (self.CHECKPOINT, self.PROOF, self.RECEIPT)}
+        repeated = self.recover()
+        self.assertEqual((repeated.exit_code, repeated.payload['recovery_mutation_attempted']), (0, False))
+        self.assertEqual(self.dispatches, 1)
+        self.assertEqual({leaf: self.records[leaf] for leaf in terminal}, terminal)
+
+    def test_reselect_refuses_original_checkpoint_or_competing_proof_drift(self):
+        for scope, code in (
+            ('original', 'recovery.commit_terminal_checkpoint_changed'),
+            ('checkpoint', 'recovery.commit_checkpoint_identity_changed'),
+            ('proof', 'recovery.commit_terminal_checkpoint_changed'),
+        ):
+            with self.subTest(scope=scope):
+                self.reset_model()
+
+                def drift():
+                    if scope == 'original':
+                        self.original_bytes += b' '
+                    elif scope == 'checkpoint':
+                        self.identity = (self.identity[0], (*self.identity[1][:-1], 2))
+                    else:
+                        self.records[self.PROOF] = canonical_bytes({'competing': True})
+
+                self.after_first_guard = drift
+                result = self.recover()
+                self.assertEqual((result.exit_code, result.payload['error']), (40, code))
+                self.assertEqual(self.dispatches, 1)
+                self.assertNotIn(self.RECEIPT, self.records)
+                self.assertFalse(any(row[:2] == ('write', self.PROOF) for row in self.events))
+
+    def test_unlock_or_close_uncertainty_keeps_indeterminate_result(self):
+        for fault in ('unlock', 'close'):
+            for generation in (1, 2):
+                with self.subTest(fault=fault, generation=generation):
+                    self.reset_model()
+                    self.failure = fault, generation
+                    result = self.recover()
+                    self.assertEqual((result.exit_code, result.payload['success']), (40, False))
+                    self.assertTrue(result.payload['inspection_required'])
+                    self.assertEqual(result.payload['native_parent_response'], self.parent)
+                    self.assertEqual(self.dispatches, 1)
+                    self.assertEqual(self.PROOF in self.records, generation == 2)
+                    self.assertEqual(self.RECEIPT in self.records, generation == 2)
+
+    def test_partial_pair_blocks_a_second_effect(self):
+        self.failure = 'write', self.RECEIPT
+        result = self.recover()
+        self.assertEqual(result.exit_code, 40)
+        self.assertIn(self.PROOF, self.records)
+        self.assertNotIn(self.RECEIPT, self.records)
+        self.failure = None
+        result = self.recover()
+        self.assertEqual((result.exit_code, result.payload['error']), (40, 'model.terminal_record_absent'))
+        self.assertEqual(self.dispatches, 1)
+        self.assertEqual(self.events.count(('write', self.RECEIPT, 2)), 1)
 
 
 if __name__=='__main__':unittest.main()

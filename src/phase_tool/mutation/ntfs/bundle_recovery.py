@@ -7,8 +7,10 @@ remain the owners. Windows alone owns the remaining native effect.
 from __future__ import annotations
 from .owner_semantic_fixture import is_semantic_owner_authority
 from .owner_directory import is_owner_directory_authority
+from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 import threading
 
 from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes,profile_digest
@@ -159,18 +161,48 @@ def verify_saved_recovery(binding,original):
     return proof,verified
 
 
-def _persist_recovery_observation(binding, history_bindings, result, *, run_id, request_id, intent_digest):
-    """Append result telemetry under the same common guard with fresh selection."""
+@dataclass(frozen=True)
+class _NativeCommitTerminal:
+    files: tuple
+    checkpoint: tuple
+    proof: dict
+    receipt: dict
+
+
+def _persist_recovery_observation(binding, history_bindings, result, *, run_id, request_id, intent_digest, terminal=None):
+    """Use the existing second guard for the first terminal pair and result telemetry."""
     from ...core import _guard_native_original_intents
-    from ...evidence import _open_native_recovery_store, _close_native_recovery_store, _write_native_recovery_canonical
+    from ...evidence import (_open_native_recovery_store, _close_native_recovery_store,
+        _write_native_recovery_canonical, _native_recovery_checkpoint_identity)
 
     # Commit evidence may have appeared since the first selection. Do not
     # reuse its old census, and let the guard recheck this new one under lock.
     selection = select_original(binding, run_id, request_id, intent_digest)
     with _guard_native_original_intents(binding, history_bindings=history_bindings, _recovery_selection=selection):
-        store = _open_native_recovery_store(binding, run_id)
+        if terminal is None:
+            store = _open_native_recovery_store(binding, run_id)
+        else:
+            _require(type(terminal) is _NativeCommitTerminal and result.success is True
+                     and result.recovery_mode == 'commit_prepared' and result.intent_digest == intent_digest,
+                     'recovery.commit_terminal_scope')
+            expected = dict(terminal.files)
+            current = dict(selection.files)  # Revalidated under this guard by the existing selector.
+            _require('recovery/commit-intent.json' in expected
+                     and all(current.get(name) == row for name,row in expected.items())
+                     and not {'recovery/native-commit-proof.json', 'recovery/commit-receipt.json'} & current.keys()
+                     and all(re.fullmatch(r'recovery/[0-9a-f]{64}[.]json', name) is not None
+                             for name in current.keys() - expected.keys()),
+                     'recovery.commit_terminal_checkpoint_changed')
+            # Only newly validated observation records may have been appended by
+            # another recoverer. Never adopt or complete a competing terminal pair.
+            store = _open_native_recovery_store(binding, run_id, _expected_commit_checkpoint=terminal.checkpoint)
         primary = None
         try:
+            if terminal is not None:
+                _write_native_recovery_canonical(store, 'native-commit-proof.json', terminal.proof)
+                _write_native_recovery_canonical(store, 'commit-receipt.json', terminal.receipt)
+                _require(_native_recovery_checkpoint_identity(store) == terminal.checkpoint,
+                         'recovery.commit_checkpoint_identity_changed')
             raw = result.model_dump(exclude={'observation_digest', 'observation_path'})
             leaf = digest_bytes(canonical_bytes(raw))[7:] + '.json'
             path, digest = _write_native_recovery_canonical(store, leaf, raw)
@@ -191,13 +223,15 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
     from ...application import ApplicationResponse
     from ...recovery import NativeRecoveryResult
     from ...core import _guard_native_original_intents
-    from ...evidence import _open_native_recovery_store, _close_native_recovery_store, _write_native_recovery_canonical
+    from ...evidence import (_open_native_recovery_store, _close_native_recovery_store,
+        _native_recovery_checkpoint_identity)
     from .experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
     from .bundle_execution import _bundle_projection_value
     _require(type(authority) is _ExperimentalBundle2AuthorityV3 or is_semantic_owner_authority(authority, 'Bundle2') or is_owner_directory_authority(authority, 'Bundle2'), 'recovery.closed_native_role_required')
     result = NativeRecoveryResult(run_id=run_id, request_id=request_id, recovery_mutation_attempted=False, recovery_mode=mode if mode in {'observe', 'commit_prepared'} else 'observe')
     store = None
     original = None
+    terminal = None
     binding = authority.read_binding
     manifest = parse_json_bytes(binding.manifest_bytes)
     try:
@@ -250,13 +284,19 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
             authority._server_ingress_sealed = True
             current = native_inventory(binding, original['run'])
             _require({n: v for n, v in current.items() if not n.startswith('recovery/')} == {n: v for n, v in original['files'].items() if not n.startswith('recovery/')}, 'recovery.original_changed')
+            if previous is None and mode == 'commit_prepared':
+                expected_intent = _expected_continuation(original)
+                checkpoint_raw = canonical_bytes(expected_intent)
+                _require(checkpoint.continued == expected_intent
+                         and current.get('recovery/commit-intent.json') == (digest_bytes(checkpoint_raw), len(checkpoint_raw)),
+                         'recovery.continuation_conflict')
+                checkpoint_identity = _native_recovery_checkpoint_identity(store)
         from ...continuation_progress import LockFinalization
         result.lock_finalization = LockFinalization(unlock='succeeded', close='succeeded')
         if previous is None and mode == 'commit_prepared':
             proof = {'native_bundle_recovery_proof_version': '1.0', 'original_intent_digest': expected_intent_digest, 'effect_plan_digest': result.effect_plan_digest, 'installation_digest': binding.manifest_digest, 'registry_snapshot_digest': binding.registry.digest, 'original_files': {n: list(v) for n, v in original['files'].items() if not n.startswith('recovery/')}, 'operation': mode, 'recovery_context': context, 'parent_response': parent, 'observation': observation, 'common_guard_finalized': True}
-            _write_native_recovery_canonical(store, 'native-commit-proof.json', proof)
-            if mode == 'commit_prepared':
-                _write_native_recovery_canonical(store, 'commit-receipt.json', {'continuation_receipt_version': '1.0', 'original_intent_digest': expected_intent_digest, 'preparation_digest': context['preparation_digest'], 'continuation_intent_digest': digest_bytes(canonical_bytes(_expected_continuation(original))), 'status': 'verified_existing', 'target_verified': True, 'effect_plan_digest': result.effect_plan_digest})
+            receipt = {'continuation_receipt_version': '1.0', 'original_intent_digest': expected_intent_digest, 'preparation_digest': context['preparation_digest'], 'continuation_intent_digest': digest_bytes(canonical_bytes(_expected_continuation(original))), 'status': 'verified_existing', 'target_verified': True, 'effect_plan_digest': result.effect_plan_digest}
+            terminal = _NativeCommitTerminal(tuple(sorted(current.items())), checkpoint_identity, proof, receipt)
         result.status = 'verified_existing'
         result.success = True
         result.target_verified = True
@@ -311,9 +351,12 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
                 result.exit_code = 40
                 result.error = getattr(error, 'code', None) or 'recovery.store_finalization_unknown'
                 result.native_error_details.append(_diagnostic(error))
+                if terminal is not None:
+                    result.native_parent_response = terminal.proof['parent_response']
             try:
                 path, digest = _persist_recovery_observation(binding, installed.history_bindings, result,
-                    run_id=run_id, request_id=request_id, intent_digest=expected_intent_digest)
+                    run_id=run_id, request_id=request_id, intent_digest=expected_intent_digest,
+                    terminal=terminal if result.success else None)
                 result.observation_path = str(path)
                 result.observation_digest = digest
             except BaseException as error:
@@ -323,4 +366,6 @@ def recover_native(application, authority, *, evidence_root, run_id, target_root
                 result.exit_code = 40
                 result.error = result.error or getattr(error, 'code', None) or 'recovery.observation_unknown'
                 result.native_error_details.append(_diagnostic(error))
+                if terminal is not None:
+                    result.native_parent_response = terminal.proof['parent_response']
     return ApplicationResponse(result.model_dump(), result.exit_code)

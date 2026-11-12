@@ -141,6 +141,57 @@ class NativeCandidateRegistryTests(unittest.TestCase):
                 changed = dict(self.resources); changed[resource] += b'\n'
                 self.assert_loader_error('registry.digest_mismatch', changed)
 
+    def test_pinned_native_snapshot_matches_public_snapshot_and_owns_its_bytes(self):
+        raw = self.resources[RESOURCE]
+        document = parse_json_bytes(raw)
+        artifact = bytearray(self.resources[RESOURCE])
+        resources = dict(self.resources, test_asset=artifact)
+        pinned = RegistrySnapshot._from_pinned_native_registry(raw, resources, RAW_DIGEST)
+        public = RegistrySnapshot.from_document(document, resources)
+        self.assertIs(type(pinned), RegistrySnapshot)
+        self.assertEqual(pinned.digest, public.digest)
+        self.assertEqual(pinned.to_document(), public.to_document())
+        self.assertEqual(pinned.contract_bindings(), public.contract_bindings())
+        self.assertEqual(pinned.guarantee_profile_bindings(), public.guarantee_profile_bindings())
+        artifact.clear()
+        resources.clear()
+        document['entries'].clear()
+        returned = pinned.to_document()
+        returned['entries'].clear()
+        self.assertEqual(pinned.to_document(), public.to_document())
+        self.assertEqual(pinned.resource_bytes('test_asset'), raw)
+        self.assertEqual(pinned.resource_bytes(RESOURCE), raw)
+
+    def test_pinned_native_snapshot_checks_the_pin_before_parsing(self):
+        with patch('phase_tool.registry.parse_json_bytes', side_effect=AssertionError('parser reached')) as parser:
+            with self.assertRaises(PhaseError) as caught:
+                RegistrySnapshot._from_pinned_native_registry(self.resources[RESOURCE], self.resources,
+                    'sha256:' + '0' * 64)
+        parser.assert_not_called()
+        self.assertEqual(caught.exception.code, 'ntfs.native_registry_digest_mismatch')
+
+    def test_pinned_native_snapshot_preserves_strict_parse_and_byte_bound(self):
+        vectors = (
+            (self.resources[RESOURCE] + b'\n', 'ntfs.native_registry_noncanonical'),
+            (b'{"entries":[],"entries":[],"registry_snapshot_version":"1.0"}', 'candidate.duplicate_key'),
+            (b' ' * (256 * 1024 + 1), 'candidate.too_large'),
+        )
+        for raw, code in vectors:
+            with self.subTest(code=code):
+                with self.assertRaises(PhaseError) as caught:
+                    RegistrySnapshot._from_pinned_native_registry(raw, self.resources, digest_bytes(raw))
+                self.assertEqual(caught.exception.code, code)
+
+    def test_pinned_native_snapshot_digest_does_not_create_contract_trust(self):
+        document = parse_json_bytes(self.resources[RESOURCE])
+        for root in document['trust_roots']:
+            root['enabled'] = False
+        raw = canonical_bytes(document)
+        registry = RegistrySnapshot._from_pinned_native_registry(raw, self.resources, digest_bytes(raw))
+        with self.assertRaises(PhaseError) as caught:
+            registry.resolve_contract('file_create.v1', '1.0.0', NEW, core_version=__version__)
+        self.assertEqual(caught.exception.code, 'registry.untrusted')
+
 
 FRESH_INSPECT = '''
 import hashlib,json,sys

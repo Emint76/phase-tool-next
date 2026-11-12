@@ -498,7 +498,6 @@ def _load_native_file_create_registry(resource, expected_digest, contract_digest
     Environment, operation data and original intents cannot select a registry.
     """
     from . import __version__
-    from .canonical import canonical_bytes, digest_bytes, parse_json_bytes
     from .registry import BundledRegistry, RegistrySnapshot
 
     corpus = _OWNER3_REGISTRY_CORPUS.get()
@@ -513,12 +512,7 @@ def _load_native_file_create_registry(resource, expected_digest, contract_digest
         raw = resources[resource]
     except KeyError as exc:
         raise PhaseError("ntfs.native_registry_missing") from exc
-    if digest_bytes(raw) != expected_digest:
-        raise PhaseError("ntfs.native_registry_digest_mismatch")
-    document = parse_json_bytes(raw, maximum_bytes=256*1024)
-    if canonical_bytes(document) != raw:
-        raise PhaseError("ntfs.native_registry_noncanonical")
-    registry = RegistrySnapshot.from_document(document, resources)
+    registry = RegistrySnapshot._from_pinned_native_registry(raw, resources, expected_digest)
     expected = {"id": "file_create.v1", "version": "1.0.0",
         "package_digest": contract_digest}
     if registry.contract_bindings().get("file_create.v1@1.0.0") != expected:

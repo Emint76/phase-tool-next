@@ -117,14 +117,33 @@ class RegistrySnapshot:
 
     def __init__(self, document: dict[str, Any], resources: Mapping[str, bytes]) -> None:
         frozen_document = parse_json_bytes(canonical_bytes(document))
+        self._initialize_document(frozen_document, resources)
+
+    def _initialize_document(self, frozen_document, resources, *, digest=None):
         self._document = frozen_document
         self._resources = MappingProxyType({str(name): bytes(data) for name, data in resources.items()})
-        self.digest = canonical_digest(frozen_document)
+        self.digest = canonical_digest(frozen_document) if digest is None else digest
         self._qualification_context = None
         if frozen_document.get("registry_snapshot_version") != "1.0":
             raise PhaseError("registry.unsupported_snapshot")
         if not isinstance(frozen_document.get("entries"), list):
             raise PhaseError("registry.invalid_snapshot")
+
+    @classmethod
+    def _from_pinned_native_registry(cls, raw: bytes, resources: Mapping[str, bytes],
+                                     expected_digest: str) -> "RegistrySnapshot":
+        """Build one private snapshot from its independently pinned native resource."""
+        digest = digest_bytes(raw)
+        if digest != expected_digest:
+            raise PhaseError("ntfs.native_registry_digest_mismatch")
+        document = parse_json_bytes(raw, maximum_bytes=256 * 1024)
+        if canonical_bytes(document) != raw:
+            raise PhaseError("ntfs.native_registry_noncanonical")
+        # The strict parser created this private document from the exact
+        # canonical bytes. Resource ownership and snapshot checks are unchanged.
+        registry = cls.__new__(cls)
+        registry._initialize_document(document, resources, digest=digest)
+        return registry
 
     @classmethod
     def from_document(cls, document: dict[str, Any], resources: Mapping[str, bytes]) -> "RegistrySnapshot":

@@ -222,7 +222,7 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     owner=owners[0]
     methods={}
     signatures={'_spawn':['self','args'],'_pipe':['self','process'],
-        '_file2_input_pipes':['self','child_role'], 'worker_pipe':['self','process'],
+        '_file2_input_pipes':['self','child_role'], '_file1_input_pipes':['self','child_role'], 'worker_pipe':['self','process'],
         '_require_private_stdio_ready':['self','process'],
         '_finalize_exited':['self','process','pipe'],'_check_linux_contours':['self'],
         '_linux_command':['self','role'],'spawn_core':['self'],'spawn_worker':['self'],
@@ -314,8 +314,8 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
             if not isinstance(comparison,ast.Compare) or ast.unparse(comparison)!=exact:return False
     from copy import deepcopy
     from hashlib import sha256
-    # Pin the sole new spawn branch, the closed File2 selector and the no-ingress error gate.
-    pinned_methods = {'_spawn': '494ee913cee4981a5db3c8e76a5e8aa804b82b4ce18198c3d3d81dc451a182b6', '_file2_input_pipes': '97ca780dbda3df602736903b33e13ab2dd460424b4adf37fb986c077cad7c107', '_pipe': 'ee3988adf248519db4f05bc2d3fd84e4d43ae05b61f2b21bbd4688d1368cea5d', '_require_private_stdio_ready': '684a619ca332dbb634256812e573fb87977731609c01ff27d28976b8006afbe0', 'worker_pipe': '308d934c91104a0dabd73fc6d79be3758c631c546356e44698656f49556b7f15'}
+    # Pin the sole new spawn branch, the closed File1 and File2 selectors and the no-ingress error gate.
+    pinned_methods = {'_spawn': '8298829773b497bf1d06714b68a60a98066db71a7fbb2b0729186c2b4889a7f7', '_file2_input_pipes': '97ca780dbda3df602736903b33e13ab2dd460424b4adf37fb986c077cad7c107', '_file1_input_pipes': '4bf968ec64ad50b7e31db31cbd8e6380214531be2438e7f28970e60a21d46acd', '_pipe': 'ee3988adf248519db4f05bc2d3fd84e4d43ae05b61f2b21bbd4688d1368cea5d', '_require_private_stdio_ready': '684a619ca332dbb634256812e573fb87977731609c01ff27d28976b8006afbe0', 'worker_pipe': '308d934c91104a0dabd73fc6d79be3758c631c546356e44698656f49556b7f15'}
     for name, expected_digest in pinned_methods.items():
         node = deepcopy(methods[name])
         for part in ast.walk(node):

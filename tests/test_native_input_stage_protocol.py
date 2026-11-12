@@ -3,6 +3,7 @@
 Actual Windows/NTFS and ext4 qualification remain separate required tests.
 """
 import copy,ctypes,hashlib,os,re,stat,threading,time,types,unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
@@ -432,6 +433,115 @@ class WindowsStageRefusalModels(unittest.TestCase):
                 self.assertEqual(starts,1);self.assertIsInstance(result,BaseExceptionGroup)
                 self.assertTrue(owner._unavailable);self.assertIsNotNone(owner._held_launch)
                 self.assertEqual(api._handles,[])
+
+
+class PrivatePipeSelectionModels(unittest.TestCase):
+    execute_roles = ('core', 'original', 'worker')
+
+    @staticmethod
+    def requests(length):
+        # Use the real header, source record and staged execute builders.
+        body = b'x' * length
+        _, sender, _, _ = pair([('payload', body)], 'File1')
+        header = parse_json_bytes(sender.header)
+        stage = {'operation':'stage_input', 'native_input_stage_request_version':'1.0', 'header':header}
+        prepared = {'source_locator':'phase-native-input-' + sender.header_digest[7:39] + '/payload/payload',
+                    'header_digest':sender.header_digest, 'expected_digest':digest_bytes(body),
+                    'expected_length':length}
+        execute = input_stage._staged_publication_request(role='File1', prepared=prepared,
+            input_scope=scope['scope_id'], request_id='pipe-test', target_locator='out.bin', members=None,
+            expected_current_digest=None)
+        return stage, execute
+
+    @staticmethod
+    def launch_shell(request, *, version='1.1', contract='file_create.v1', inspection=False):
+        from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
+
+        # Model only the transport selector's parsed launch fields.
+        selected = object.__new__(_NativeAcceptedLaunch)
+        selected._manifest_bytes = canonical_bytes({'native_read_installation_version':version,
+            'contract':{'id':contract}})
+        selected._invocation_bytes = canonical_bytes({'request':request})
+        selected._inspection_only = inspection
+        selected._file2 = contract == 'file_create.v2'
+        return selected
+
+    @staticmethod
+    @contextmanager
+    def active_clock():
+        clock = types.SimpleNamespace(now=1_000_000_000)
+        simulated_windows = types.SimpleNamespace(name='nt', getpid=os.getpid)
+        with patch.object(input_stage, 'os', simulated_windows), patch.object(input_stage, 'time',
+                types.SimpleNamespace(perf_counter_ns=lambda:clock.now)):
+            token = input_stage._InputOperationDeadline(_initial_deadline_ns=clock.now + 10_000)
+            with input_stage._input_operation_scope(token):
+                yield clock, token
+
+    def test_file1_private_pipe_threshold_uses_real_stage_and_execute_controls(self):
+        for length in (64 * 1024, 256 * 1024 - 1, 256 * 1024, 1024**2):
+            with self.subTest(length=length):
+                stage, execute = self.requests(length)
+                prepared = self.launch_shell(stage)
+                publication = self.launch_shell(execute)
+                self.assertFalse(prepared._file1_input_pipes('prepare-input'))
+                self.assertFalse(publication._file1_input_pipes('core'))
+                with self.active_clock():
+                    self.assertEqual(prepared._file1_input_pipes('prepare-input'), length >= 256 * 1024)
+                    self.assertFalse(publication._file1_input_pipes('prepare-input'))
+                    for role in self.execute_roles:
+                        self.assertFalse(prepared._file1_input_pipes(role))
+                        self.assertEqual(publication._file1_input_pipes(role), length >= 256 * 1024)
+                self.assertFalse(publication._file1_input_pipes('core'))
+
+    def test_file1_private_pipe_does_not_follow_foreign_role_or_request(self):
+        stage, execute = self.requests(256 * 1024)
+        with self.active_clock():
+            publication = self.launch_shell(execute)
+            for role in ('inspect', 'observe-recovery', 'worker-unlisted'):
+                self.assertFalse(publication._file1_input_pipes(role))
+            for selected in (self.launch_shell(execute, inspection=True),
+                             self.launch_shell(execute, version='1.2'),
+                             self.launch_shell(execute, contract='bundle_create.v1'),
+                             self.launch_shell({'operation':'execute', 'source_length':1024**2})):
+                self.assertFalse(selected._file1_input_pipes('core'))
+            for bad_length in (True, 1024**2 + 1):
+                invalid = copy.deepcopy(stage)
+                invalid['header']['members'][0]['length'] = bad_length
+                self.assertFalse(self.launch_shell(invalid)._file1_input_pipes('prepare-input'))
+            other = dict(stage, header=dict(stage['header'], role='File2'))
+            self.assertFalse(self.launch_shell(other)._file1_input_pipes('prepare-input'))
+            bad_path = dict(execute, source_locator='other/payload')
+            with self.assertRaisesRegex(PhaseError, 'input_stage.staged_path_binding'):
+                self.launch_shell(bad_path)._file1_input_pipes('original')
+
+    def test_original_deadline_precedes_pipe_or_process_creation(self):
+        from phase_tool.mutation.ntfs import bootstrap, private_stdio
+
+        class StopBeforeAllocation(Exception):
+            pass
+
+        large = self.launch_shell(self.requests(1024**2)[1])
+        small = self.launch_shell(self.requests(64 * 1024)[1])
+        args = ['modeled-fixed-launcher', 'core']
+        with (self.active_clock() as (clock, token),
+              patch.object(bootstrap._NativeAcceptedLaunch, '_windows_required'),
+              patch.object(bootstrap._NativeAcceptedLaunch, '_check_linux_contours'),
+              patch.object(private_stdio, '_PrivateSizedStdio', side_effect=StopBeforeAllocation) as private,
+              patch.object(bootstrap.subprocess, 'CREATE_NO_WINDOW', 0, create=True),
+              patch.object(bootstrap.subprocess, 'Popen', side_effect=StopBeforeAllocation) as ordinary):
+            with self.assertRaises(StopBeforeAllocation):
+                large._spawn(args)
+            private.assert_called_once_with()
+            ordinary.assert_not_called()
+            with self.assertRaises(StopBeforeAllocation):
+                small._spawn(args)
+            ordinary.assert_called_once()
+            clock.now = token.deadline_ns
+            for selected in (large, small):
+                with self.assertRaisesRegex(PhaseError, 'input_stage.deadline'):
+                    selected._spawn(args)
+            private.assert_called_once_with()
+            ordinary.assert_called_once()
 
 
 class DeadlineModels(unittest.TestCase):

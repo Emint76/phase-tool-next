@@ -572,11 +572,46 @@ class _NativeAcceptedLaunch:
             _require_staged_publication_request(request, role='File2')
         return True
 
+    def _file1_input_pipes(self, child_role):
+        if self._inspection_only or child_role not in {'prepare-input', 'core', 'original', 'worker'}:
+            return False
+        from .input_stage import _active_input_deadline_ns, _require_staged_publication_request
+        if _active_input_deadline_ns() is None:
+            return False
+        manifest = self.manifest
+        if (manifest.get('native_read_installation_version') != '1.1'
+                or manifest['contract']['id'] != 'file_create.v1'):
+            return False
+        request = self.invocation['request']
+        if type(request) is not dict:
+            return False
+        # This selects transport capacity only. Small File1 messages keep the
+        # default pipes, and all original protocol and authority checks still run.
+        if child_role == 'prepare-input':
+            header = request.get('header')
+            if (set(request) != {'operation', 'native_input_stage_request_version', 'header'}
+                    or request['operation'] != 'stage_input' or request['native_input_stage_request_version'] != '1.0'
+                    or type(header) is not dict or header.get('role') != 'File1'):
+                return False
+            members = header.get('members')
+            if type(members) is not list or len(members) != 1 or type(members[0]) is not dict:
+                return False
+            length = members[0].get('length')
+        else:
+            if request.get('native_staged_publication_request_version') != '1.0':
+                return False
+            length = request.get('source_length')
+        if type(length) is not int or not 256 * 1024 <= length <= 1024**2:
+            return False
+        if child_role != 'prepare-input':
+            _require_staged_publication_request(request, role='File1')
+        return True
+
     def _spawn(self,args):
         self._windows_required()
         self._check_linux_contours()
         deadline = _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)
-        if self._file2_input_pipes(args[-1]):
+        if self._file2_input_pipes(args[-1]) or self._file1_input_pipes(args[-1]):
             from .private_stdio import _PrivateSizedStdio, _private_stdio_failure
             stdio = _PrivateSizedStdio()
             process = subprocess.Popen.__new__(subprocess.Popen)

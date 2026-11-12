@@ -15,6 +15,10 @@ from ...errors import PhaseError
 _LAUNCHER = 'sha256:c13f905261304fc7c9b7089043b521bac6b7f10f3ffcd1436f62ea26800b2931'
 _TIMEOUT_LAUNCHER = 'sha256:85f63625f18679c8db5d0419d51d09dfd605a5a117cf149bf951bea001f318fa'
 _TIMEOUT_RUN = 'od3-de456bc6-f16a-5a4a-8e69-6c20d64c3613-c01-contender-000'
+_TIMEOUT_FRESH_LAUNCHER = 'sha256:8043fd34ba6fec59db59c083c618ab4fcdbbb7104c9ee8d5609f4b387bd97438'
+_TIMEOUT_FRESH_CASE = 'c5c6e22e-765e-5664-a655-1ea97e08bb5c'
+_TIMEOUT_FRESH_RUN = 'od3-c5c6e22e-765e-5664-a655-1ea97e08bb5c-c01-contender-000'
+_TIMEOUT_FRESH_SCOPE = 'owner3-input-c5c6e22e-765e-5664-a655-1ea97e08bb5c-file2'
 _SELECTED=ContextVar('phase_closed_c01_flock_test',default=None)
 _PROTOCOL='phase.test.common-core-flock/1'
 _STAGES={'hello','bound','acquire_return','acquire_timeout','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish'}
@@ -88,10 +92,11 @@ def _closed_timeout_launcher(launch, fixture):
     from .owner_directory_fixture import _kinds
     from .owner_semantic_contracts import semantic_owner_contract
     _need(config['native_launch_version']=='3.0' and fixture['experimental_admission_version']=='3.0'
-        and fixture['fixture_uuid']=='de456bc6-f16a-5a4a-8e69-6c20d64c3613' and launch.run_id==_TIMEOUT_RUN
         and type(launch._experimental_admission_context)is _kinds()['File2']
         and launch.manifest['contract']==semantic_owner_contract('File2'),'ntfs.c01_flock_test_scope')
-    return _TIMEOUT_LAUNCHER
+    run,_,launcher=_timeout_installation_binding(config,fixture)
+    _need(launch.run_id==run,'ntfs.c01_flock_test_scope')
+    return launcher
 
 
 _TIMEOUT_CASE = 'de456bc6-f16a-5a4a-8e69-6c20d64c3613'
@@ -105,29 +110,46 @@ _TIMEOUT_CONTRACT = {'id':'file_create.v2','version':'1.0.1',
     'package_digest':'sha256:5fa188c4b19696156bfe1dd3ee4105c5292ba3a48e1ad150fc76682bddf037d2'}
 
 
+def _timeout_installation_binding(config,fixture):
+    launcher=config['artifact_graph']['launcher_digest']
+    if fixture['fixture_uuid']==_TIMEOUT_CASE and launcher==_TIMEOUT_LAUNCHER:
+        return _TIMEOUT_RUN,_TIMEOUT_SCOPE,launcher
+    _need(fixture['fixture_uuid']==_TIMEOUT_FRESH_CASE and launcher==_TIMEOUT_FRESH_LAUNCHER,
+        'ntfs.c01_timeout_scope')
+    return _TIMEOUT_FRESH_RUN,_TIMEOUT_FRESH_SCOPE,launcher
+
+
+def _timeout_startup_identity(value):
+    _need(type(value) is tuple and value in ((_TIMEOUT_RUN,_TIMEOUT_SCOPE),
+        (_TIMEOUT_FRESH_RUN,_TIMEOUT_FRESH_SCOPE)),'ntfs.c01_timeout_scope')
+    return value
+
+
 def _require_timeout_startup(config, manifest, admission):
     from .owner_directory_fixture import fixture_document, _kinds
     from .owner_semantic_contracts import semantic_owner_contract
     _need(type(admission) is _kinds()['File2'] and config['native_launch_version']=='3.0'
-        and config['artifact_graph']['launcher_digest']==_TIMEOUT_LAUNCHER
+        and config['artifact_graph']['launcher_digest'] in (_TIMEOUT_LAUNCHER,_TIMEOUT_FRESH_LAUNCHER)
         and manifest['contract']==_TIMEOUT_CONTRACT==semantic_owner_contract('File2'),'ntfs.c01_timeout_scope')
     fixture=fixture_document(admission.raw)
-    _need(fixture['fixture_uuid']==_TIMEOUT_CASE and fixture['experimental_admission_version']=='3.0',
-        'ntfs.c01_timeout_scope')
+    _need(fixture['experimental_admission_version']=='3.0','ntfs.c01_timeout_scope')
+    run,scope,_=_timeout_installation_binding(config,fixture)
+    return run,scope
 
 
-def _require_timeout_frontend(value):
-    _need(type(value) is dict and value=={'run_id':_TIMEOUT_RUN,'request':{
-        'operation':'publish_file','input_scope':_TIMEOUT_SCOPE,'source_locator':_TIMEOUT_SOURCE,
+def _require_timeout_frontend(value,*,_startup=(_TIMEOUT_RUN,_TIMEOUT_SCOPE)):
+    run,scope=_timeout_startup_identity(_startup)
+    _need(type(value) is dict and value=={'run_id':run,'request':{
+        'operation':'publish_file','input_scope':scope,'source_locator':_TIMEOUT_SOURCE,
         'target_locator':_TIMEOUT_TARGET,'request_id':_TIMEOUT_REQUEST,'publication_version':'2.0',
         'expected_digest':_TIMEOUT_DIGEST,'root_binding':'phase_result_root'}},'ntfs.c01_timeout_frontend_request')
 
 
 def _require_timeout_stage(launch, scope, role, header):
-    _require_timeout_startup(launch._config,launch.manifest,launch._experimental_admission_context)
+    run,scope_id=_require_timeout_startup(launch._config,launch.manifest,launch._experimental_admission_context)
     rows=header['members']
-    _need(launch.run_id==_TIMEOUT_RUN and role=='File2' and scope['scope_id']==_TIMEOUT_SCOPE
-        and header['run_id']==_TIMEOUT_RUN and header['input_scope']==_TIMEOUT_SCOPE and header['role']=='File2'
+    _need(launch.run_id==run and role=='File2' and scope['scope_id']==scope_id
+        and header['run_id']==run and header['input_scope']==scope_id and header['role']=='File2'
         and header['source_locator']==_TIMEOUT_SOURCE and header['payload_kind']=='file'
         and type(header['member_count']) is int and header['member_count']==1
         and type(header['total_length']) is int and header['total_length']==_TIMEOUT_BYTES
@@ -141,9 +163,10 @@ def _require_timeout_stage_payload(raw):
         'ntfs.c01_timeout_stage_payload')
 
 
-def _require_timeout_core(value):
+def _require_timeout_core(value,*,_startup=(_TIMEOUT_RUN,_TIMEOUT_SCOPE)):
+    run,scope=_timeout_startup_identity(_startup)
     _need(type(value) is dict and set(value)=={'run_id','request','channel_id','operation_nonce'}
-        and value['run_id']==_TIMEOUT_RUN and all(type(value[key]) is str and
+        and value['run_id']==run and all(type(value[key]) is str and
         re.fullmatch('[0-9a-f]{32}',value[key]) is not None for key in ('channel_id','operation_nonce')),
         'ntfs.c01_timeout_core_invocation')
     request=value['request']
@@ -153,7 +176,7 @@ def _require_timeout_core(value):
     header=request['stage_header_digest']
     _need(type(header) is str and re.fullmatch('sha256:[0-9a-f]{64}',header) is not None,
         'ntfs.c01_timeout_core_stage_identity')
-    _need(type(request['source_length']) is int and request=={'operation':'execute','native_staged_publication_request_version':'1.0','input_scope':_TIMEOUT_SCOPE,
+    _need(type(request['source_length']) is int and request=={'operation':'execute','native_staged_publication_request_version':'1.0','input_scope':scope,
         'stage_header_digest':header,'source_locator':'phase-native-input-'+header[7:39]+'/payload/payload',
         'source_digest':_TIMEOUT_DIGEST,'source_length':_TIMEOUT_BYTES,'request_id':_TIMEOUT_REQUEST,
         'target_locator':_TIMEOUT_TARGET,'members':None,'expected_current_digest':None,'content_utf8':None},
@@ -276,7 +299,7 @@ class _CommonCoreFlockTest:
             acquire_deadline_float_hex=self._lock_deadline.hex(),acquire_deadline_ns=int(self._lock_deadline*1e9))
 
     def observed_acquire_timeout(self,descriptor,deadline):
-        if getattr(self,'_run',None)!=_TIMEOUT_RUN:return
+        if getattr(self,'_run',None) not in (_TIMEOUT_RUN,_TIMEOUT_FRESH_RUN):return
         self._owner_check()
         _need(self._bound and not self._acquired and descriptor==self._fd and deadline==self._lock_deadline,
             'ntfs.c01_flock_test_timeout_binding')
@@ -286,7 +309,7 @@ class _CommonCoreFlockTest:
     def acquired(self,descriptor):
         self._owner_check();_need(descriptor==self._fd and not self._acquired);self._acquired=True
         self._record('acquired',strict=True,descriptor=descriptor,namespace_checked=True)
-        if getattr(self,'_run',None)==_TIMEOUT_RUN:
+        if getattr(self,'_run',None) in (_TIMEOUT_RUN,_TIMEOUT_FRESH_RUN):
             raise PhaseError('ntfs.c01_timeout_unexpected_acquisition')
         if self._mode=='holder':
             reply=self._ipc.receive(min(self._deadline,self._lock_deadline))

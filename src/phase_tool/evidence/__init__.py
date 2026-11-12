@@ -1309,12 +1309,19 @@ def _write_native_canonical(store,binding,relative,value):
     if checkpoint:
         from ..prepared_binding import NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2, PreparationBinding
         from ..continuation import PreparedStage
-        selected={'1.7':NATIVE_BOUND_CONTRACT,'1.8':NATIVE_BOUND_CONTRACT_V2,'1.9':NATIVE_BOUND_CONTRACT_V2}.get(manifest['native_read_installation_version'])
-        _require(selected is not None,'ntfs.original_closed_checkpoint_required')
-        exact=dict(zip(('id','version','package_digest'),selected))
-        _require(manifest['native_read_installation_version'] in {'1.7','1.8','1.9'}
-            and manifest['contract']==exact and type(value) is dict
-            and set(value)=={'prepared','binding'},'ntfs.original_closed_checkpoint_required')
+        from ..mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+        version=manifest['native_read_installation_version']
+        exact=manifest['contract']
+        if version=='1.9' and exact==semantic_owner_contract('Bundle2'):
+            from ..mutation.ntfs.owner_directory import require_owner_or_semantic_binding
+            require_owner_or_semantic_binding(binding,'Bundle2')
+        else:
+            selected={'1.7':NATIVE_BOUND_CONTRACT,'1.8':NATIVE_BOUND_CONTRACT_V2,
+                      '1.9':NATIVE_BOUND_CONTRACT_V2}.get(version)
+            _require(selected is not None and exact==dict(zip(('id','version','package_digest'),selected)),
+                'ntfs.original_closed_checkpoint_required')
+        _require(type(value) is dict and set(value)=={'prepared','binding'},
+            'ntfs.original_closed_checkpoint_required')
         PreparedStage.model_validate(value['prepared'])
         PreparationBinding.model_validate(value['binding'])
         _require(value['prepared']['run_id']==value['binding']['run_id']==run_id

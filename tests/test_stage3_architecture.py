@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -437,6 +438,21 @@ def _open_write_mode(node: ast.Call) -> str | None:
     return None if mode in {"r", "rb", "br", "rt", "tr"} else mode
 
 
+def _c05_readonly_proc_open(relative: str,tree: ast.AST,node: ast.Call) -> bool:
+    """Only the two exact bounded read-only proc owners, never a module exemption."""
+    if relative != "mutation/ntfs/c05_pidfd_owner.py" or _call_name(node) != "os.open":
+        return False
+    expected = {'_open_proc_process': ("os.open('/proc/' + str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)", '51ccdffa204c3d8e4adffb9ebd9a297fd630142df13641b06eea5054e8f68854'), '_read_proc_record': ('os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)', 'b86c3f7990b7abfb0124869722297e4a1471ef2004980cded06540f60803b7df')}
+    owners = [fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
+              and fn.name in expected and node in ast.walk(fn)]
+    if len(owners) != 1:
+        return False
+    owner = owners[0]
+    call, signature = expected[owner.name]
+    return (ast.unparse(node) == call and
+            sha256(ast.unparse(owner).encode()).hexdigest() == signature)
+
+
 def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
     allowed_write_modules = {
         "mutation/expected_head_append.py",
@@ -491,7 +507,8 @@ def test_only_mechanism_boundary_owns_target_write_primitives() -> None:
                 windows_pipe_write = _windows_control_pipe_write(relative, tree, node)
                 if (relative not in allowed_write_modules and not stdout_channel_write and not windows_pipe_write
                         and not _native_terminal_stdout_write(relative,tree,node)
-                        and not _native_terminal_pipe_write(relative,tree,node)):
+                        and not _native_terminal_pipe_write(relative,tree,node)
+                        and not _c05_readonly_proc_open(relative,tree,node)):
                     hits.append((relative, node.lineno, name))
             if relative not in allowed_write_modules:
                 write_mode = _open_write_mode(node)

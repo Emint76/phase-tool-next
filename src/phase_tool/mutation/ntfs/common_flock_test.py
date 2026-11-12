@@ -20,6 +20,7 @@ _TIMEOUT_FRESH_CASE = 'c5c6e22e-765e-5664-a655-1ea97e08bb5c'
 _TIMEOUT_FRESH_RUN = 'od3-c5c6e22e-765e-5664-a655-1ea97e08bb5c-c01-contender-000'
 _TIMEOUT_FRESH_SCOPE = 'owner3-input-c5c6e22e-765e-5664-a655-1ea97e08bb5c-file2'
 _SELECTED=ContextVar('phase_closed_c01_flock_test',default=None)
+_C05_PASSIVE_SELECTED=ContextVar('phase_closed_c05_passive_flock',default=None)
 _PROTOCOL='phase.test.common-core-flock/1'
 _STAGES={'hello','bound','acquire_return','acquire_timeout','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish'}
 
@@ -451,7 +452,8 @@ class _CommonCoreFlockTest:
 
 @contextmanager
 def _common_flock_qualification_scope(token):
-    _need(type(token) is _CommonCoreFlockTest and _SELECTED.get() is None,'ntfs.c01_flock_test_type')
+    _need(type(token) is _CommonCoreFlockTest and _SELECTED.get() is None
+          and _C05_PASSIVE_SELECTED.get() is None,'ntfs.c01_flock_test_type')
     token._owner_check();_need(not token._selected,'ntfs.c01_flock_test_consumed');token._selected=True
     state=_SELECTED.set(token)
     primary=None
@@ -467,6 +469,12 @@ def _common_flock_qualification_scope(token):
 
 def _take_common_flock_test(binding,run_id):
     token=_SELECTED.get()
-    if token is None:return None
+    if token is None:
+        passive=_C05_PASSIVE_SELECTED.get()
+        if passive is None:return None
+        from .c05_flock_observation import _PassiveC05FlockObservation
+        if type(passive) is _PassiveC05FlockObservation and passive.consume(binding,run_id):
+            return passive
+        return None
     _need(type(token) is _CommonCoreFlockTest,'ntfs.c01_flock_test_type')
     token.take(binding,run_id);return token

@@ -48,10 +48,16 @@ class _OperationalFileLock:
     def __init__(self, path: Path, *, _checked_release: bool = False, _common_flock_test=None) -> None:
         if type(_checked_release) is not bool:
             raise PhaseError("lock.invalid_checked_mode")
+        self._passive_acquire_entry = None
         if _common_flock_test is not None:
             from .mutation.ntfs.common_flock_test import _CommonCoreFlockTest
-            if type(_common_flock_test) is not _CommonCoreFlockTest or not _checked_release:
+            if not _checked_release:
                 raise PhaseError("ntfs.c01_flock_test_type")
+            if type(_common_flock_test) is not _CommonCoreFlockTest:
+                from .mutation.ntfs.c05_flock_observation import _PassiveC05FlockObservation
+                if type(_common_flock_test) is not _PassiveC05FlockObservation or not _common_flock_test.taken:
+                    raise PhaseError("ntfs.c01_flock_test_type")
+                self._passive_acquire_entry = _common_flock_test.acquire_entry
         self._common_flock_test=_common_flock_test
         self.path = path
         self._stream = None
@@ -115,7 +121,10 @@ class _OperationalFileLock:
             deadline = time.monotonic() + _OPERATIONAL_LOCK_TIMEOUT_SECONDS
             if self._common_flock_test is not None:
                 self._common_flock_test.bind_lock(self.path,descriptor,self._checked_parent_identity,self._checked_identity,deadline)
+            passive_entry = self._passive_acquire_entry
             while True:
+                if passive_entry is not None:
+                    passive_entry(descriptor)
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError as error:

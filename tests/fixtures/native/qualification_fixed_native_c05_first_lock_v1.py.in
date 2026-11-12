@@ -142,7 +142,60 @@ def fixed_admission(config,manifest,raw):
         and registry.contract_bindings().get(contract['id']+'@'+contract['version'])==contract)
     return admission
 
-def fixed_windows_mcp_sdk_bootstrap(outer,config_raw):
+def _fixed_c05_sdk_policy(outer,config,own,extras,role):
+    """Read the single frozen C05 sidecar before loading any SDK binary."""
+    import stat
+
+    case='51c05d17-7e2b-4c45-9273-15aa66bdab75'
+    contract={'id':'file_create.v1','version':'1.0.1',
+        'package_digest':'sha256:1410ce0916fa9c63d101a0659e55a6ded257f9250b9cd0fb24d22365fea46573'}
+    expected=Path(r'C:\Users\Gennady\CodexWorkspace\phase-tool-codex-app\work\native-owner3-c05-ci169-51c05d17\install\artifacts\file1\windows\launcher.py')
+    need(role in ('input-mcp','publish-input') and own==expected
+        and outer['native_fixed_startup_version']==config.get('native_launch_version')=='3.0')
+    fixed_startup_version(outer)
+    manifest_raw=base64.b64decode(outer['manifest_base64'],validate=True)
+    admission_raw=base64.b64decode(outer['owner_directory_fixture_base64'],validate=True)
+    need(0<len(manifest_raw)<=2*1024**2 and 0<len(admission_raw)<=32768
+        and 'sha256:'+hashlib.sha256(manifest_raw).hexdigest()==outer['manifest_digest'])
+    manifest,admission=json.loads(manifest_raw),json.loads(admission_raw)
+    need(type(manifest)is dict and manifest.get('native_read_installation_version')=='1.1'
+        and manifest.get('contract')==contract and type(admission)is dict
+        and admission.get('experimental_admission_version')=='3.0' and admission.get('fixture_uuid')==case
+        and 'c02_current_root_alias' not in admission)
+    policy=own.with_name('c05-windows-transport-capture.json')
+    scope=own.with_name('native-input-scope.json')
+    digests=config['dependency_file_digests']
+    need(extras=={str(scope),str(policy)} and type(digests)is dict
+        and digests==config['artifact_graph']['windows']['dependency_file_digests'])
+    expected_pin=digests[str(policy)]
+    need(type(expected_pin)is str and re.fullmatch('sha256:[0-9a-f]{64}',expected_pin) is not None)
+
+    def ordinary(info):
+        return (stat.S_ISREG(info.st_mode) and info.st_nlink==1 and 0<info.st_size<=16384
+            and not getattr(info,'st_file_attributes',0)&0x400)
+
+    def identity(info):
+        return info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_birthtime_ns
+
+    before=policy.lstat()
+    need(ordinary(before))
+    with policy.open('rb') as stream:
+        opened=os.fstat(stream.fileno())
+        need(ordinary(opened) and identity(before)==identity(opened))
+        raw=stream.read(16385)
+        after=os.fstat(stream.fileno())
+        current=policy.lstat()
+        need(ordinary(after) and ordinary(current) and len(raw)==before.st_size
+            and identity(after)==identity(opened)==identity(current)
+            and after.st_ctime_ns==opened.st_ctime_ns and current.st_ctime_ns==before.st_ctime_ns)
+    need('sha256:'+hashlib.sha256(raw).hexdigest()==expected_pin)
+    row=json.loads(raw)
+    need(type(row)is dict and row.get('schema')=='phase.c05.windows-transport-capture/1' and row.get('case')==case
+        and json.dumps(row,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()==raw)
+    return policy
+
+
+def fixed_windows_mcp_sdk_bootstrap(outer,config_raw,*,_c05_input_role=None):
     """Fixed installation SDK bootstrap, never site/.pth or request-selected code."""
     import ctypes,importlib.machinery,importlib.util,stat
     need(os.name=='nt'and sys.version_info[:3]==(3,12,10))
@@ -167,10 +220,11 @@ def fixed_windows_mcp_sdk_bootstrap(outer,config_raw):
     manifest=json.loads(manifest_raw)
     sdk_digests={str(sdk/name):row['sha256']for name,row in manifest['files'].items()}
     extras=set(digests)-set(sdk_digests)
+    policy=None if _c05_input_role is None else _fixed_c05_sdk_policy(outer,config,own,extras,_c05_input_role)
     if extras:
         scope=own.parent/'native-input-scope.json'
         info=scope.lstat()
-        need(outer['native_fixed_startup_version']in {'3.0','4.0'}and extras=={str(scope)}
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'}and extras==({str(scope)} if policy is None else {str(scope),str(policy)})
             and stat.S_ISREG(info.st_mode)and info.st_nlink==1 and info.st_size<=65536
             and not getattr(info,'st_file_attributes',0)&0x400 and not scope.is_symlink())
         scope_raw=scope.read_bytes()
@@ -265,12 +319,13 @@ def _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,confi
     phase='stage';owner=None
     try:
         need(outer['native_fixed_startup_version']in {'3.0','4.0'})
-        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        request=initial.get('request') if type(initial)is dict else None
+        staged_file=type(request)is dict and request.get('operation')=='publish_file'
+        mcp_sdk_owners=(fixed_windows_mcp_sdk_bootstrap(outer,config_raw,_c05_input_role='publish-input')
+            if staged_file else fixed_windows_mcp_sdk_bootstrap(outer,config_raw))
         from phase_tool.canonical import canonical_bytes
         from phase_tool.mutation.ntfs.inspection_mcp import (
             _InspectionMCPCallOwner,_native_input_cli_request,_native_staged_file_cli_request)
-        request=initial.get('request') if type(initial)is dict else None
-        staged_file=type(request)is dict and request.get('operation')=='publish_file'
         parser=_native_staged_file_cli_request if staged_file else _native_input_cli_request
         arguments=parser(initial)
         owner=_InspectionMCPCallOwner(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
@@ -279,7 +334,12 @@ def _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,confi
         from phase_tool.mutation.ntfs.input_stage import _InputOperationDeadline
         deadline=_InputOperationDeadline(_initial_deadline_ns=initial_deadline_ns)
         publish=owner.publish_staged_file if staged_file else owner.publish_input
-        result=publish(**arguments,_operation_deadline=deadline)
+        if staged_file:
+            from phase_tool.mutation.ntfs.c05_windows_transport import _load_c05_windows_transport
+            capture=_load_c05_windows_transport(outer,config_raw,manifest_raw,admission,'publish-input')
+        else:capture=None
+        result=(publish(**arguments,_operation_deadline=deadline) if capture is None else
+            publish(**arguments,_operation_deadline=deadline,_c05_transport=capture))
         phase='delivery'
         frame={'protocol':'phase.native.input.publication','version':'1.0','run_id':initial['run_id'],
             'installation_digest':outer['manifest_digest'],'result':result,'exit_code':result['exit_code']}
@@ -310,11 +370,15 @@ def main():
             _experimental_admission_context=admission)
     if role=='input-mcp':
         need(outer['native_fixed_startup_version']in {'3.0','4.0'})
-        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
-        from phase_tool.mutation.ntfs.inspection_mcp import run_native_input_mcp
-        return run_native_input_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw,_c05_input_role='input-mcp')
+        from phase_tool.mutation.ntfs.inspection_mcp import run_native_input_mcp,_run_c05_input_mcp
+        from phase_tool.mutation.ntfs.c05_windows_transport import _load_c05_windows_transport
+        capture=_load_c05_windows_transport(outer,config_raw,manifest_raw,admission,'input-mcp')
+        startup=dict(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
             manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
             _experimental_admission_context=admission)
+        return (run_native_input_mcp(**startup) if capture is None else
+            _run_c05_input_mcp(_c05_transport=capture,**startup))
     if role=='reconcile-mcp':
         from phase_tool.mutation.ntfs.recovery_frontdoor import require_reconciliation_startup
         require_reconciliation_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'],admission)

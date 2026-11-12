@@ -183,7 +183,7 @@ class _InspectionMCPCallOwner:
         if primary is not None:raise primary
         return value
 
-    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,_retain_launch=False,_staged_a05=None):
+    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,_retain_launch=False,_staged_a05=None,_c05_transport=None):
         from .parent_result import _native_file_result_mode,_native_bundle_result_mode
         from .bootstrap import _is_bundle_recovery_launch
         _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
@@ -208,7 +208,12 @@ class _InspectionMCPCallOwner:
             launch=_NativeAcceptedLaunch(**self._startup,
                 invocation_bytes=canonical_bytes(invocation),_inspection_only=inspection_only)
             self._held_launch=launch  # Retain BEFORE any process/pipe can be created.
-            if _staged_a05 is None:
+            if _c05_transport is not None:
+                from .c05_windows_transport import _C05WindowsTransport
+                _require(type(_c05_transport) is _C05WindowsTransport and _retain_launch
+                    and not inspection_only and _staged_a05 is None,'ntfs.fixed_c05_transport_required')
+                response=run_native_parent(launch,_c05_transport=_c05_transport)
+            elif _staged_a05 is None:
                 response=run_native_parent(launch)
             else:
                 from .staged_dynamic_a05 import _StagedA05Selection
@@ -298,7 +303,7 @@ class _InspectionMCPCallOwner:
         return (result,reference) if _include_canonical_result else result
 
     def publish_input(self,run_id,input_scope,source_locator,target_locator,request_id,members=None,expected_current_digest=None,
-            *,_operation_deadline=None,_file_assertions=None,_staged_a05=None):
+            *,_operation_deadline=None,_file_assertions=None,_staged_a05=None,_c05_transport=None):
         """One Windows input stage, genuine execute and fresh unary inspection.
 
         A transient delivery pairs actual native results; it is never a receipt.
@@ -317,6 +322,12 @@ class _InspectionMCPCallOwner:
                 'input_stage.deadline_owner_required')
             token=_InputOperationDeadline()if _operation_deadline is None else _operation_deadline
             with _input_operation_scope(token):
+                if _c05_transport is not None:
+                    from .c05_windows_transport import _C05WindowsTransport
+                    _require(type(_c05_transport) is _C05WindowsTransport and _staged_a05 is None
+                        and members is None and expected_current_digest is None,'ntfs.fixed_c05_transport_required')
+                    _c05_transport.begin(self._startup,run_id,input_scope,source_locator,target_locator,
+                        request_id,_file_assertions,token.deadline_ns)
                 if _staged_a05 is not None:
                     from .staged_dynamic_a05 import _StagedA05Selection
                     _require(type(_staged_a05) is _StagedA05Selection and _file_assertions is None,
@@ -366,7 +377,10 @@ class _InspectionMCPCallOwner:
                         expected_current_digest=expected_current_digest,content_utf8=content)
                     self._input_publication_phase='execute'
                     _left(token.deadline_ns)
-                    if _staged_a05 is None:
+                    if _c05_transport is not None:
+                        ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True,
+                            _c05_transport=_c05_transport)
+                    elif _staged_a05 is None:
                         ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True)
                     else:
                         ack=self._call_locked(run_id,request,inspection_only=False,_retain_launch=True,_staged_a05=_staged_a05)
@@ -437,11 +451,18 @@ class _InspectionMCPCallOwner:
         return PublishFileResult.model_validate(result).model_dump()
 
     def publish_staged_file(self,run_id,input_scope,source_locator,target_locator,request_id,
-            publication_version,expected_digest,root_binding,*,_operation_deadline=None):
+            publication_version,expected_digest,root_binding,*,_operation_deadline=None,_c05_transport=None):
         from .input_stage import _FileInputAssertions
         assertions=_FileInputAssertions(publication_version,expected_digest,root_binding)
-        return self.publish_input(run_id,input_scope,source_locator,target_locator,request_id,
-            _operation_deadline=_operation_deadline,_file_assertions=assertions)
+        if _c05_transport is None:
+            return self.publish_input(run_id,input_scope,source_locator,target_locator,request_id,
+                _operation_deadline=_operation_deadline,_file_assertions=assertions)
+        from .c05_windows_transport import _C05WindowsTransport
+        _require(type(_c05_transport) is _C05WindowsTransport,'ntfs.fixed_c05_transport_required')
+        try:
+            return self.publish_input(run_id,input_scope,source_locator,target_locator,request_id,
+                _operation_deadline=_operation_deadline,_file_assertions=assertions,_c05_transport=_c05_transport)
+        finally:_c05_transport.flush()
 
     def recover_publication(self,run_id,request_id,expected_intent_digest,mode='observe'):
         from .recovery_frontdoor import publication_request,_manifest_role,_OBSERVE_ROLES
@@ -792,6 +813,7 @@ class _InputScopeSession:
     def __init__(self,**startup):
         self.startup=dict(startup);self.gate=threading.Lock();self.unknown=False;self.held=[]
         self._staged_a05=None
+        self._c05_transport=None
     def _invoke(self,method,arguments):
         _require(self.gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         owner=None
@@ -802,6 +824,10 @@ class _InputScopeSession:
                 selection,bound_run=self._staged_a05
                 _require(method in {'publish_input','inspect'} and arguments.get('run_id')==bound_run,
                     'ntfs.staged_dynamic_a05_binding')
+            capture=self._c05_transport
+            if capture is not None:
+                _require(selection is None and method in {'publish_staged_file','inspect'},
+                    'ntfs.fixed_c05_transport_required')
             owner=_InspectionMCPCallOwner(**self.startup);self.held.append(owner)
             if method=='publish_input':
                 if selection is None:
@@ -809,7 +835,8 @@ class _InputScopeSession:
                 else:
                     result=owner.publish_input(**arguments,_staged_a05=selection)
             elif method=='publish_staged_file':
-                result=owner.publish_staged_file(**arguments)
+                result=(owner.publish_staged_file(**arguments) if capture is None else
+                    owner.publish_staged_file(**arguments,_c05_transport=capture))
             else:
                 _require(method=='inspect','ntfs.fixed_native_request_required')
                 result=owner.inspect(**arguments)
@@ -848,7 +875,18 @@ class _InputScopeSession:
 
 
 def run_native_input_mcp(**startup):
+    return _serve_native_input_mcp(_InputScopeSession(**startup),startup)
+
+
+def _run_c05_input_mcp(*,_c05_transport,**startup):
+    from .c05_windows_transport import _C05WindowsTransport
+    _require(type(_c05_transport) is _C05WindowsTransport,'ntfs.fixed_c05_transport_required')
     owner=_InputScopeSession(**startup)
+    owner._c05_transport=_c05_transport
+    return _serve_native_input_mcp(owner,startup)
+
+
+def _serve_native_input_mcp(owner,startup):
     server=FastMCP('phase-native-input')
     server.tool(name='phase_publish_input')(owner.publish_input)
     manifest=parse_json_bytes(startup['manifest_bytes'],maximum_bytes=2*1024**2)

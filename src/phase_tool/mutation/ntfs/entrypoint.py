@@ -465,7 +465,7 @@ def run_native_original(launch):
     return 0
 
 
-def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None):
+def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None, _c05_transport=None):
     from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
     if _prepared_ack_test is not None:
@@ -485,10 +485,16 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
             and _prepared_ack_test is None and _dynamic_a05_test is None,
             'ntfs.g01_test_role_required')
         _g01_creation_handle_test.check_launch(launch)
+    if _c05_transport is not None:
+        from .c05_windows_transport import _C05WindowsTransport
+        _require(type(_c05_transport) is _C05WindowsTransport and _prepared_ack_test is None
+            and _dynamic_a05_test is None and _g01_creation_handle_test is None,
+            'ntfs.fixed_c05_transport_required')
+        _c05_transport.check_launch(launch)
     launch.check_runtime()
     process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())
     witness=pipe=None
-    response=fact=None
+    response=fact=closing=None
     primary=None
     try:
         witness=WindowsProcessWitness(process)
@@ -508,7 +514,7 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
             _require(witness is not None,'ntfs.core_creation_witness_unavailable')
             fact=witness.wait_for_exit(_input_observation_timeout_ms(60000))
             _require(fact['worker_exit_established'] is True,'ntfs.core_delivery_process_exit_unknown')
-            launch._finalize_exited(process,pipe)
+            closing=launch._finalize_exited(process,pipe)
         except BaseException as error:
             if primary is None:primary=error
             else:
@@ -519,6 +525,8 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
         'ntfs.core_command_delivery_unconfirmed')
     # This HANDLE belongs to Docker CLI, NOT Linux exec. No Linux-process exit
     # or original closure proof is derived from it; server ingress is consumed.
+    if _c05_transport is not None:
+        _c05_transport.observe(launch,process,witness,fact,closing,response)
     return response
 
 def _run_version1_worker_transfer(launch,original,pipe,deadline,*,_version2=False):

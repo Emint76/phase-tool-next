@@ -103,6 +103,18 @@ def _write_dynamic_a05_telemetry(path, value):
         os.fsync(stream.fileno())
 
 
+def _write_c05_fixture_raw_member(path, data, *, native, parent, identity):
+    """One fixed C05 member after its caller retained all checked C: ancestors."""
+    from ..mutation.ntfs.c05_windows_transport import _raw_member_allowed
+    from ..mutation.ntfs.native import NativeIO, _require
+    _require(type(native) is NativeIO and _raw_member_allowed(path,data), 'ntfs.fixed_c05_raw_member_required')
+    native.assert_object(parent,directory=True,expected=identity)
+    with path.open('xb') as stream:
+        _require(stream.write(data)==len(data), 'ntfs.c05_raw_member_short_write')
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _qualification_catalog_ordinary(path, *, directory):
     from ..mutation.ntfs.native import _require
     try:

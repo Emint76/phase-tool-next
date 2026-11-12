@@ -463,7 +463,6 @@ class PrivatePipeSelectionModels(unittest.TestCase):
             'contract':{'id':contract}})
         selected._invocation_bytes = canonical_bytes({'request':request})
         selected._inspection_only = inspection
-        selected._file2 = contract == 'file_create.v2'
         return selected
 
     @staticmethod

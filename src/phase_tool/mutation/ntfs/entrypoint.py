@@ -249,12 +249,15 @@ def run_native_core(launch):
                 expected={k:tuple(v) for k,v in expected.items()}
             # Core owns capture/freeze, intent, common/per-key locks, effect,
             # validation, ONE proof/receipt and original-intent recovery barrier.
+            from .common_flock_test import _expected_prepared_candidate
+            expected_candidate=_expected_prepared_candidate(launch)
+            candidate_binding={} if expected_candidate is None else {'_expected_candidate_bytes':expected_candidate}
             response=app.run(request['operation'],contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
                 contract_digest=manifest['contract']['package_digest'],candidate_path=Path(request['candidate_path']),
                 evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,
                 input_paths={k:Path(v) for k,v in request['input_paths'].items()},
                 root_bindings={k:Path(v) for k,v in manifest['root_projections'].items()},
-                maximum_candidate_bytes=request['maximum_candidate_bytes'],expected_inputs=expected)
+                maximum_candidate_bytes=request['maximum_candidate_bytes'],expected_inputs=expected,**candidate_binding)
     # Use EXACT installed registry. The ordinary default CLI writer must never
     # recast a post-dispatch render/schema/delivery failure as mutationFalse.
     validate_command_result(response.payload,registry)

@@ -19,10 +19,13 @@ _TIMEOUT_FRESH_LAUNCHER = 'sha256:8043fd34ba6fec59db59c083c618ab4fcdbbb7104c9ee8
 _TIMEOUT_FRESH_CASE = 'c5c6e22e-765e-5664-a655-1ea97e08bb5c'
 _TIMEOUT_FRESH_RUN = 'od3-c5c6e22e-765e-5664-a655-1ea97e08bb5c-c01-contender-000'
 _TIMEOUT_FRESH_SCOPE = 'owner3-input-c5c6e22e-765e-5664-a655-1ea97e08bb5c-file2'
+_PREPARED_NORMAL_CASE = 'aa8919a5-6c0f-4272-9181-4e0cb79a98c5'
+_PREPARED_NORMAL_LAUNCHER = 'sha256:d006bfb3d1e59924710606497045e983273b28b95f8ecd04ec094c5bf3ffbe99'
+_PREPARED_NORMAL_TABLES = {'File1': 'sha256:3a4d54e173a81e1dcb7c98a558ec95ca3bf2e0400d3f1666082c7299c2668b91', 'File2': 'sha256:708b83e82ce20e94d2d5bc9d65bf2a1533e9caf8d5d8d77c6a54a6e25bb0e7fd', 'Version1': 'sha256:e65f17cd18f5cd07763fb696fa3b102a58226b2c43f589f9f47085aff967ca83', 'Version2': 'sha256:5292d16f05c2531e2caeeba5f502de35d22092c62113322a8e3e9a0370e6d4e8', 'Bundle1': 'sha256:e63254efb48fd010e0925b42aca1a25a21d3e77bafb787a91c1c042fc37b31e2', 'Bundle2': 'sha256:68c6fb4b9e0cfb123e54aa3d31a52806eda7923fe9a95051b18d97fcdac6f1cc'}
 _SELECTED=ContextVar('phase_closed_c01_flock_test',default=None)
 _C05_PASSIVE_SELECTED=ContextVar('phase_closed_c05_passive_flock',default=None)
 _PROTOCOL='phase.test.common-core-flock/1'
-_STAGES={'hello','bound','acquire_return','acquire_timeout','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish'}
+_STAGES={'hello','bound','acquire_return','acquire_timeout','acquired','history_begin','unlock_return','close_return','guard_return','scope_finish','prepared_holder_terminal','prepared_retry_admitted'}
 
 def _need(value,code='ntfs.c01_flock_test_binding'):
     if not value:raise PhaseError(code)
@@ -86,8 +89,82 @@ class _PosixFlockIPC:
         if self.socket is not None:self.socket.close()
 
 
+def _prepared_normal_role(config, manifest, admission, fixture):
+    from .owner_directory_fixture import _kinds
+    from .owner_semantic_contracts import semantic_owner_contract
+    _need(fixture['fixture_uuid']==_PREPARED_NORMAL_CASE
+        and fixture['experimental_admission_version']=='3.0'
+        and 'c02_current_root_alias' not in fixture
+        and config['native_launch_version']=='3.0'
+        and config['artifact_graph']['launcher_digest']==_PREPARED_NORMAL_LAUNCHER,
+        'ntfs.c01_prepared_scope')
+    roles=tuple(role for role,kind in _kinds().items()
+        if type(admission) is kind and manifest['contract']==semantic_owner_contract(role))
+    _need(len(roles)==1,'ntfs.c01_prepared_scope')
+    return roles[0]
+
+
+def _require_prepared_normal_startup(config_raw,manifest_raw,admission):
+    from .owner_directory_fixture import _kinds,fixture_document
+    _need(type(admission) in _kinds().values(),'ntfs.c01_prepared_scope')
+    config=parse_json_bytes(config_raw,maximum_bytes=2*1024**2)
+    manifest=parse_json_bytes(manifest_raw,maximum_bytes=2*1024**2)
+    return _prepared_normal_role(config,manifest,admission,fixture_document(admission.raw))
+
+
+def _prepared_normal_candidate(launch, fixture):
+    from ...streaming import read_bounded_file
+    config=launch._config
+    role=_prepared_normal_role(config,launch.manifest,launch._experimental_admission_context,fixture)
+    launcher=Path(config['linux_launcher'])
+    _need(launcher==Path('/opt/experiment')/role.lower()/'linux'/'launcher.py',
+        'ntfs.c01_prepared_scope')
+    path=launcher.parent/'common-core-flock-prepared.json'
+    raw=read_bounded_file(path,256*1024)
+    _need(digest_bytes(raw)==_PREPARED_NORMAL_TABLES[role]
+        ==config['dependency_file_digests'].get(str(path))
+        ==config['artifact_graph']['linux']['dependency_file_digests'].get(str(path)),
+        'ntfs.c01_prepared_table')
+    table=parse_json_bytes(raw,maximum_bytes=256*1024)
+    _need(type(table) is dict and canonical_bytes(table)==raw and set(table)=={'version','case','role','rows'}
+        and table['version']=='1.0' and table['case']==_PREPARED_NORMAL_CASE and table['role']==role
+        and type(table['rows']) is dict and launch.run_id in table['rows'],
+        'ntfs.c01_prepared_table')
+    row=table['rows'][launch.run_id]
+    invocation=launch.invocation
+    request=invocation['request']
+    envelope={'run_id':launch.run_id,'request':request}
+    _need(type(row) is dict and set(row)=={'execute_envelope_sha256','candidate_raw_sha256','candidate_raw_utf8'}
+        and invocation['run_id']==launch.run_id and request.get('operation')=='execute'
+        and digest_bytes(canonical_bytes(envelope))==row['execute_envelope_sha256']
+        and type(row['candidate_raw_utf8']) is str,'ntfs.c01_prepared_request')
+    candidate=row['candidate_raw_utf8'].encode('utf-8')
+    _need(0<len(candidate)==request['maximum_candidate_bytes']<=1024**2
+        and digest_bytes(candidate)==row['candidate_raw_sha256'],'ntfs.c01_prepared_candidate')
+    return candidate
+
+
+def _expected_prepared_candidate(launch):
+    """Only the exact selected private token may assert the captured bytes."""
+    token=_SELECTED.get()
+    if token is None:
+        return None
+    _need(type(token) is _CommonCoreFlockTest,'ntfs.c01_flock_test_type')
+    candidate=getattr(token,'_prepared_candidate',None)
+    if candidate is None:
+        return None
+    token._owner_check()
+    _need(launch is token._launch and token._selected and not token._taken
+        and type(candidate) is bytes,'ntfs.c01_prepared_candidate')
+    _remaining(token._deadline)
+    return candidate
+
+
 def _closed_timeout_launcher(launch, fixture):
     config=launch._config
+    if fixture.get('fixture_uuid')==_PREPARED_NORMAL_CASE and fixture['experimental_admission_version']=='3.0':
+        _prepared_normal_role(config,launch.manifest,launch._experimental_admission_context,fixture)
+        return _PREPARED_NORMAL_LAUNCHER
     if config['native_launch_version']=='2.0' and fixture['experimental_admission_version']=='2.0':
         return _LAUNCHER
     from .owner_directory_fixture import _kinds
@@ -189,7 +266,8 @@ class _CommonCoreFlockTest:
     __slots__=('_initialized','_owner','_launch','_selected','_taken','_bound','_fd','_acquired',
         '_history','_unlock','_closed','_guard','_finished','events','errors','_sequence','_ipc',
         '_initial','_mode','_case','_campaign','_fixture_digest','_run','_manifest_digest','_nonce',
-        '_evidence_identity','_deadline','_lock_deadline','_ipc_closed','_snapshot_write_attempted')
+        '_evidence_identity','_deadline','_lock_deadline','_ipc_closed','_snapshot_write_attempted',
+        '_prepared_candidate','_prepared_retry_admitted')
     def __init__(self,launch,*,_initial_deadline):
         from .bootstrap import _NativeAcceptedLaunch
         from .owner_directory_fixture import fixture_document,_kinds
@@ -210,6 +288,9 @@ class _CommonCoreFlockTest:
         fixture=fixture_document(launch._experimental_admission_context.raw)
         launch.check_runtime();config=launch._config;graph=config['artifact_graph']
         selected_launcher=_closed_timeout_launcher(launch,fixture)
+        self._prepared_retry_admitted=False
+        self._prepared_candidate=(_prepared_normal_candidate(launch,fixture)
+            if selected_launcher==_PREPARED_NORMAL_LAUNCHER else None)
         _need(graph['launcher_digest']==selected_launcher,
             'ntfs.c01_flock_test_launcher')
         launcher=Path(config['linux_launcher']);_need(digest_bytes(read_bounded_file(launcher,2*1024**2))==selected_launcher,
@@ -291,6 +372,14 @@ class _CommonCoreFlockTest:
             acquire_deadline_float_hex=deadline.hex(),acquire_deadline_ns=int(deadline*1e9))
         _remaining(min(self._deadline,deadline))
 
+    def prepared_acquire_entry(self,descriptor):
+        self._owner_check()
+        _need(self._selected and self._taken and self._bound and not self._acquired
+              and type(descriptor) is int and descriptor==self._fd
+              and type(getattr(self,'_prepared_candidate',None)) is bytes,
+              'ntfs.c01_prepared_scope')
+        _remaining(min(self._deadline,self._lock_deadline))
+
     def acquire_return(self,descriptor,succeeded,error_number):
         self._owner_check();_need(self._bound and descriptor==self._fd and not self._acquired)
         _need(type(succeeded) is bool)
@@ -298,6 +387,44 @@ class _CommonCoreFlockTest:
             contended=not succeeded and error_number in (errno.EACCES,errno.EAGAIN,errno.EWOULDBLOCK),
             interrupted=not succeeded and error_number==errno.EINTR,
             acquire_deadline_float_hex=self._lock_deadline.hex(),acquire_deadline_ns=int(self._lock_deadline*1e9))
+
+        if getattr(self,'_prepared_candidate',None) is not None and self._mode=='contender':
+            if succeeded:
+                _need(self._prepared_retry_admitted,'ntfs.c01_prepared_contender_without_handoff')
+            elif error_number in (errno.EACCES,errno.EAGAIN,errno.EWOULDBLOCK) and not self._prepared_retry_admitted:
+                self._prepared_retry(descriptor)
+
+    def _prepared_retry(self,descriptor):
+        """Wait after the real failed flock, inside its existing acquire budget."""
+        deadline=min(self._deadline,self._lock_deadline)
+        reply=self._ipc.receive(deadline)
+        expected_holder=self._run.replace('-c01-contender-','-c01-holder-',1)
+        _need(type(reply) is dict and set(reply)=={'protocol','action','campaign_id','run_id','operation_nonce',
+              'holder_run_id','holder_terminal_ns','holder_event_digest'}
+            and reply['protocol']==_PROTOCOL and reply['action']=='RETRY_AFTER_HOLDER_TERMINAL'
+            and reply['campaign_id']==self._campaign and reply['run_id']==self._run
+            and reply['operation_nonce']==self._nonce and reply['holder_run_id']==expected_holder
+            and type(reply['holder_terminal_ns']) is int
+            and self.events[-1]['observed_ns']<=reply['holder_terminal_ns']<=time.monotonic_ns()
+            and type(reply['holder_event_digest']) is str
+            and re.fullmatch('sha256:[0-9a-f]{64}',reply['holder_event_digest']) is not None,
+            'ntfs.c01_prepared_retry_binding')
+        _remaining(deadline)
+        self._record('prepared_retry_admitted',strict=True,descriptor=descriptor,
+            holder_run_id=expected_holder,holder_terminal_ns=reply['holder_terminal_ns'],
+            holder_event_digest=reply['holder_event_digest'])
+        _remaining(deadline)
+        self._prepared_retry_admitted=True
+
+    def prepared_core_return(self,status):
+        """A schedule witness after stock successful Core delivery, not a receipt."""
+        self._owner_check()
+        _need(self._prepared_candidate is not None and self._selected and type(status) is int,
+            'ntfs.c01_prepared_scope')
+        if (self._mode=='holder' and status==0 and self._taken and self._history
+                and self._guard and self._unlock and self._closed and not self.errors):
+            self._record('prepared_holder_terminal',descriptor=self._fd,core_exit_code=0,
+                observed_checked_guard_return=True)
 
     def observed_acquire_timeout(self,descriptor,deadline):
         if getattr(self,'_run',None) not in (_TIMEOUT_RUN,_TIMEOUT_FRESH_RUN):return

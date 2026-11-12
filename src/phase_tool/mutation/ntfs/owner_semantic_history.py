@@ -10,6 +10,7 @@ from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from ...registry import _native_schema_check_pass
 from .owner_directory_fixture import _need,_digest,_kinds,_ROLES,fixture_document,check_manifest
 from .owner_semantic_contracts import semantic_owner_contract
+from .owner_semantic_fixture import _C02_CURRENT_ALIAS, _C02_CURRENT_LEAVES, _c02_current_grant
 
 _MAX_PREDECESSORS=32
 
@@ -57,18 +58,32 @@ def _domain(manifest,fixture):
         _need(manifest.get(key)==fixture[key],'ntfs.original_history_domain_mismatch')
     # Core is a logical binding, not a wheel digest. Each complete reader below
     # resolves its own trusted Core/registry/profile/composition independently.
-    allowed={_physical(row)for row in fixture['root_grants']}
+    current, objects = fixture['root_grants']
+    current_spellings = {_physical(current)}
+    if _C02_CURRENT_ALIAS in fixture:
+        current_spellings = {_physical(_c02_current_grant(current, leaf)) for leaf in _C02_CURRENT_LEAVES}
+    allowed = current_spellings | {_physical(objects)}
     grants=manifest.get('root_grants')
-    _need(type(grants)is list and len(grants)in{1,2}
-        and len({_physical(row)for row in grants})==len(grants)
-        and all(_physical(row)in allowed for row in grants),'ntfs.original_history_domain_mismatch')
+    _need(type(grants)is list and len(grants)in{1,2}, 'ntfs.original_history_domain_mismatch')
+    keys = {_physical(row) for row in grants}
+    _need(len(keys) == len(grants) and keys <= allowed and len(keys & current_spellings) <= 1,
+          'ntfs.original_history_domain_mismatch')
     projections=manifest.get('root_projections')
     _need(type(projections)is dict and set(projections)=={row['root_binding']for row in grants},
         'ntfs.original_history_domain_mismatch')
-    current=_physical(fixture['root_grants'][0])
     for row in grants:
-        expected='/ntfs-result'if _physical(row)==current else'/ntfs-objects'
+        expected='/ntfs-result'if _physical(row) in current_spellings else'/ntfs-objects'
         _need(projections[row['root_binding']]==expected,'ntfs.original_history_domain_mismatch')
+
+
+def _c02_history_peer(fixture, peer):
+    if _C02_CURRENT_ALIAS not in fixture:
+        _need(_C02_CURRENT_ALIAS not in peer, 'ntfs.c02_history_alias_peer')
+        return
+    _need(peer.get('experimental_admission_version') == '3.0'
+          and peer.get(_C02_CURRENT_ALIAS) == fixture[_C02_CURRENT_ALIAS]
+          and peer['windows_roots']['current_root'] != fixture['windows_roots']['current_root'],
+          'ntfs.c02_history_alias_peer')
 
 
 def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
@@ -84,6 +99,11 @@ def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
     rows=value['manifests'];past=value['predecessors']
     _need(type(rows)is list and len(rows)==6 and type(past)is list and len(past)<=_MAX_PREDECESSORS,
         'ntfs.accepted_history_shape')
+    c02 = _C02_CURRENT_ALIAS in fixture
+    if c02:
+        _need(len(past) == len(_ROLES) and all(type(row) is dict and row.get('family') == 'owner3'
+              and row.get('role') == role for row, role in zip(past, _ROLES, strict=True)),
+              'ntfs.c02_history_alias_peer')
     buffers=[];tuples=set()
     for role,row in zip(_ROLES,rows,strict=True):
         _need(type(row)is dict and set(row)=={'role','manifest_base64','manifest_digest'}and row['role']==role,
@@ -100,6 +120,7 @@ def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
         body,manifest=_decode(row['manifest_base64'],row['manifest_digest'],2*1024**2)
         admission_raw,document=_decode(row['admission_base64'],row['admission_digest'],32768)
         admission=kind(admission_raw);_need(admission.document()==document,'ntfs.semantic_history_family_mismatch')
+        _c02_history_peer(fixture, document)
         version=document['experimental_admission_version']
         if row['family']=='owner3':
             _need(version=='3.0','ntfs.semantic_history_family_mismatch')
@@ -126,8 +147,30 @@ def owner3_history_buffers(raw,expected_digest,*,active_bytes,active_digest):
 
 
 
+def _c02_corpus_pair(active, rows, fixture):
+    """Match both literal six-role fixtures before sharing their wheel bytes."""
+    from ...installation import _NativeFileCreateReadBinding
+
+    kinds = _kinds()
+    expected = tuple(kinds[role] for role in _ROLES) * 2
+    if all(type(row) is _NativeFileCreateReadBinding for row in rows):
+        contexts = tuple(row.experimental_admission for row in rows)
+        _need(tuple(type(context) for context in contexts) == expected, 'ntfs.c02_history_alias_peer')
+        caps = tuple(context.raw for context in contexts)
+    else:
+        _need(all(type(row) is tuple and len(row) == 4 for row in rows)
+              and tuple(row[3] for row in rows) == expected, 'ntfs.c02_history_alias_peer')
+        caps = tuple(row[2] for row in rows)
+    peer_raw = caps[len(_ROLES)]
+    _need(caps == (active.experimental_admission.raw,) * len(_ROLES) + (peer_raw,) * len(_ROLES),
+          'ntfs.c02_history_alias_peer')
+    peer = fixture_document(peer_raw)
+    _c02_history_peer(fixture, peer)
+    _need(peer['wheel_digest'] == fixture['wheel_digest'], 'ntfs.c02_history_alias_peer')
+
+
 def _owner3_history_corpus(active, rows):
-    """Select only the exact six current roles of one synthetic Owner3 fixture."""
+    """Select a six-role fixture or the exact same-wheel C02 pair."""
     from contextlib import nullcontext
     from ...installation import _NativeFileCreateReadBinding, _owner3_registry_corpus
     from .owner_directory_fixture import is_fixture
@@ -135,7 +178,7 @@ def _owner3_history_corpus(active, rows):
     if (type(active) is not _NativeFileCreateReadBinding
             or active._owner_directory_context is not None
             or active._qualification_context is not None
-            or type(rows) is not tuple or len(rows) != 6):
+            or type(rows) is not tuple or len(rows) not in (6, 12)):
         return nullcontext()
     admission = active.experimental_admission
     if type(admission) not in _kinds().values() or not is_fixture(admission.raw):
@@ -143,6 +186,10 @@ def _owner3_history_corpus(active, rows):
     document = fixture_document(admission.raw)
     if document['experimental_admission_version'] != '3.0':
         return nullcontext()
+    if len(rows) == 12:
+        if _C02_CURRENT_ALIAS not in document:
+            return nullcontext()
+        _c02_corpus_pair(active, rows, document)
     return _owner3_registry_corpus(document['wheel_digest'])
 
 
@@ -169,6 +216,9 @@ def _check_owner3_history_domain(active, bindings, *, recheck_registry):
         and 6<=len(bindings)<=6+_MAX_PREDECESSORS,'ntfs.original_history_binding_mismatch')
     active_raw=active.experimental_admission.raw;fixture=fixture_document(active_raw)
     _need(fixture['experimental_admission_version']=='3.0','ntfs.semantic_history_family_mismatch')
+    c02 = _C02_CURRENT_ALIAS in fixture
+    if c02:
+        _need(len(bindings) == 2 * len(_ROLES), 'ntfs.c02_history_alias_peer')
     tuples=set()
     for index,row in enumerate(bindings):
         _need(type(row)is _NativeFileCreateReadBinding and row._qualification_context is None,
@@ -186,6 +236,12 @@ def _check_owner3_history_domain(active, bindings, *, recheck_registry):
                 and row.experimental_admission.raw==active_raw
                 and manifest['contract']==semantic_owner_contract(_ROLES[index]),
                 'ntfs.original_history_binding_mismatch')
+        else:
+            _c02_history_peer(fixture, row.experimental_admission.document())
+            if c02:
+                role = _ROLES[index - len(_ROLES)]
+                _need(type(row.experimental_admission) is _kinds()[role]
+                      and manifest['contract'] == semantic_owner_contract(role), 'ntfs.c02_history_alias_peer')
         key=canonical_bytes({'contract':manifest['contract'],'core':manifest['core'],
             'installation':{'id':manifest['installation_id'],'descriptor_digest':row.manifest_digest},
             'registry_snapshot_digest':manifest['registry_snapshot_digest']})

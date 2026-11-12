@@ -7,6 +7,9 @@ import re
 from .owner_directory_fixture import _need,_kinds,_digest,_identity,_posix,_ROLES,_UUID,_AUTHORIZATION
 from .owner_semantic_contracts import semantic_owner_contract
 
+_C02_CURRENT_ALIAS = 'c02_current_root_alias'
+_C02_CURRENT_LEAVES = ('results', 'RESULTS')
+
 def _semantic_profile_key(role):
     _need(role in _ROLES,'ntfs.semantic_owner_role_required')
     return 'phase.native.ntfs.experiment.owner3.'+role.lower()+'.authority.v1@1.0.0'
@@ -17,8 +20,51 @@ def semantic_fixture_document(raw):
     return _validate_semantic_fixture_document(raw, parse_json_bytes(raw, maximum_bytes=32768))
 
 
+def _c02_current_grant(grant, leaf):
+    _need(leaf in _C02_CURRENT_LEAVES, 'ntfs.c02_alias_binding')
+    return dict(grant, components=[*grant['components'][:-1], leaf])
+
+
+def _c02_alias_domain_digest(doc, observations):
+    roots = doc['windows_roots']
+    primary = str(PureWindowsPath(roots['current_root']).parent / 'results')
+    base = {key: value for key, value in doc.items() if key != _C02_CURRENT_ALIAS}
+    base['windows_roots'] = dict(roots, current_root=primary)
+    current, objects = doc['root_grants']
+    base['root_grants'] = [_c02_current_grant(current, 'results'), objects]
+    return digest_bytes(canonical_bytes({'version': '1.0', 'owner_fixture': base,
+                                        'no_follow_observations': observations}))
+
+
+def _validate_c02_current_root_alias(doc, current):
+    # These are bound setup observations. Actual NativeIO still opens the exact
+    # selected grant and checks its namespace and identity at use time.
+    alias = doc[_C02_CURRENT_ALIAS]
+    _need(type(alias) is dict and set(alias) == {'version', 'domain_digest', 'no_follow_observations'}
+          and alias['version'] == '1.0', 'ntfs.c02_alias_binding')
+    observations = alias['no_follow_observations']
+    _need(type(observations) is dict and set(observations) == set(_C02_CURRENT_LEAVES),
+          'ntfs.c02_alias_binding')
+    raw_digests = []
+    grant = current.as_dict()
+    for leaf in _C02_CURRENT_LEAVES:
+        row = observations[leaf]
+        _need(type(row) is dict and set(row) == {'components', 'device', 'volume_guid',
+              'volume_serial32', 'native_identity', 'reparse_tag', 'all_handles_closed', 'raw_digest'}
+              and row['components'] == _c02_current_grant(grant, leaf)['components']
+              and canonical_bytes({key: row[key] for key in (
+                  'device', 'volume_guid', 'volume_serial32', 'native_identity')}) == canonical_bytes({
+                  key: grant[key] for key in ('device', 'volume_guid', 'volume_serial32', 'native_identity')})
+              and type(row['reparse_tag']) is int and row['reparse_tag'] == 0
+              and row['all_handles_closed'] is True, 'ntfs.c02_alias_observation')
+        _digest(row['raw_digest'])
+        raw_digests.append(row['raw_digest'])
+    _need(len(set(raw_digests)) == 2 and alias['domain_digest'] == _c02_alias_domain_digest(doc, observations),
+          'ntfs.c02_alias_binding')
+
+
 def _validate_semantic_fixture_document(raw, doc):
-    _need(type(doc) is dict and canonical_bytes(doc) == raw and (set(doc) == {'experimental_admission_version', 'authorization_digest', 'fixture_uuid', 'owner_scope_id', 'wheel_digest', 'core', 'windows_roots', 'root_grants', 'root_projections', 'evidence_root', 'evidence_identity', 'preparation_root', 'preparation_identity', 'roles', 'request_limits', 'qualification', 'release_eligible'}), 'ntfs.owner_fixture_shape')
+    _need(type(doc) is dict and canonical_bytes(doc) == raw and (set(doc) - {_C02_CURRENT_ALIAS} == {'experimental_admission_version', 'authorization_digest', 'fixture_uuid', 'owner_scope_id', 'wheel_digest', 'core', 'windows_roots', 'root_grants', 'root_projections', 'evidence_root', 'evidence_identity', 'preparation_root', 'preparation_identity', 'roles', 'request_limits', 'qualification', 'release_eligible'}), 'ntfs.owner_fixture_shape')
     _need(doc['experimental_admission_version'] == '3.0' and doc['authorization_digest'] == _AUTHORIZATION and (doc['release_eligible'] is False) and (doc['qualification'] == {'A05': 'NOT_VERIFIED', 'G01': 'NOT_VERIFIED'}), 'ntfs.owner_fixture_scope')
     _need(type(doc['fixture_uuid']) is str and _UUID.fullmatch(doc['fixture_uuid']) is not None and (doc['owner_scope_id'] == 'phase.qualification.owner.' + doc['fixture_uuid']))
     _digest(doc['wheel_digest'])
@@ -27,8 +73,9 @@ def _validate_semantic_fixture_document(raw, doc):
     roots = doc['windows_roots']
     _need(type(roots) is dict and set(roots) == {'current_root', 'objects_root'})
     parent = PureWindowsPath('S:/Phase-NTFS-Qualification') / doc['fixture_uuid']
-    for binding, leaf in (('current_root', 'results'), ('objects_root', 'objects')):
-        _need(type(roots[binding]) is str and roots[binding] == str(parent / leaf))
+    leaves = _C02_CURRENT_LEAVES if _C02_CURRENT_ALIAS in doc else ('results',)
+    _need(type(roots['current_root']) is str and roots['current_root'] in tuple(str(parent / leaf) for leaf in leaves)
+          and type(roots['objects_root']) is str and roots['objects_root'] == str(parent / 'objects'))
     from .version2_observation import _version2_grants
     grants = _version2_grants(doc['root_grants'])
     _need(all((grants[key].components == PureWindowsPath(roots[key]).parts[1:] for key in roots)))
@@ -59,6 +106,8 @@ def _validate_semantic_fixture_document(raw, doc):
         _need(type(provider) is dict and set(provider) == {'id', 'version', 'artifact_digest'} and (type(provider['id']) is str) and (type(provider['version']) is str))
         _digest(provider['artifact_digest'])
         _need(type(row['root_binding']) is str and re.fullmatch('[a-z][a-z0-9_]{0,63}', row['root_binding']) is not None and (row['role'] != 'Version2' or row['root_binding'] == 'current_root'))
+    if _C02_CURRENT_ALIAS in doc:
+        _validate_c02_current_root_alias(doc, grants['current_root'])
     return doc
 
 def semantic_owner_role(kind):

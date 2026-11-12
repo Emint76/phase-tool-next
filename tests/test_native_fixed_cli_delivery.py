@@ -95,6 +95,14 @@ if request['request']['operation']=='publish_file':
         result.update(status='rejected_before_write',success=False,content_digest=proof,receipt_digest=None,
             intent_digest=None,effect_plan_digest=None,execution_disposition=None,mutation_attempted=False,
             target_verified=False,error='publish_file.source_digest_mismatch',exit_code=10)
+    if mode in {'file-occupied','file-occupied-intent','file-occupied-foreign-error','file-occupied-bad-receipt'}:
+        code=10
+        result.update(status='rejected_before_write',success=False,intent_digest=None,effect_plan_digest=None,
+            execution_disposition='not_executed',mutation_attempted=False,target_verified=False,
+            error='target.destination_exists',exit_code=10)
+        if mode=='file-occupied-intent':result['intent_digest']=proof
+        if mode=='file-occupied-foreign-error':result['error']='ntfs.admission_required'
+        if mode=='file-occupied-bad-receipt':result['receipt_digest']='not-a-digest'
     if mode=='file-foreign-contract':result['contract_binding']='file_create.v9@1.0.1'
     if mode=='file-missing-receipt':result['receipt_digest']=None
     reply={'protocol':'phase.native.input.publication','version':'1.0','run_id':request['run_id'],
@@ -201,6 +209,37 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(child.poll())
         self.assertTrue(all(stream.closed for stream in (child.stdin,child.stdout,child.stderr)))
         self.assertTrue(child._handle.closed)
+
+    def test_staged_file1_occupancy_keeps_bound_no_intent_receipt_and_known_exit(self):
+        code,out,err,capture=self.call_model('file-occupied',staged_file_role='File1')
+        self.assert_outer_closed_before_fixture_cleanup()
+        self.assertEqual((code,err),(10,b''))
+        result=json.loads(out)
+        self.assertEqual(result['error'],'target.destination_exists')
+        self.assertEqual(result['receipt_digest'],'sha256:'+'b'*64)
+        self.assertIsNone(result['intent_digest'])
+        self.assertIsNone(result['effect_plan_digest'])
+        inner=(capture/'stdout.bin').read_bytes()
+        self.assertEqual(json.loads(inner[9:-1])['result'],result)
+        delivery=json.loads((capture/'delivery.json').read_bytes())
+        self.assertEqual(delivery['child_delivery'],'COMPLETE_NATIVE_PUBLICATION_FRAME')
+        self.assertEqual(delivery['outer_owner_finalization'],'closed')
+        self.assertIs(delivery['native_worker_quiescence_proven'],False)
+        self.assertIs(delivery['retry_authorized'],False)
+
+    def test_staged_file_receipt_exception_does_not_cover_other_refusals_or_file2(self):
+        rows=[('File1',mode) for mode in ('file-occupied-intent','file-occupied-foreign-error',
+            'file-occupied-bad-receipt')]+[('File2','file-occupied')]
+        for role,mode in rows:
+            with self.subTest(role=role,mode=mode):
+                code,out,err,capture=self.call_model(mode,staged_file_role=role)
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,out),(50,b''))
+                self.assertTrue(err)
+                self.assertTrue((capture/'stdout.bin').read_bytes())
+                delivery=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(delivery['child_delivery'],'UNKNOWN')
+                self.assertIs(delivery['retry_authorized'],False)
 
     def test_staged_file_both_versions_and_typed_mismatch_use_closed_pipe(self):
         for role in ('File1','File2'):

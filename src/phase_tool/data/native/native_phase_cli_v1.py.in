@@ -236,7 +236,18 @@ def staged_file_result(candidate,request,outer):
             and all(digest(candidate[field]) for field in ('receipt_digest','intent_digest','effect_plan_digest')),
             'native verified file result proof')
     if status=='rejected_before_write':
-        need(candidate['mutation_attempted']is False and candidate['receipt_digest']is None
+        # A staged File1 occupancy rejection can carry the finalized Core
+        # receipt. Delivery correlates it; independent inspect verifies proof.
+        receipt=candidate['receipt_digest']
+        occupied_before_intent=(contract['id']=='file_create.v1'
+            and request['publication_version']=='1.0' and request['root_binding']=='phase_result_root'
+            and candidate['error']=='target.destination_exists'
+            and candidate['execution_disposition']=='not_executed'
+            and candidate['intent_digest'] is None and candidate['effect_plan_digest'] is None
+            and candidate['inspection_required'] is False and digest(receipt)
+            and digest(candidate['content_digest']) and candidate['content_digest']==request['expected_digest']
+            and type(candidate['content_length'])is int and 0<=candidate['content_length']<=1024**2)
+        need(candidate['mutation_attempted'] is False and (receipt is None or occupied_before_intent)
             and type(candidate['error'])is str and bool(candidate['error']),'native file refusal proof')
     if status in {'committed_unverified','indeterminate'}:
         need(candidate['inspection_required']is True,'native file uncertainty proof')

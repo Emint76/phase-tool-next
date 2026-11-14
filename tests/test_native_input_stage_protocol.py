@@ -250,6 +250,28 @@ class ContractCandidateModels(unittest.TestCase):
             with self.assertRaises(PhaseError):g['_publication_candidate'](role,'write-a','dest',['member'],None)
 
 
+    def test_source_locator_requires_nfc_without_weakening_windows_leaf_checks(self):
+        nfc = 'incoming folder/café.txt'
+        nfd = 'incoming folder/café.txt'
+        self.assertEqual(g['_stage_request']('owner.inputs', nfc, None)['source_locator'], nfc)
+        with self.assertRaisesRegex(PhaseError, 'input_stage.source_locator_not_nfc'):
+            g['_stage_request']('owner.inputs', nfd, None)
+        for locator in ('incoming/a.txt.', 'incoming/a.txt ', 'incoming/com¹.txt', 'incoming/a:b'):
+            with self.subTest(locator=locator), self.assertRaises(PhaseError):
+                g['_stage_request']('owner.inputs', locator, None)
+
+    def test_version2_existing_serialized_candidate_ceiling_accounts_for_escaping(self):
+        args = ('Version2', 'a', 'dest', None, 'sha256:' + 'e' * 64)
+        make = g['_publication_candidate']
+        base_length = len(make(*args, '')[1])
+        escapes, tail = divmod(1024**2 - base_length, 6)
+        bounded = '\x00' * escapes + 'a' * tail
+        self.assertLess(len(bounded.encode()), 512 * 1024)
+        self.assertEqual(len(make(*args, bounded)[1]), 1024**2)
+        with self.assertRaisesRegex(PhaseError, 'candidate.too_large'):
+            make(*args, bounded + 'a')
+
+
 class NativeHandle:
     def __init__(self,api,name,directory,ident):
         self.api=api;self.name=name;self.directory=directory;self.value=len(api.handles)+100
@@ -442,6 +464,150 @@ class WindowsStageRefusalModels(unittest.TestCase):
                 self.assertEqual(starts,1);self.assertIsInstance(result,BaseExceptionGroup)
                 self.assertTrue(owner._unavailable);self.assertIsNotNone(owner._held_launch)
                 self.assertEqual(api._handles,[])
+
+
+class Version2PreparedSourceModels(unittest.TestCase):
+    def publish(self, body, *, prepare_only=False, fail_close=False, fail_transfer=False):
+        from phase_tool.application import PhaseApplication
+        from phase_tool.mutation.ntfs import bootstrap, inspection_mcp, process_witness
+
+        fixture, source_scope, locator, _ = native_fixture()
+        source_scope['scope_id'] = 'owner.inputs'
+        leaf = next(path for path in fixture.tree if path.endswith('/a'))
+        fixture.tree[leaf]['body'] = body
+        read_handles = []
+        sent = []
+        receiver_starts = []
+        registry = PhaseApplication().registry
+        owner = inspection_mcp._InspectionMCPCallOwner(
+            config_bytes=b'', expected_config_digest=None, manifest_bytes=b'', expected_manifest_digest=None)
+        scope_digest = 'sha256:' + '4' * 64
+        fake_process = types.SimpleNamespace(stderr=types.SimpleNamespace(fileno=lambda: 7))
+        witness = types.SimpleNamespace(wait_for_exit=lambda timeout: {
+            'worker_exit_established': True, 'exit_code': 1 if fail_transfer else 0})
+        real_close = native._NativeInputSnapshot.close
+
+        class ModelIO(NativeModel):
+            def __init__(self):
+                super().__init__(fixture.tree)
+                if fail_close:
+                    self.fail_close = leaf
+
+            @property
+            def _handles(self):
+                return [handle for handle in self.handles if handle not in self.closed]
+
+            def read_chunks(self, handle, maximum):
+                read_handles.append(handle)
+                yield from super().read_chunks(handle, maximum)
+
+            def input_snapshot(self, *args):
+                return native._NativeInputSnapshot(self, *args)
+
+        def close_and_replace(snapshot):
+            real_close(snapshot)
+            fixture.tree[leaf] = dict(directory=False, id='f' * 32, body=b'changed after close')
+
+        def observe_launch(*, invocation_bytes, _inspection_only, **startup):
+            request = parse_json_bytes(invocation_bytes)
+            probe = types.SimpleNamespace(run_id=request['run_id'], channel_id=request['channel_id'],
+                operation_nonce=request['operation_nonce'], installation_digest=launch.installation_digest,
+                _invocation_bytes=invocation_bytes)
+            if _inspection_only:
+                return probe
+            header = request['request']['header']
+            sink = Sink()
+            receiver = input_stage._InputStageReceiver(canonical_bytes(header), sink, deadline())
+
+            def spawn():
+                receiver_starts.append(fake_process)
+                self.assertEqual(len(read_handles), 1)
+                self.assertEqual(read_handles[0].close_count, 1)
+                self.assertEqual(fixture.tree[leaf]['body'], b'changed after close')
+                return fake_process
+
+            def send_frame(raw, cutoff):
+                sent.append(raw)
+                if len(sent) > 1:
+                    if fail_transfer:
+                        raise PhaseError('MODEL.transfer_unknown')
+                    receiver.feed(raw)
+
+            def receive_frame(cutoff, *, maximum_bytes):
+                self.assertEqual(receiver.state, 'complete')
+                self.assertEqual(sink.values, [('payload', body)])
+                checked = receiver.header_digest
+                prepared = dict(native_prepared_input_version='1.0', header_digest=checked, payload_kind='file',
+                    source_locator='phase-native-input-' + checked[7:39] + '/payload/payload',
+                    expected_digest=digest_bytes(body), expected_length=len(body), member_count=1,
+                    total_length=len(body), members=receiver.rows, owned_preparation_descriptors_closed=True)
+                return canonical_bytes(dict(protocol=header['protocol'], version=header['version'], kind='prepared',
+                    run_id=probe.run_id, channel_id=probe.channel_id, installation_digest=probe.installation_digest,
+                    input_scope_digest=scope_digest, header_digest=checked, prepared=prepared)), None
+
+            probe.spawn_input_stage = spawn
+            probe._pipe = lambda process: types.SimpleNamespace(
+                send_frame=send_frame, receive_frame=receive_frame, _expect_eof=lambda cutoff: None)
+            probe._finalize_exited = lambda process, pipe: None
+            return probe
+
+        args = dict(run_id='run-a', input_scope='owner.inputs', source_locator=locator, target_locator='dest.bin',
+                    request_id='version2-request', expected_current_digest=digest_bytes(b'old bytes'))
+        stage_os = types.SimpleNamespace(name='nt', getpid=os.getpid, read=lambda fd, maximum: b'')
+        with patch.object(input_stage, 'os', stage_os), patch.object(native, 'NativeIO', ModelIO), \
+                patch.object(native._NativeInputSnapshot, 'close', close_and_replace), \
+                patch.object(input_stage, '_scope_for_launch', return_value=(source_scope, 'Version2', scope_digest)), \
+                patch.object(bootstrap, '_NativeAcceptedLaunch', side_effect=observe_launch), \
+                patch.object(process_witness, 'WindowsProcessWitness', return_value=witness), \
+                patch('phase_tool.installation._native_registry_for_launch', return_value=registry), \
+                patch.object(owner, '_call_locked', side_effect=AssertionError('unexpected Core dispatch')):
+            if fail_transfer or fail_close:
+                if fail_close:
+                    with self.assertRaises(BaseExceptionGroup) as failure:
+                        owner.publish_input(**args)
+                    self.assertIn('MODEL.unknown_close', repr(failure.exception))
+                else:
+                    with self.assertRaisesRegex(PhaseError, 'MODEL.transfer_unknown'):
+                        owner.publish_input(**args)
+                with self.assertRaisesRegex(PhaseError, 'ntfs.inspection_mcp_unavailable'):
+                    owner.publish_input(**args)
+                result = None
+            else:
+                if prepare_only:
+                    result = input_stage.run_windows_input_stage(owner, 'run-a', 'owner.inputs', locator, None,
+                        deadline(), request_id=args['request_id'], target_locator=args['target_locator'],
+                        expected_current_digest=args['expected_current_digest'])
+                else:
+                    result = owner.publish_input(**args)
+        self.assertEqual(len(read_handles), 1)
+        self.assertEqual(read_handles[0].close_count, 1)
+        return result, sent, receiver_starts
+
+    def test_version2_max_bytes_replayed_once_after_pinned_source_close(self):
+        raw = b'x' * (512 * 1024)
+        (prepared, role, _, text), sent, starts = self.publish(raw, prepare_only=True)
+        self.assertEqual((role, text.encode(), prepared['expected_digest']), ('Version2', raw, digest_bytes(raw)))
+        self.assertEqual(len(starts), 1)
+        self.assertEqual([len(part) for part in sent[1:3]], [256 * 1024, 256 * 1024])
+        self.assertEqual(b''.join(sent[1:3]), raw)
+        self.assertEqual([parse_json_bytes(part)['kind'] for part in sent[3:]], ['member_end', 'end'])
+        self.assertTrue(parse_json_bytes(sent[-1])['source_handles_closed'])
+
+    def test_version2_non_nfc_refusal_and_unknown_do_not_repeat_source_read(self):
+        raw = 'e\u0301'.encode()
+        result, sent, starts = self.publish(raw)
+        ack = result['command_ack']
+        self.assertEqual((result['exit_code'], ack['error']), (10, 'input_stage.version2_source_not_nfc'))
+        self.assertEqual((result['source_digest'], result['source_length']), (digest_bytes(raw), len(raw)))
+        self.assertIs(ack['mutation_attempted'], False)
+        self.assertIsNone(ack['receipt_digest'])
+        self.assertIsNone(result['independent_inspection'])
+        self.assertIs(result['retry_authorized'], False)
+        self.assertEqual((sent, starts), ([], []))
+        self.assertEqual(self.publish(raw, fail_close=True), (None, [], []))
+        _, sent, starts = self.publish(b'c' * 4096 + b'\n', fail_transfer=True)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(sent[1:], [b'c' * 4096 + b'\n'])
 
 
 class PrivatePipeSelectionModels(unittest.TestCase):

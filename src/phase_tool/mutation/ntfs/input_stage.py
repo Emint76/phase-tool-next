@@ -5,7 +5,7 @@ frames, never NativeChannel or a giant JSON/base64 value. A prepared result is
 input data only. Existing Core must independently capture/freeze it.
 """
 from __future__ import annotations
-import hashlib,os,re,threading,time
+import hashlib,os,re,threading,time,unicodedata
 from contextlib import contextmanager,closing
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -228,6 +228,7 @@ def _safe_input_locator(value):
     try:encoded=value.encode('utf-16-le',errors='strict')
     except UnicodeError as error:raise PhaseError('input_stage.invalid_source_unicode')from error
     _require(len(encoded)<=2048,'input_stage.source_locator_utf16_bound')
+    _require(unicodedata.is_normalized('NFC',value),'input_stage.source_locator_not_nfc')
     parts=value.split('/')
     _require(1<=len(parts)<=32,'input_stage.source_locator_depth')
     for part in parts:_input_leaf(part)
@@ -257,6 +258,14 @@ class _ClosedInputFileRefusal:
     role: str
     length: int
     maximum: int
+    registry: RegistrySnapshot
+
+
+@dataclass(frozen=True)
+class _ClosedVersion2InputRefusal:
+    code: str
+    source_digest: str
+    source_length: int
     registry: RegistrySnapshot
 
 
@@ -554,7 +563,7 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
         return _ClosedInputBundleRefusal(role,error.code,error.kind,error.observed,error.maximum,'not_opened',registry)
     request=_stage_request(input_scope,source_locator,members)
     source=None;sender=None;process=None;pipe=None;witness=None;primary=None;result=None;fact=None;closed=False
-    refusal=None
+    refusal=None;content=None
     try:
         api=object.__new__(NativeIO)
         owner._held_input_io=api  # Retain before the first native constructor call.
@@ -576,13 +585,39 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
             source.verify_complete()
             refusal=error
         else:
+            if role=='Version2':
+                # Capture through the same pinned source and finish its one
+                # owned close before a receiver can start. The stage byte cap
+                # bounds both the inline value and the buffered raw frames.
+                buffered=tuple(sender.frames())
+                _require(source.close_attempted and not api._handles and owner._held_launch is None,
+                    'input_stage.source_finalization_unknown')
+                error_code=None
+                try:
+                    content=bytes(sender.inline_bytes).decode('utf-8',errors='strict')
+                except UnicodeDecodeError:
+                    error_code='input_stage.version2_source_utf8'
+                else:
+                    try:
+                        _publication_candidate(role,request_id,target_locator,members,expected_current_digest,content)
+                    except PhaseError as error:
+                        if error.code not in {'input_stage.version2_source_not_nfc','candidate.too_large'}:raise
+                        error_code=error.code
+                if error_code is not None:
+                    registry=_native_registry_for_launch(probe)
+                    _left(deadline_ns)
+                    row=sender.footer['members'][0]
+                    owner._held_input_source=None;owner._held_input_io=None
+                    return _ClosedVersion2InputRefusal(error_code,row['digest'],row['length'],registry)
             invocation['request']={'operation':'stage_input','native_input_stage_request_version':'1.0','header':_control(sender.header)}
             launch=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=False)
             owner._held_launch=launch
             _left(deadline_ns);process=launch.spawn_input_stage()
             witness=WindowsProcessWitness(process);pipe=launch._pipe(process)
             pipe.send_frame(launch._invocation_bytes,deadline_ns)
-            with closing(sender.frames())as frames:
+            # Reuse the exact bytes from the single pinned Version2 read.
+            frames=(raw for raw in buffered)if role=='Version2'else sender.frames()
+            with closing(frames)as frames:
                 for raw in frames:
                     _left(deadline_ns);pipe.send_frame(raw,deadline_ns)
             closed=True
@@ -637,7 +672,6 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
     _require(not api._handles,'input_stage.source_finalization_unknown')
     owner._held_launch=None
     owner._held_input_source=None;owner._held_input_io=None
-    content=None if sender.inline_bytes is None else bytes(sender.inline_bytes).decode('utf-8',errors='strict')
     return result,role,scope,content
 
 
@@ -662,6 +696,7 @@ def _publication_candidate(role,request_id,target_locator,members,expected_curre
         candidate['content_utf8']=content_utf8
         candidate['media_type']='text/plain; charset=utf-8'
         inline_content(candidate)
+        _require(unicodedata.is_normalized('NFC',content_utf8),'input_stage.version2_source_not_nfc')
     else:
         _require(content_utf8 is None,'input_stage.unexpected_inline_content')
         candidate['input_binding']='payload'
@@ -671,7 +706,9 @@ def _publication_candidate(role,request_id,target_locator,members,expected_curre
         candidate['expected_current_digest']=expected_current_digest
     else:
         _require(role in{'File1','File2'}and expected_current_digest is None,'input_stage.fixed_role_required')
-    return candidate,canonical_bytes(candidate)
+    raw=canonical_bytes(candidate)
+    _require(role!='Version2'or len(raw)<=REQUEST_LIMIT,'candidate.too_large')
+    return candidate,raw
 
 
 def _staged_publication_request(*,role,prepared,input_scope,request_id,target_locator,members,expected_current_digest,content_utf8=None):

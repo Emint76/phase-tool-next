@@ -315,7 +315,7 @@ class _InspectionMCPCallOwner:
         """
         from .input_stage import (_InputOperationDeadline,_input_operation_scope,_left,
             _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal,
-            _ClosedInputBundleRefusal,_ClosedFileAssertionRefusal,_FileInputAssertions)
+            _ClosedInputBundleRefusal,_ClosedFileAssertionRefusal,_FileInputAssertions,_ClosedVersion2InputRefusal)
         validate_run_id(run_id);_stage_request(input_scope,source_locator)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None;result=None;inspection_failure=None
@@ -358,6 +358,14 @@ class _InspectionMCPCallOwner:
                         observed_source=observed_source)
                 elif _file_assertions is not None and type(staged)is _ClosedInputFileRefusal:
                     result=self._staged_file_result(run_id,request_id,target_locator,error='input_stage.member_bound')
+                elif type(staged)is _ClosedVersion2InputRefusal:
+                    from ...application import PhaseApplication
+                    refusal=PhaseApplication(registry=staged.registry)._failure('execute',PhaseError(staged.code))
+                    validate_command_result(refusal.payload,staged.registry)
+                    result={'native_input_publication_result_version':'1.0','run_id':run_id,'input_scope':input_scope,
+                        'role':'Version2','source_digest':staged.source_digest,'source_length':staged.source_length,
+                        'request_id':request_id,'target_locator':target_locator,'command_ack':refusal.payload,
+                        'independent_inspection':None,'exit_code':refusal.exit_code,'retry_authorized':False}
                 elif type(staged) in {_ClosedInputFileRefusal,_ClosedInputBundleRefusal}:
                     from ...application import PhaseApplication
                     registry=staged.registry

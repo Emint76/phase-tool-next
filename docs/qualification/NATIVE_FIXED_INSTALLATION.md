@@ -55,12 +55,12 @@ Example request for an installed File binding:
 }
 ```
 
-Use the installed input scope ID. The source locator is relative to its bound Windows root. The target locator is relative to the installed result grant. Use slash-delimited relative locators such as `incoming/report.txt`. Choose a stable request ID for the operation and a run ID to identify its evidence. The installed manifest fixes the contract and grants.
+Use the installed input scope ID. The source locator is relative to its bound Windows root. The target locator is relative to the installed result grant. Use slash-delimited relative locators such as `incoming/report.txt`. Use Unicode NFC spelling for Windows source locators. Choose a stable request ID for the operation and a run ID to identify its evidence. The installed manifest fixes the contract and grants.
 
 | Installed contract | Source and additional arguments |
 |---|---|
 | File v1 or File v2 | One file, with `members` and `expected_current_digest` set to null. |
-| Version v1 or Version v2 | One file, with `members` set to null and `expected_current_digest` set to the SHA-256 of the expected current file. Version v2 requires strict UTF-8 source bytes. |
+| Version v1 or Version v2 | One file, with `members` set to null and `expected_current_digest` set to the SHA-256 of the expected current file. Version v2 requires strict UTF-8 source bytes already in Unicode NFC. The encoded candidate uses the existing 1 MiB limit, including JSON escaping. |
 | Bundle v1 or Bundle v2 | One source directory with an explicit list of relative file locators in `members` and `expected_current_digest` set to null. |
 
 The File bindings also support `publish-file`. Use the same run, input scope, source, target and request identity. Set `operation` to `publish_file`, omit `members` and `expected_current_digest`, and supply `publication_version` (`"1.0"` or `"2.0"`), `expected_digest` for the source bytes, and `root_binding: "phase_result_root"`. The caller asserts this installed grant and digest before publication.

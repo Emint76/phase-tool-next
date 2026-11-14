@@ -24,11 +24,11 @@ class _LaterBlobSentinel(Exception):
 @unittest.skipUnless(sys.platform.startswith('linux'),
     'NOT_VERIFIED: Linux/ext4 generic-inspection component only')
 class NativeBundle2InspectionInventoryTests(unittest.TestCase):
-    def fixture(self, *, bundle2=True):
+    def fixture(self, *, bundle2=True, ordinary=False):
         # Defer Linux-only channel/provider imports, including sibling fixtures,
         # until after the explicit platform boundary. No test-directory injection.
         from phase_tool import inspection
-        from phase_tool.canonical import canonical_bytes, digest_bytes, profile_digest
+        from phase_tool.canonical import canonical_bytes, digest_bytes, parse_json_bytes, profile_digest
         from phase_tool.continuation import prepared_record
         from phase_tool.core import CORE_BINDING, PhaseCore
         from phase_tool.errors import PhaseError
@@ -52,8 +52,24 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         root = Path(temporary.name)
         evidence = root/'evidence'
         preparation = root/'preparation'
-        evidence.mkdir(mode=0o700)
-        preparation.mkdir(mode=0o700)
+        if ordinary:
+            import base64
+            from .owner_directory_test_data import owner_document, synthetic_catalog
+            from phase_tool.mutation.ntfs.owner_directory_installation import _owner_directory_bindings_with_catalog
+            from phase_tool.mutation.ntfs.owner_directory_authorities import _OwnerDirectoryBundle2Authority
+            from phase_tool.mutation.ntfs.bundle_recovery_channel import LinuxNativeBundleRecoveryChannel
+            self.assertTrue(bundle2)
+            catalog = synthetic_catalog()
+            configuration = owner_document(catalog, directory=root)
+            config_bytes = canonical_bytes(configuration)
+            selected = next(row for row in configuration['manifests'] if row['role'] == 'Bundle2')
+            binding, _history = _owner_directory_bindings_with_catalog(
+                configuration_bytes=config_bytes, expected_configuration_digest=digest_bytes(config_bytes),
+                manifest_bytes=base64.b64decode(selected['manifest_base64'], validate=True),
+                expected_manifest_digest=selected['manifest_digest'], _catalog=catalog)
+        else:
+            evidence.mkdir(mode=0o700)
+            preparation.mkdir(mode=0o700)
         try:
             qualify_host_authority_roots({'phase_evidence_root': evidence})
             filesystem = _linux_filesystem_type(evidence)
@@ -62,13 +78,20 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         if filesystem != 'ext4':
             self.skipTest('NOT_VERIFIED: actual evidence filesystem is '+filesystem)
 
-        registry = (_native_experimental_bundle2_registry_v2 if bundle2
-                    else _native_experimental_bundle1_registry)()
-        admission_type = _ExperimentalBundle2AdmissionV2 if bundle2 else _ExperimentalBundle1Admission
-        authority_type = _ExperimentalBundle2AuthorityV2 if bundle2 else _ExperimentalBundle1Authority
-        channel_type = LinuxNativeBundle2Channel if bundle2 else LinuxNativeBundleChannel
-        contract_binding = registry.contract_bindings()[
-            'bundle_create.v2@1.2.1' if bundle2 else 'bundle_create.v1@1.1.0']
+        if ordinary:
+            manifest = parse_json_bytes(binding.manifest_bytes)
+            registry = binding.registry
+            contract_binding = manifest['contract']
+            channel_type = LinuxNativeBundleRecoveryChannel
+            authority_type = _OwnerDirectoryBundle2Authority
+        else:
+            registry = (_native_experimental_bundle2_registry_v2 if bundle2
+                        else _native_experimental_bundle1_registry)()
+            admission_type = _ExperimentalBundle2AdmissionV2 if bundle2 else _ExperimentalBundle1Admission
+            authority_type = _ExperimentalBundle2AuthorityV2 if bundle2 else _ExperimentalBundle1Authority
+            channel_type = LinuxNativeBundle2Channel if bundle2 else LinuxNativeBundleChannel
+            contract_binding = registry.contract_bindings()[
+                'bundle_create.v2@1.2.1' if bundle2 else 'bundle_create.v1@1.1.0']
         contract = registry.resolve_contract(contract_binding['id'], contract_binding['version'],
             contract_binding['package_digest'], core_version=CORE_BINDING['version'])
         mechanism = {k: contract.document['operation']['mechanism'][k]
@@ -77,7 +100,6 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         timestamp = '2026-10-29T00:00:00Z'
         case = '00000000-0000-4000-8000-000000000207'
         project = projection()  # Synthetic bytes/grant data, never execution authority.
-        from phase_tool.canonical import parse_json_bytes
         grant = parse_json_bytes(project.grant_bytes)
         grant['components'] = ['Phase-NTFS-Qualification', case, 'results']
         evidence_stat = evidence.stat()
@@ -89,40 +111,50 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         candidate = {'operation_id': run_id, 'idempotency_key': run_id,
             'target_locator': 'bundle', 'input_binding': 'payload',
             'members': [row['path'] for row in parse_json_bytes(project.manifest_bytes)['members']]}
-        admission = admission_type(canonical_bytes({
-            'experimental_admission_version': '1.0',
-            'authorization_digest': 'sha256:6d3646ce58d6045fae41d1b22791c4f05d6cb177c343883fad86cd6ae0b0a40b',
-            'contract': contract_binding, 'run_id': run_id, 'request_id': run_id,
-            'target_locator': 'bundle', 'candidate_digest': digest_bytes(canonical_bytes(candidate)),
-            'payload_digest': project.content_digest, 'payload_length': project.content_length,
-            'windows_root': 'S:\\Phase-NTFS-Qualification\\'+case+'\\results',
-            'root_grant': grant, 'evidence_identity': evidence_identity,
-            'preparation_identity': preparation_identity, 'wheel_digest': 'sha256:'+'a'*64,
-            'qualification': {'A05': 'NOT_VERIFIED', 'G01': 'NOT_VERIFIED'},
-            'release_eligible': False}))
-        profile = registry.guarantee_profile_bindings()[admission._profile]
-        descriptor = registry.resolve_guarantee_profile(profile)
-        implementation = descriptor['implementation']
-        authority_binding = {'usage': 'provider_backed', 'profile': profile,
-            'provider': {k: implementation[k] for k in ('id', 'version', 'artifact_digest')}}
-        projections = {'phase_result_root': '/synthetic/unopened-inventory-target'}
-        manifest = {'native_read_installation_version': admission._manifest_version,
-            'installation_id': admission._installation_prefix+admission.digest[7:],
-            'core': deepcopy(CORE_BINDING), 'contract': deepcopy(contract_binding),
-            'registry_snapshot_digest': registry.digest, 'authority': authority_binding,
-            'mechanism': mechanism,
-            'composition': {'id': 'synthetic.inspection.inventory', 'version': '1.0.0',
-                'artifact_graph_digest': 'sha256:'+'b'*64},
-            'evidence_root': str(evidence), 'evidence_identity': evidence_identity,
-            'preparation_root': str(preparation), 'preparation_identity': preparation_identity,
-            'root_grants': [grant], 'root_projections': projections}
-        manifest_bytes = canonical_bytes(manifest)
-        binding = _NativeFileCreateReadBinding(
-            manifest_bytes, digest_bytes(manifest_bytes), registry, admission)
+        if ordinary:
+            admission = None
+            root_grant, = manifest['root_grants']
+            grant = root_grant
+            evidence_identity = manifest['evidence_identity']
+            authority_binding = manifest['authority']
+            projections = manifest['root_projections']
+            admitted_profile = catalog.profile('Bundle2')
+        else:
+            admission = admission_type(canonical_bytes({
+                'experimental_admission_version': '1.0',
+                'authorization_digest': 'sha256:6d3646ce58d6045fae41d1b22791c4f05d6cb177c343883fad86cd6ae0b0a40b',
+                'contract': contract_binding, 'run_id': run_id, 'request_id': run_id,
+                'target_locator': 'bundle', 'candidate_digest': digest_bytes(canonical_bytes(candidate)),
+                'payload_digest': project.content_digest, 'payload_length': project.content_length,
+                'windows_root': 'S:\\Phase-NTFS-Qualification\\'+case+'\\results',
+                'root_grant': grant, 'evidence_identity': evidence_identity,
+                'preparation_identity': preparation_identity, 'wheel_digest': 'sha256:'+'a'*64,
+                'qualification': {'A05': 'NOT_VERIFIED', 'G01': 'NOT_VERIFIED'},
+                'release_eligible': False}))
+            profile = registry.guarantee_profile_bindings()[admission._profile]
+            descriptor = registry.resolve_guarantee_profile(profile)
+            implementation = descriptor['implementation']
+            authority_binding = {'usage': 'provider_backed', 'profile': profile,
+                'provider': {k: implementation[k] for k in ('id', 'version', 'artifact_digest')}}
+            projections = {'phase_result_root': '/synthetic/unopened-inventory-target'}
+            manifest = {'native_read_installation_version': admission._manifest_version,
+                'installation_id': admission._installation_prefix+admission.digest[7:],
+                'core': deepcopy(CORE_BINDING), 'contract': deepcopy(contract_binding),
+                'registry_snapshot_digest': registry.digest, 'authority': authority_binding,
+                'mechanism': mechanism,
+                'composition': {'id': 'synthetic.inspection.inventory', 'version': '1.0.0',
+                    'artifact_graph_digest': 'sha256:'+'b'*64},
+                'evidence_root': str(evidence), 'evidence_identity': evidence_identity,
+                'preparation_root': str(preparation), 'preparation_identity': preparation_identity,
+                'root_grants': [grant], 'root_projections': projections}
+            manifest_bytes = canonical_bytes(manifest)
+            binding = _NativeFileCreateReadBinding(
+                manifest_bytes, digest_bytes(manifest_bytes), registry, admission)
+            admitted_profile = admission.profile(binding)
         # A non-operational exact-type channel shell, never used for any wire.
         channel = object.__new__(channel_type)
         channel._inspection_only = True
-        authority = authority_type(binding, admission.profile(binding), canonical_bytes(projections),
+        authority = authority_type(binding, admitted_profile, canonical_bytes(projections),
             channel, run_id=run_id, operation_nonce='c'*32, _inspection_only=True)
 
         effect = parse_json_bytes(project.effect_bytes)
@@ -199,7 +231,8 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
                 'intent_digest': receipt['evidence']['intent_digest'], 'effect_plan_digest': plan_digest}}
         for name, value in controls.items():
             (run/'attachments'/name).write_bytes(canonical_bytes(value))
-        (run/'attachments'/'experimental-admission.json').write_bytes(admission.raw)
+        if admission is not None:
+            (run/'attachments'/'experimental-admission.json').write_bytes(admission.raw)
         (run/'intent.json').write_bytes(canonical_bytes(intent))
         (run/'preparation-binding.json').write_bytes(canonical_bytes(binding_value(intent, effect, prepared)))
         (run/'blobs'/project.content_digest[7:]).write_bytes(project.manifest_bytes)
@@ -283,6 +316,20 @@ class NativeBundle2InspectionInventoryTests(unittest.TestCase):
         # The pre-fix inspector raises attachment_set_mismatch instead. No
         # success-shaped inspection output is supplied or accepted by this test.
         self.assert_stops(fixture, _LaterBlobSentinel)
+
+    def test_ordinary_semantic_b2_checkpoint_uses_verified_attachment_inventory(self):
+        from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+
+        fixture = self.fixture(ordinary=True)
+        self.assertEqual(fixture.intent['contract'], semantic_owner_contract('Bundle2'))
+        self.assertIsNone(fixture.binding.experimental_admission)
+        self.assertFalse((fixture.run/'attachments'/'experimental-admission.json').exists())
+        self.assert_stops(fixture, _LaterBlobSentinel)
+
+    def test_ordinary_semantic_b2_checkpoint_without_verified_binding_is_refused(self):
+        fixture = self.fixture(ordinary=True)
+        self.assertTrue((fixture.run/'preparation-binding.json').is_file())
+        self.assert_stops(fixture, 'recovery.preparation_binding_mismatch', omit_binding=True)
 
     def test_unknown_claimed_and_actual_extra_still_fails_strict_attachment_inventory(self):
         from phase_tool.canonical import canonical_bytes, digest_bytes

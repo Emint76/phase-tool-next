@@ -705,7 +705,8 @@ def inspect_run(
                 # never union a hash merely because receipt claims it.
                 attachment_digests.add(lineage[0])
             from ..mutation.ntfs.bundle_execution import _BUNDLE2_CONTRACTS
-            if intent["contract"] in _BUNDLE2_CONTRACTS:
+            if (intent["contract"] in _BUNDLE2_CONTRACTS
+                    or intent["contract"] == semantic_owner_contract('Bundle2')):
                 controls = native_proof["immutable_files"]
                 prepared_control = controls.get("attachments/prepared-stage.json")
                 if prepared_control is not None:

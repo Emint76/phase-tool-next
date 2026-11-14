@@ -18,7 +18,7 @@ from ...command_result import validate_command_result
 from ...evidence import validate_run_id
 from ...installation import _native_registry_for_manifest
 from .bootstrap import _NativeAcceptedLaunch
-from .entrypoint import run_native_parent
+from .entrypoint import _ClosedStagedFileInspectionLoss, run_native_parent
 from .native import _require
 from .parent_result import _require_command_run_binding
 
@@ -153,6 +153,7 @@ class _InspectionMCPCallOwner:
         self._held_input_io=None
         self._unavailable=False
         self._publication_ack=None  # One transient ACK, never a durable journal or retry record.
+        self._closed_staged_inspection_deadline=None
 
     def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False):
         from .parent_result import _native_file_result_mode,_native_bundle_result_mode
@@ -183,7 +184,8 @@ class _InspectionMCPCallOwner:
         if primary is not None:raise primary
         return value
 
-    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,_retain_launch=False,_staged_a05=None,_c05_transport=None):
+    def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,
+            _retain_launch=False,_staged_a05=None,_c05_transport=None,_report_closed_staged_inspection_loss=False):
         from .parent_result import _native_file_result_mode,_native_bundle_result_mode
         from .bootstrap import _is_bundle_recovery_launch
         _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
@@ -213,6 +215,8 @@ class _InspectionMCPCallOwner:
                 _require(type(_c05_transport) is _C05WindowsTransport and _retain_launch
                     and not inspection_only and _staged_a05 is None,'ntfs.fixed_c05_transport_required')
                 response=run_native_parent(launch,_c05_transport=_c05_transport)
+            elif _report_closed_staged_inspection_loss and getattr(launch,'_owner_directory_context',None) is not None:
+                response=run_native_parent(launch,_report_closed_staged_inspection_loss=True)
             elif _staged_a05 is None:
                 response=run_native_parent(launch)
             else:
@@ -314,7 +318,7 @@ class _InspectionMCPCallOwner:
             _ClosedInputBundleRefusal,_ClosedFileAssertionRefusal,_FileInputAssertions)
         validate_run_id(run_id);_stage_request(input_scope,source_locator)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
-        primary=None;result=None
+        primary=None;result=None;inspection_failure=None
         self._input_publication_phase='stage'
         try:
             _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
@@ -403,21 +407,30 @@ class _InspectionMCPCallOwner:
                             'input_stage.execute_uncertain')
                         self._held_launch=None  # Actual known finalized execute only.
                         self._input_publication_phase='inspect'
-                        inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True)
-                        for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
-                            _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
-                                'input_stage.inspect_ack_mismatch')
-                        _require(inspected['exit_code']==0
-                            and inspected.get('stage3_command_result_version')=='1.0'
-                            and 'inspection_required'not in inspected and inspected.get('success')is True
-                            and inspected.get('terminal_status')=='succeeded_verified'
-                            and inspected.get('execution_disposition')in {'executed','reused_existing'}
-                            and inspected.get('target_verified')is True
-                            and inspected.get('error')is None and inspected.get('blockers')==[],
-                            'input_stage.inspect_unverified')
-                        result['independent_inspection']=inspected
+                        report_loss=(_file_assertions is not None and _c05_transport is None and _staged_a05 is None)
+                        options={'_report_closed_staged_inspection_loss':True} if report_loss else {}
+                        try:
+                            inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True,**options)
+                        except _ClosedStagedFileInspectionLoss as error:
+                            if (type(error) is not _ClosedStagedFileInspectionLoss or not report_loss
+                                    or error.launch is not self._held_launch or not self._unavailable):
+                                raise
+                            inspection_failure=error.code
+                        else:
+                            for field in('run_id','receipt_digest','intent_digest','effect_plan_digest'):
+                                _require(inspected.get(field)==ack.get(field)and ack.get(field)is not None,
+                                    'input_stage.inspect_ack_mismatch')
+                            _require(inspected['exit_code']==0
+                                and inspected.get('stage3_command_result_version')=='1.0'
+                                and 'inspection_required'not in inspected and inspected.get('success')is True
+                                and inspected.get('terminal_status')=='succeeded_verified'
+                                and inspected.get('execution_disposition')in {'executed','reused_existing'}
+                                and inspected.get('target_verified')is True
+                                and inspected.get('error')is None and inspected.get('blockers')==[],
+                                'input_stage.inspect_unverified')
+                            result['independent_inspection']=inspected
                     if _file_assertions is not None:
-                        result=self._staged_file_result(run_id,request_id,target_locator,delivery=result)
+                        result=self._staged_file_result(run_id,request_id,target_locator,delivery=result,error=inspection_failure)
                 self._input_publication_phase='delivery'
                 _left(token.deadline_ns)
                 _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
@@ -429,6 +442,9 @@ class _InspectionMCPCallOwner:
                 self._unavailable=True
                 primary=error if primary is None else BaseExceptionGroup('input publication and gate failed',[primary,error])
         if primary is not None:raise primary
+        if inspection_failure is not None:
+            _left(token.deadline_ns)
+            self._closed_staged_inspection_deadline=token.deadline_ns
         return result
 
     def _staged_file_result(self,run_id,request_id,target_locator,*,delivery=None,error=None,observed_source=None):
@@ -445,9 +461,11 @@ class _InspectionMCPCallOwner:
         if delivery is not None:
             result.update(content_digest=delivery['source_digest'],content_length=delivery['source_length'])
             if _native_file_publication_ack(result,delivery['command_ack']):
-                _require(delivery['independent_inspection']is not None,'input_stage.inspect_unverified')
-                result.update(success=True,status='verified',target_verified=True,
-                    inspection_required=False,error=None,exit_code=0)
+                if delivery['independent_inspection'] is not None:
+                    result.update(success=True,status='verified',target_verified=True,
+                        inspection_required=False,error=None,exit_code=0)
+                else:
+                    _require(error==_ClosedStagedFileInspectionLoss.code,'input_stage.inspect_unverified')
         return PublishFileResult.model_validate(result).model_dump()
 
     def publish_staged_file(self,run_id,input_scope,source_locator,target_locator,request_id,
@@ -817,6 +835,7 @@ class _InputScopeSession:
     def _invoke(self,method,arguments):
         _require(self.gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         owner=None
+        partial_deadline=None
         try:
             _require(not self.unknown,'ntfs.inspection_mcp_unavailable')
             selection=None
@@ -845,6 +864,13 @@ class _InputScopeSession:
                 # A returned, validated execute uncertainty describes the
                 # existing effect. Retain the owner and deliver its facts.
                 ack=owner._publication_ack
+                if method=='publish_staged_file' and owner._closed_staged_inspection_deadline is not None:
+                    _require(owner._held_launch is not None and type(ack) is dict and ack.get('exit_code')==0
+                        and type(result) is dict and result['status']=='committed_unverified' and result['exit_code']==30
+                        and result['error']==_ClosedStagedFileInspectionLoss.code,
+                        'input_stage.session_unknown')
+                    partial_deadline=owner._closed_staged_inspection_deadline
+                    return result
                 _require(method in {'publish_input','publish_staged_file'}
                     and owner._held_launch is not None and type(ack)is dict and ack.get('exit_code')==40
                     and type(result)is dict and result.get('exit_code')==40
@@ -856,7 +882,11 @@ class _InputScopeSession:
             return result
         except BaseException:
             self.unknown=True;raise
-        finally:self.gate.release()
+        finally:
+            self.gate.release()
+            if partial_deadline is not None:
+                from .input_stage import _left
+                _left(partial_deadline)
     def publish_input(self,run_id:StrictStr,input_scope:StrictStr,source_locator:StrictStr,target_locator:StrictStr,
             request_id:StrictStr,members:list[StrictStr]|None=None,expected_current_digest:StrictStr|None=None)->dict:
         return self._invoke('publish_input',dict(run_id=run_id,input_scope=input_scope,source_locator=source_locator,

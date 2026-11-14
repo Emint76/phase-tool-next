@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from mcp.server.fastmcp.exceptions import ToolError
+
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes, digest_bytes
 from phase_tool.errors import PhaseError
@@ -146,6 +148,48 @@ class NativeStagedFilePublicationTests(unittest.TestCase):
                 self.assertEqual(call.call_count,2)
                 self.assertEqual(call.call_args_list[1].args,(RUN,{'operation':'inspect'}))
                 self.assertIs(call.call_args_list[1].kwargs['inspection_only'],True)
+
+    def test_closed_reader_loss_relays_original_commit_facts_and_poisons_mcp_session(self):
+        for role in ('File1','File2'):
+            prepared = {'source_locator':'phase-native-input-'+HEADER[7:39]+'/payload/payload',
+                'header_digest':HEADER,'expected_digest':DIGEST,'expected_length':7}
+            ack = PhaseApplication._command_payload('execute',success=True,run_id=RUN,
+                terminal_status='succeeded_verified',execution_disposition='executed',mutation_attempted=True,
+                effect_plan_digest=digest_bytes(b'plan'),intent_digest=digest_bytes(b'intent'),
+                receipt_digest=digest_bytes(b'receipt'),target_verified=None,blockers=[],error=None,exit_code=0)
+            effect, reader = (SimpleNamespace(_owner_directory_context=object()) for _ in range(2))
+
+            def dispatch(launch, **kwargs):
+                if launch is effect:
+                    self.assertEqual(kwargs,{})
+                    return {'result':ack,'exit_code':0}
+                self.assertIs(launch,reader)
+                self.assertEqual(kwargs,{'_report_closed_staged_inspection_loss':True})
+                raise inspection_mcp._ClosedStagedFileInspectionLoss(reader)
+
+            with (
+                self.subTest(role=role),
+                patch.object(inspection_mcp.FastMCP,'run',autospec=True) as run,
+                patch.object(input_stage,'run_windows_input_stage',return_value=(prepared,role,{},None)) as stage,
+                patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=[effect,reader]),
+                patch('phase_tool.installation._native_registry_for_launch',return_value=PhaseApplication().registry),
+                patch.object(inspection_mcp,'run_native_parent',side_effect=dispatch) as parent,
+            ):
+                inspection_mcp.run_native_input_mcp(**startup(role))
+                tools = run.call_args.args[0]._tool_manager._tools
+                publish = tools['phase_publish_file']
+                result = asyncio.run(publish.run(arguments(role)))
+                self.assertEqual((result['status'],result['exit_code']),('committed_unverified',30))
+                self.assertFalse(result['success'])
+                self.assertFalse(result['target_verified'])
+                self.assertTrue(result['inspection_required'])
+                for field in ('receipt_digest','intent_digest','effect_plan_digest'):
+                    self.assertEqual(result[field],ack[field])
+                self.assertIs(publish.fn.__self__.held[0]._held_launch,reader)
+                with self.assertRaisesRegex(ToolError,'ntfs.inspection_mcp_unavailable'):
+                    asyncio.run(tools['phase_inspect'].run({'run_id':RUN}))
+                self.assertEqual(parent.call_count,2)
+                stage.assert_called_once()
 
     def test_physical_root_comparison_with_full_file_id_and_volume(self):
         g=grant()

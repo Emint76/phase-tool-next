@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from ._native_startup_shell import startup_shell, legacy_config_bytes
@@ -20,22 +21,22 @@ from unittest.mock import Mock, call, patch
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import bootstrap, entrypoint, parent, process_witness
+from phase_tool.mutation.ntfs import bootstrap, entrypoint, input_stage, parent, process_witness
 from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
 from phase_tool.mutation.ntfs.windows_pipe import WindowsPipeFrames
 
 
 class NativeComposedDeliveryTests(unittest.TestCase):
     @contextmanager
-    def delivery(self, *, inspection=False, receive_error=None, seal_failure=False):
+    def delivery(self, *, inspection=False, receive_error=None, seal_failure=False, closed_reader=False):
         """Real orchestration and strict seal, synthetic OS/process boundary."""
         launch=object.__new__(_NativeAcceptedLaunch)
-        launch._config_bytes=legacy_config_bytes()
+        launch._config_bytes=(canonical_bytes({'native_launch_version':'4.0'}) if closed_reader else legacy_config_bytes())
         launch._inspection_only=inspection
         launch._manifest_bytes,launch._manifest_digest=startup_shell()
         launch._finalization_attempted=set()
         launch._invocation_bytes=canonical_bytes({'run_id':'synthetic-delivery',
-            'channel_id':'a'*32,'operation_nonce':'b'*32,'request':{}})
+            'channel_id':'a'*32,'operation_nonce':'b'*32,'request':{'operation':'inspect'} if closed_reader else {}})
         # Execute token tests ONLY delivery: deliberately no success/receipt
         # claim. Inspection uses an actual complete ordinary failure schema.
         result=(PhaseApplication()._failure('inspect',PhaseError('synthetic.refused')).payload
@@ -55,9 +56,11 @@ class NativeComposedDeliveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             streams=[io.FileIO(Path(root)/name,'w+b') for name in ('stdin','stdout','stderr')]
             process=SimpleNamespace(stdin=streams[0],stdout=streams[1],stderr=streams[2],
-                _handle=handle,returncode=None)
-            fact={'worker_exit_established':True,'exit_code':frame['exit_code']}
-            witness=SimpleNamespace(wait_for_exit=Mock(return_value=fact))
+                _handle=handle,returncode=None,pid=705)
+            fact={'worker_exit_established':True,'exit_code':frame['exit_code'],
+                'pid':process.pid,'creation_filetime':1234,'wait_result':0}
+            witness=SimpleNamespace(wait_for_exit=Mock(return_value=fact),process=process,
+                _handle_object=handle,creation_filetime=fact['creation_filetime'])
             if seal_failure:pipe._gate.acquire()  # Synthetic first-seal failure.
             try:
                 with ExitStack() as stack:
@@ -118,6 +121,31 @@ class NativeComposedDeliveryTests(unittest.TestCase):
             self.assertIs(caught.exception,primary)
             self.assertIn('Native Core delivery finalization: PhaseError',primary.__notes__)
             self.assert_finalized_once(fixture)
+
+    def test_staged_read_loss_requires_positive_same_process_finalization(self):
+        for seal_failure in (False, True):
+            primary = PhaseError('ntfs.pipe_frame_unknown', details={'direction':'receive'})
+            primary.__cause__ = PhaseError('ntfs.pipe_eof')
+            signal = PhaseError if seal_failure else entrypoint._ClosedStagedFileInspectionLoss
+            with (
+                self.subTest(seal_failure=seal_failure),
+                self.delivery(inspection=True, receive_error=primary, seal_failure=seal_failure,
+                              closed_reader=True) as fixture,
+                patch.object(input_stage,'_active_input_deadline_ns',return_value=time.perf_counter_ns()+10_000_000_000),
+                self.assertRaises(signal) as caught,
+            ):
+                entrypoint.run_native_parent(fixture.launch,_report_closed_staged_inspection_loss=True)
+            if seal_failure:
+                self.assertIs(caught.exception,primary)
+            else:
+                self.assertIs(caught.exception.__cause__,primary)
+                self.assertIs(caught.exception.launch,fixture.launch)
+            self.assertEqual(fixture.witness.wait_for_exit.call_count,2)
+            self.assertEqual(fixture.witness.wait_for_exit.call_args.args,(0,))
+            fixture.seal.assert_called_once_with()
+            self.assertTrue(all(stream.closed for stream in fixture.streams))
+            self.assertTrue(fixture.handle.closed)
+            self.assertEqual(fixture.handle.close_count,1)
 
     def test_repeat_finalization_refuses_before_any_second_owner_action(self):
         with self.delivery() as fixture:

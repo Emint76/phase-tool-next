@@ -468,9 +468,29 @@ def run_native_original(launch):
     return 0
 
 
-def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None, _c05_transport=None):
+class _ClosedStagedFileInspectionLoss(Exception):
+    """The unary reader's owned Windows process and pipes were finalized."""
+
+    code = 'publish_file.inspection_transport_closed'
+
+    def __init__(self, launch):
+        super().__init__(self.code)
+        self.launch = launch
+
+
+def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None,
+                      _c05_transport=None, _report_closed_staged_inspection_loss=False):
     from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
+    deadline = None
+    if _report_closed_staged_inspection_loss is not False:
+        from .input_stage import _active_input_deadline_ns
+        deadline = _active_input_deadline_ns()
+        _require(_report_closed_staged_inspection_loss is True and type(deadline) is int
+            and launch._inspection_only is True and launch.invocation['request']=={'operation':'inspect'}
+            and launch._config.get('native_launch_version')=='4.0'
+            and all(hook is None for hook in (_prepared_ack_test,_dynamic_a05_test,
+                _g01_creation_handle_test,_c05_transport)), 'ntfs.staged_file_reader_required')
     if _prepared_ack_test is not None:
         _require(type(_prepared_ack_test) is _FailFirstPreparedAck,
             'ntfs.prepared_ack_test_role_required')
@@ -523,7 +543,25 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
             else:
                 try:primary.add_note('Native Core delivery finalization: '+type(error).__name__)
                 except BaseException:pass
-    if primary is not None:raise primary
+    if primary is not None:
+        cause = primary.__cause__
+        # A broken, closing or disconnected Win32 pipe may report an error
+        # instead of an empty read. Other transport errors remain unresolved.
+        if (deadline is not None and closing is not None and time.perf_counter_ns()<deadline
+                and type(primary) is PhaseError and primary.code=='ntfs.pipe_frame_unknown'
+                and primary.details.get('direction')=='receive'
+                and ((type(cause) is PhaseError and cause.code=='ntfs.pipe_eof')
+                     or (isinstance(cause,OSError) and getattr(cause,'winerror',None) in (109,232,233)))
+                and witness.process is process and witness._handle_object is process._handle
+                and process._handle.closed is True
+                and all(stream.closed is True for stream in (process.stdin,process.stdout,process.stderr))
+                and fact['pid']==closing['pid']==process.pid
+                and fact['creation_filetime']==closing['creation_filetime']==witness.creation_filetime
+                and fact['wait_result']==closing['wait_result']==0
+                and fact['exit_code']==closing['exit_code']==process.returncode
+                and time.perf_counter_ns()<deadline):
+            raise _ClosedStagedFileInspectionLoss(launch) from primary
+        raise primary
     _require(response is not None and fact['exit_code']==response['exit_code'],
         'ntfs.core_command_delivery_unconfirmed')
     # This HANDLE belongs to Docker CLI, NOT Linux exec. No Linux-process exit

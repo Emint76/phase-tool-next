@@ -1,6 +1,6 @@
 from __future__ import annotations
 from ..mutation.ntfs.owner_semantic_fixture import is_semantic_owner_authority
-from ..mutation.ntfs.owner_directory import is_owner_directory_authority
+from ..mutation.ntfs.owner_directory import ROLES, is_owner_directory_authority
 from ..mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 
 from collections.abc import Mapping
@@ -43,7 +43,8 @@ def _read_canonical(path: Path) -> tuple[Any, str]:
     return value, digest_bytes(data)
 
 
-def _verify_native_bundle_projection(contract,receipt,run_id,authority,observation,locator,*,_original_projection=None):
+def _verify_native_bundle_projection(contract,receipt,run_id,authority,observation,locator,*,
+        _original_projection=None, _original_binding=None):
     """Bind a fresh bundle sample to its original owner and manifest lineage.
 
     Reuse already verifies its original receipt recursively. Its current run ID
@@ -62,8 +63,9 @@ def _verify_native_bundle_projection(contract,receipt,run_id,authority,observati
         role='Bundle1'if exact['id']=='bundle_create.v1'else'Bundle2'
         require_semantic_owner_contract(role,exact)
         require_owner_or_semantic_binding(authority.read_binding,role)
+    binding = authority.read_binding if _original_binding is None else _original_binding
     projection = (_original_projection if reused else
-        authority.read_binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest']))
+        binding.read(run_id=run_id,intent_digest=receipt['evidence']['intent_digest']))
     validate_bundle_observation(observation,authority._manifest['root_grants'][0],locator,projection=projection)
     return projection
 
@@ -364,7 +366,7 @@ def _check_native_intent_binding(intent, contract, authority, *, original_bindin
         raise PhaseError('ntfs.original_installation_binding_mismatch')
 
 
-def _owner_directory_file_original(installation, authority, run_root, receipt):
+def _owner_directory_inspect_original(installation, authority, run_root, receipt):
     # Keep the Original's descriptor for evidence only. The current inspection
     # authority owns namespace observation and channel sealing.
     from ..installation import _NativeFileCreateInstallation
@@ -374,7 +376,7 @@ def _owner_directory_file_original(installation, authority, run_root, receipt):
             or installation.authority is not authority
             or installation.read_binding is not authority.read_binding
             or authority._inspection_only is not True
-            or not any(is_owner_directory_authority(authority, role) for role in ('File1', 'File2'))
+            or not any(is_owner_directory_authority(authority, role) for role in ROLES)
             or receipt['terminal_status'] != 'succeeded_verified'
             or receipt['execution_disposition'] != 'executed'
             or receipt['evidence']['intent_digest'] is None):
@@ -595,7 +597,7 @@ def inspect_run(
         from ..mutation.ntfs.proof import verify_native_terminal_proof
         # Read-only verification only. This never fsyncs, retries target effects
         # or discharges the original barrier; successor confirmation is separate.
-        original_binding = _owner_directory_file_original(
+        original_binding = _owner_directory_inspect_original(
             _native_installation, _native_authority, run_root, receipt)
         native_proof = verify_native_terminal_proof(original_binding, run_root, receipt)
     else:
@@ -865,7 +867,8 @@ def inspect_run(
                     if (expected_identity is None or observation['native'].get('native_identity')!=expected_identity):
                         raise PhaseError('inspection.native_identity_mismatch')
                     parsed_bundle=_verify_native_bundle_projection(contract,receipt,run_id,_native_authority,
-                        observation,canonical_result['locator'],_original_projection=bundle_original_projection)
+                        observation,canonical_result['locator'],_original_projection=bundle_original_projection,
+                        _original_binding=original_binding)
                     if _include_bundle_manifest:
                         if native_proof['target_identity'] is None and bundle_prior is None:
                             raise PhaseError('inspection.native_bundle_original_required')

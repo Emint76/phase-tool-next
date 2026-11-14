@@ -212,12 +212,12 @@ class OrdinaryOwnerDirectoryTests(unittest.TestCase):
         duplicate = deepcopy(doc); duplicate['predecessors'].append(deepcopy(prior)); self.reject_document(duplicate)
         too_many = deepcopy(doc); too_many['predecessors'] = [deepcopy(prior) for _ in range(33)]; self.reject_document(too_many)
 
-    def test_file_inspect_selects_receipt_bound_configured_issuer_only(self):
-        for index, role in enumerate(('File1', 'File2')):
+    def test_inspect_selects_receipt_bound_configured_issuer_only(self):
+        for role in m.ROLES:
             with self.subTest(role=role):
-                self.assert_file_inspect_issuer(index, role)
+                self.assert_inspect_issuer(m.ROLES.index(role), role)
 
-    def assert_file_inspect_issuer(self, index, expected_role):
+    def assert_inspect_issuer(self, index, expected_role):
         def with_predecessor(digit):
             doc = deepcopy(self.doc)
             row = deepcopy(doc['manifests'][index])
@@ -263,22 +263,22 @@ class OrdinaryOwnerDirectoryTests(unittest.TestCase):
         ):
             bound.authority = Mock(read_binding=active, _inspection_only=True)
             bound.read_binding, bound.history_bindings = active, history
-            self.assertIs(inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt), issuer)
+            self.assertIs(inspection._owner_directory_inspect_original(bound, bound.authority, run_root, receipt), issuer)
             self.assertEqual(role_check.call_args.args, (bound.authority, expected_role))
             read.assert_called_once_with(run_root / 'intent.json')
             bad_receipt = dict(receipt, evidence={'intent_digest':'sha256:'+'1'*64})
             with self.assertRaisesRegex(PhaseError, 'ntfs.original_intent_mismatch'):
-                inspection._owner_directory_file_original(bound, bound.authority, run_root, bad_receipt)
+                inspection._owner_directory_inspect_original(bound, bound.authority, run_root, bad_receipt)
             bound.authority = Mock(read_binding=foreign_active, _inspection_only=True)
             bound.read_binding, bound.history_bindings = foreign_active, foreign_history
             with self.assertRaisesRegex(PhaseError, 'ntfs.original_history_binding_mismatch'):
-                inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt)
+                inspection._owner_directory_inspect_original(bound, bound.authority, run_root, receipt)
             bound.history_bindings = history
             with self.assertRaisesRegex(PhaseError, 'ntfs.original_history_binding_mismatch'):
-                inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt)
+                inspection._owner_directory_inspect_original(bound, bound.authority, run_root, receipt)
             bound.authority._inspection_only = False
             read.reset_mock()
-            self.assertIs(inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt), foreign_active)
+            self.assertIs(inspection._owner_directory_inspect_original(bound, bound.authority, run_root, receipt), foreign_active)
             read.assert_not_called()
 
     def test_fresh_context_identity_is_metadata_not_registry_object_equality(self):

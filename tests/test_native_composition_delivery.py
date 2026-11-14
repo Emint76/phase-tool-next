@@ -21,12 +21,42 @@ from unittest.mock import Mock, call, patch
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import bootstrap, entrypoint, input_stage, parent, process_witness
+from phase_tool.mutation.ntfs import bootstrap, entrypoint, input_stage, parent, parent_result, process_witness
 from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
 from phase_tool.mutation.ntfs.windows_pipe import WindowsPipeFrames
 
 
 class NativeComposedDeliveryTests(unittest.TestCase):
+    def test_bundle_capture_seals_and_validates_exact_inspection_with_candidate_assertion(self):
+        run_id='bundle-capture-missing'
+        request={'operation':'inspect','native_bundle_publication_inspection_request_version':'1.0',
+            'request_id':'request-a','target_locator':'bundle','members':['member.bin'],
+            'expected_receipt_digest':'sha256:'+'1'*64}
+        capture=parent_result._native_bundle_inspection_expectations(request)
+        app=PhaseApplication()
+        context=dict(request=request,channel_id='a'*32,read_binding=None,
+            expected_manifest_digest='sha256:'+'2'*64,registry=app.registry)
+        authority=Mock()
+        # Real application method and actual frame validator. A modeled absent
+        # Original stops before a reference can acquire independent proof.
+        with patch('phase_tool.application.inspect_run',
+                   side_effect=PhaseError('inspection.run_unavailable')) as inspect:
+            result,reference,projection=entrypoint._inspect_with_channel_seal(
+                app,authority,evidence_root=Path('unused-bundle-capture'),run_id=run_id,
+                root_bindings={},_bundle_result_context=context,**capture)
+        self.assertEqual((result.exit_code,result.payload['error']),(10,'inspection.run_unavailable'))
+        self.assertIsNone(reference)
+        self.assertIsNone(projection)
+        self.assertEqual(inspect.call_args.kwargs['_expected_candidate_digest'],capture['_expected_candidate_digest'])
+        authority.seal.assert_called_once_with(intent_digest=None)
+
+        authority.reset_mock()
+        with self.assertRaisesRegex(PhaseError,'ntfs.fixed_inspection_role_required'):
+            entrypoint._inspect_with_channel_seal(app,authority,evidence_root=Path('unused-bundle-capture'),
+                run_id=run_id,root_bindings={},_bundle_result_context=context,
+                _expected_frozen_input=('payload','sha256:'+'3'*64),**capture)
+        authority.seal.assert_called_once_with(intent_digest=None)
+
     @contextmanager
     def delivery(self, *, inspection=False, receive_error=None, seal_failure=False, closed_reader=False):
         """Real orchestration and strict seal, synthetic OS/process boundary."""

@@ -339,8 +339,10 @@ def _inspect_with_channel_seal(application,authority,*,evidence_root,run_id,root
             '_expected_candidate_digest':_expected_candidate_digest,
             '_expected_frozen_input':_expected_frozen_input})
         if _bundle_result_context is not None:
+            _require(_expected_frozen_input is None,'ntfs.fixed_inspection_role_required')
             response,reference,projection=application._inspect_bundle_with_result(
-                evidence_root=evidence_root,run_id=run_id,root_bindings=root_bindings,**assertions)
+                evidence_root=evidence_root,run_id=run_id,root_bindings=root_bindings,
+                _expected_candidate_digest=_expected_candidate_digest)
         elif _canonical_result_context is None:
             response=application.inspect(evidence_root=evidence_root,run_id=run_id,
                 root_bindings=root_bindings,**assertions)

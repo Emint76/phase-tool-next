@@ -356,7 +356,7 @@ class _InspectionMCPCallOwner:
                     result=self._staged_file_result(run_id,request_id,target_locator,error='input_stage.member_bound')
                 elif type(staged) in {_ClosedInputFileRefusal,_ClosedInputBundleRefusal}:
                     from ...application import PhaseApplication
-                    registry=_native_registry_for_manifest(self._startup['manifest_bytes'],self._startup['expected_manifest_digest'])
+                    registry=staged.registry
                     is_file=type(staged) is _ClosedInputFileRefusal
                     code='input_stage.member_bound'if is_file else staged.code
                     refusal=PhaseApplication(registry=registry)._failure('execute',PhaseError(code))
@@ -840,7 +840,18 @@ class _InputScopeSession:
             else:
                 _require(method=='inspect','ntfs.fixed_native_request_required')
                 result=owner.inspect(**arguments)
-            _require(not owner._unavailable,'input_stage.session_unknown')
+            if owner._unavailable:
+                self.unknown=True
+                # A returned, validated execute uncertainty describes the
+                # existing effect. Retain the owner and deliver its facts.
+                ack=owner._publication_ack
+                _require(method in {'publish_input','publish_staged_file'}
+                    and owner._held_launch is not None and type(ack)is dict and ack.get('exit_code')==40
+                    and type(result)is dict and result.get('exit_code')==40
+                    and (result.get('command_ack')is ack if method=='publish_input'
+                        else result.get('status')=='indeterminate' and result.get('inspection_required')is True),
+                    'input_stage.session_unknown')
+                return result
             self.held.remove(owner)
             return result
         except BaseException:

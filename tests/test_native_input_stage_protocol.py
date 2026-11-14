@@ -357,6 +357,7 @@ class RetainedNativeSourceModels(unittest.TestCase):
 class WindowsStageRefusalModels(unittest.TestCase):
     def stage(self,role,length,*,fail_close=False,fail_recheck=False,receiver_started=False):
         from phase_tool.mutation.ntfs import bootstrap,process_witness
+        from phase_tool.application import PhaseApplication
         model,sc,source,members=native_fixture()
         sc['scope_id']='owner.inputs'
         leaf=next(path for path in model.tree if path.endswith('/a'))
@@ -391,10 +392,12 @@ class WindowsStageRefusalModels(unittest.TestCase):
             raise input_stage._InputFileTooLarge(role,bound+1,bound)
         receiver=types.SimpleNamespace(send_frame=fail_after_start)
         witness=types.SimpleNamespace(wait_for_exit=lambda timeout:{'worker_exit_established':False})
+        registry=PhaseApplication().registry
         with patch.object(input_stage,'os',types.SimpleNamespace(name='nt',getpid=os.getpid)),\
                 patch.object(native,'NativeIO',ModelIO),\
                 patch.object(input_stage,'_scope_for_launch',return_value=(sc,role,'sha256:'+'4'*64)),\
                 patch.object(bootstrap,'_NativeAcceptedLaunch',return_value=probe),\
+                patch('phase_tool.installation._native_registry_for_launch',return_value=registry)as resolve,\
                 patch.object(process_witness,'WindowsProcessWitness',return_value=witness),\
                 patch.object(probe,'spawn_input_stage',create=True)as spawn,\
                 patch.object(probe,'_pipe',return_value=receiver,create=True):
@@ -404,6 +407,11 @@ class WindowsStageRefusalModels(unittest.TestCase):
                     request_id='request-a',target_locator='a.bin',expected_current_digest=None)
             except Exception as error:
                 result=error
+        if type(result)is input_stage._ClosedInputFileRefusal:
+            self.assertIs(result.registry,registry)
+            resolve.assert_called_once_with(probe)
+        else:
+            resolve.assert_not_called()
         self.assertEqual(source_reads,[])
         return owner,opened[0],spawn.call_count,result
 
@@ -411,7 +419,8 @@ class WindowsStageRefusalModels(unittest.TestCase):
         for role,maximum in (('File1',1024**2),('File2',2*1024**3)):
             with self.subTest(role=role):
                 owner,api,starts,result=self.stage(role,maximum+1)
-                self.assertEqual(result,input_stage._ClosedInputFileRefusal(role,maximum+1,maximum))
+                self.assertIs(type(result),input_stage._ClosedInputFileRefusal)
+                self.assertEqual((result.role,result.length,result.maximum),(role,maximum+1,maximum))
                 self.assertEqual(starts,0);self.assertEqual(api._handles,[])
                 self.assertTrue(all(handle.close_count==1 for handle in api.handles))
                 self.assertIsNone(owner._held_input_source);self.assertIsNone(owner._held_input_io)

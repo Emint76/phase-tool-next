@@ -10,12 +10,16 @@ from contextlib import contextmanager,closing
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path,PureWindowsPath
+from typing import TYPE_CHECKING
 from ...canonical import canonical_bytes,digest_bytes,parse_json_bytes,profile_digest
 from ...errors import PhaseError
 from ...paths import safe_relative_locator
 from ...bundle import validate_members,parse_manifest,MAX_TOTAL_BYTES,MAX_MEMBERS,MAX_DEPTH,_BundleLimitExceeded
 from ...streaming import FILE_LIMIT,REQUEST_LIMIT
 from .native import NativeIdentity,_require,_input_leaf,_InputPublicationRootOverlap
+
+if TYPE_CHECKING:
+    from ...registry import RegistrySnapshot
 
 _SCOPE_FILE='native-input-scope.json'
 _PROTOCOL='phase.native.input.stage'
@@ -253,6 +257,7 @@ class _ClosedInputFileRefusal:
     role: str
     length: int
     maximum: int
+    registry: RegistrySnapshot
 
 
 @dataclass(frozen=True)
@@ -263,6 +268,7 @@ class _ClosedInputBundleRefusal:
     observed: int
     maximum: int
     source_finalization: str
+    registry: RegistrySnapshot
 
 
 def _bundle_manifest_bytes(rows,total):
@@ -519,6 +525,7 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
     from .bootstrap import _NativeAcceptedLaunch
     from .native import NativeIO,_NativeInputSnapshot
     from .process_witness import WindowsProcessWitness
+    from ...installation import _native_registry_for_launch
     import secrets
     _require(os.name=='nt','input_stage.windows_owner_required');_left(deadline_ns)
     probe_request=_stage_request(input_scope,source_locator)
@@ -542,8 +549,9 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
         _require(role in {'Bundle1','Bundle2'} and error.kind in {'member_count','member_depth','candidate_bytes'}
             and owner._held_launch is None and owner._held_input_source is None and owner._held_input_io is None,
             'input_stage.source_finalization_unknown')
+        registry=_native_registry_for_launch(probe)
         _left(deadline_ns)
-        return _ClosedInputBundleRefusal(role,error.code,error.kind,error.observed,error.maximum,'not_opened')
+        return _ClosedInputBundleRefusal(role,error.code,error.kind,error.observed,error.maximum,'not_opened',registry)
     request=_stage_request(input_scope,source_locator,members)
     source=None;sender=None;process=None;pipe=None;witness=None;primary=None;result=None;fact=None;closed=False
     refusal=None
@@ -561,12 +569,12 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
             sender=_InputStageSender(probe,scope,role,scope_digest,request,source,deadline_ns)
         except _InputFileTooLarge as error:
             source.verify_complete()
-            refusal=_ClosedInputFileRefusal(error.role,error.length,error.maximum)
+            refusal=error
         except _BundleLimitExceeded as error:
             _require(role in {'Bundle1','Bundle2'} and error.kind in {'member_bytes','total_bytes','manifest_bytes'},
                 'input_stage.source_finalization_unknown')
             source.verify_complete()
-            refusal=_ClosedInputBundleRefusal(role,error.code,error.kind,error.observed,error.maximum,'closed')
+            refusal=error
         else:
             invocation['request']={'operation':'stage_input','native_input_stage_request_version':'1.0','header':_control(sender.header)}
             launch=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=False)
@@ -620,7 +628,11 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
         _require(source.close_attempted and not api._handles and owner._held_launch is None,
             'input_stage.source_finalization_unknown')
         owner._held_input_source=None;owner._held_input_io=None
-        return refusal
+        registry=_native_registry_for_launch(probe)
+        _left(deadline_ns)
+        if type(refusal)is _InputFileTooLarge:
+            return _ClosedInputFileRefusal(refusal.role,refusal.length,refusal.maximum,registry)
+        return _ClosedInputBundleRefusal(role,refusal.code,refusal.kind,refusal.observed,refusal.maximum,'closed',registry)
     _require(result is not None and fact['exit_code']==0 and closed,'input_stage.preparation_delivery_unknown')
     _require(not api._handles,'input_stage.source_finalization_unknown')
     owner._held_launch=None

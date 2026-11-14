@@ -3,16 +3,21 @@
 No accepted installation, source Win32 handle, channel, worker or Phase run is
 created. The same _call_locked still validates every modeled parent response.
 """
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 import os
 import unittest
 from unittest.mock import patch
 
+from mcp.server.fastmcp.exceptions import ToolError
+
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.ntfs import input_stage,inspection_mcp
+from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+from phase_tool.mutation.ntfs.owner_semantic_registries import _native_owner_semantic_file2_registry
 from phase_tool.mutation.ntfs.uncertainty import _NativeLifecycleUnresolved
 
 RUN='native-input-ack-model'
@@ -120,6 +125,61 @@ class NativeInputPublicationACKTests(unittest.TestCase):
         self.assertEqual(result['exit_code'],40);self.assertTrue(owner._unavailable)
         self.assertIsNotNone(owner._held_launch);self.assertEqual(parent.call_count,1)
         self.assertIsNone(ack['mutation_attempted']);self.assertFalse(result['retry_authorized'])
+
+    def test_mcp_delivers_uncertain_execute_facts_without_releasing_owner(self):
+        registry = _native_owner_semantic_file2_registry()
+        ack = self.unknown()
+        prepared = {
+            'source_locator':'phase-native-input-'+HEADER[7:39]+'/payload/payload',
+            'header_digest':HEADER, 'expected_digest':digest_bytes(b'payload'), 'expected_length':7,
+        }
+        manifest = canonical_bytes({
+            'native_read_installation_version':'1.1', 'contract':semantic_owner_contract('File2'),
+            'evidence_root':'/model/evidence',
+        })
+        common = dict(run_id=RUN,input_scope='owner.inputs',source_locator='incoming.bin',
+            target_locator='target.bin',request_id='request-a')
+        cases = (
+            ('phase_publish_input',dict(common,members=None,expected_current_digest=None)),
+            ('phase_publish_file',dict(common,publication_version='2.0',
+                expected_digest=prepared['expected_digest'],root_binding='phase_result_root')),
+        )
+        for name, args in cases:
+            launch = SimpleNamespace(_owner_directory_context=object())
+            with (
+                self.subTest(tool=name),
+                patch('phase_tool.installation._native_registry_for_launch',return_value=registry),
+                patch.object(inspection_mcp.FastMCP,'run',autospec=True) as serve,
+                patch.object(input_stage,'run_windows_input_stage',return_value=(prepared,'File2',{},None)) as stage,
+                patch.object(inspection_mcp,'_NativeAcceptedLaunch',return_value=launch) as accept,
+                patch.object(inspection_mcp,'run_native_parent',return_value={'result':ack,'exit_code':40}) as parent,
+            ):
+                inspection_mcp.run_native_input_mcp(config_bytes=b'',expected_config_digest=None,
+                    manifest_bytes=manifest,expected_manifest_digest=digest_bytes(manifest))
+                tools = serve.call_args.args[0]._tool_manager._tools
+                result = asyncio.run(tools[name].run(args))
+                self.assertEqual(result['exit_code'],40)
+                if name=='phase_publish_input':
+                    self.assertEqual(result['command_ack'],ack)
+                    self.assertIsNone(result['independent_inspection'])
+                    self.assertFalse(result['retry_authorized'])
+                else:
+                    self.assertEqual(result['status'],'indeterminate')
+                    self.assertEqual(result['intent_digest'],ack['intent_digest'])
+                    self.assertEqual(result['effect_plan_digest'],ack['effect_plan_digest'])
+                    self.assertFalse(result['success'])
+                    self.assertTrue(result['inspection_required'])
+                session = tools[name].fn.__self__
+                self.assertTrue(session.unknown)
+                self.assertEqual(len(session.held),1)
+                self.assertIs(session.held[0]._publication_ack,ack)
+                self.assertIs(session.held[0]._held_launch,launch)
+                for later_tool, later_args in ((name,args),('phase_inspect',{'run_id':RUN})):
+                    with self.assertRaisesRegex(ToolError,'ntfs.inspection_mcp_unavailable'):
+                        asyncio.run(tools[later_tool].run(later_args))
+                stage.assert_called_once()
+                accept.assert_called_once()
+                parent.assert_called_once()
 
     def test_genuine_known_refusal_is_returned_exactly_without_success_projection(self):
         ack=PhaseApplication()._failure('execute',PhaseError('MODEL.known_refusal')).payload

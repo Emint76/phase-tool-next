@@ -1,5 +1,6 @@
 """Exact Bundle boundary and owner models, without Phase or Native effects."""
 import asyncio
+import base64
 from contextlib import ExitStack, contextmanager
 import hashlib
 import os
@@ -7,16 +8,19 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from phase_tool import installation
 from phase_tool.application import PhaseApplication
 from phase_tool.bundle import MAX_MEMBERS, MAX_DEPTH, MAX_TOTAL_BYTES, _BundleLimitExceeded, parse_manifest
 from phase_tool.canonical import canonical_bytes, digest_bytes
 from phase_tool.command_result import validate_command_result
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.ntfs import bootstrap, input_stage, inspection_mcp, native, process_witness
+from phase_tool.mutation.ntfs import owner_directory_installation
 from phase_tool.streaming import FILE_LIMIT, REQUEST_LIMIT
 
 from . import test_native_input_mcp_closed_schema as mcp_models
 from . import test_native_input_stage_protocol as stage_models
+from .owner_directory_test_data import owner_document, synthetic_catalog
 
 
 REQUEST_ID = 'd07-metadata'
@@ -118,12 +122,14 @@ def stage_model(role, sizes, *, fault=None, installed_scope='owner.inputs'):
         stack.enter_context(patch.object(native,'NativeIO',ModelIO))
         stack.enter_context(patch.object(input_stage,'_scope_for_launch',return_value=(scope,role,SCOPE_DIGEST)))
         startup = stack.enter_context(patch.object(bootstrap,'_NativeAcceptedLaunch',return_value=probe))
+        registry = stack.enter_context(patch('phase_tool.installation._native_registry_for_launch',
+            return_value=PhaseApplication().registry))
         stack.enter_context(patch.object(process_witness,'WindowsProcessWitness',return_value=witness))
         spawn = stack.enter_context(patch.object(probe,'spawn_input_stage',create=True))
         stack.enter_context(patch.object(probe,'_pipe',return_value=receiver,create=True))
         if fault!='late':
             spawn.side_effect = AssertionError('receiver spawn attempted')
-        yield SimpleNamespace(opened=opened,spawn=spawn,body_reads=body_reads,startup=startup)
+        yield SimpleNamespace(opened=opened,spawn=spawn,body_reads=body_reads,startup=startup,registry=registry)
 
 
 def stage_arguments(members):
@@ -179,7 +185,9 @@ class BundleInputBoundaryTests(unittest.TestCase):
                 with self.subTest(role=role,kind=kind),stage_model(role,{}) as model:
                     owner = new_model_owner()
                     result = input_stage.run_windows_input_stage(owner,deadline_ns=stage_models.deadline(),**stage_arguments(members))
-                    self.assertEqual(result,input_stage._ClosedInputBundleRefusal(role,code,kind,maximum+1,maximum,'not_opened'))
+                    self.assertEqual(result,input_stage._ClosedInputBundleRefusal(
+                        role,code,kind,maximum+1,maximum,'not_opened',model.registry.return_value))
+                    model.registry.assert_called_once_with(model.startup.return_value)
                     model.spawn.assert_not_called()
                     self.assertEqual(model.opened,[])
                     self.assertTrue(model.startup.call_args.kwargs['_inspection_only'])
@@ -195,7 +203,9 @@ class BundleInputBoundaryTests(unittest.TestCase):
                     owner = new_model_owner()
                     result = input_stage.run_windows_input_stage(owner,deadline_ns=stage_models.deadline(),
                         **stage_arguments(list(sizes)))
-                    self.assertEqual(result,input_stage._ClosedInputBundleRefusal(role,code,kind,maximum+1,maximum,'closed'))
+                    self.assertEqual(result,input_stage._ClosedInputBundleRefusal(
+                        role,code,kind,maximum+1,maximum,'closed',model.registry.return_value))
+                    model.registry.assert_called_once_with(model.startup.return_value)
                     self.assertEqual(model.body_reads,[])
                     self.assertEqual(model.opened[0]._handles,[])
                     self.assertTrue(all(handle.close_count==1 for handle in model.opened[0].handles))
@@ -234,7 +244,6 @@ class BundleInputBoundaryTests(unittest.TestCase):
             for members,sizes,finalization in ((['d/'*MAX_DEPTH+'member'],{},'not_opened'),
                                                 (['member'],{'member':FILE_LIMIT+1},'closed')):
                 with self.subTest(role=role,finalization=finalization),stage_model(role,sizes),\
-                        patch.object(inspection_mcp,'_native_registry_for_manifest',return_value=registry),\
                         patch.object(inspection_mcp._InspectionMCPCallOwner,'_call_locked') as dispatch:
                     args = stage_arguments(members)
                     self.assertEqual(inspection_mcp._native_input_cli_request({'run_id':args['run_id'],
@@ -259,6 +268,62 @@ class BundleInputBoundaryTests(unittest.TestCase):
                 with self.assertRaisesRegex(Exception,'input_stage.total_bound'):
                     asyncio.run(tool.run(stage_arguments(['member'])))
             self.assertTrue(tool.fn.__self__.unknown)
+
+    def test_modern_bundle_refusals_use_the_installed_registry(self):
+        catalog = synthetic_catalog()
+        owner = owner_document(catalog)
+        owner_bytes = canonical_bytes(owner)
+        config = {
+            'native_launch_version': '4.0',
+            'phase_wheel_digest': 'sha256:'+'3'*64,
+            'owner_directory_configuration_base64': base64.b64encode(owner_bytes).decode(),
+            'owner_directory_configuration_digest': digest_bytes(owner_bytes),
+        }
+        config_bytes = canonical_bytes(config)
+        resolve_registry = installation._native_registry_for_launch
+        cases = (
+            (['d/'*MAX_DEPTH+'member'], {}, 'not_opened', 'member_depth'),
+            (['member'], {'member':FILE_LIMIT+1}, 'closed', 'member_bytes'),
+        )
+        for role in ROLES:
+            row = next(row for row in owner['manifests'] if row['role']==role)
+            manifest_bytes = base64.b64decode(row['manifest_base64'])
+            manifest_digest = row['manifest_digest']
+            for members, sizes, finalization, kind in cases:
+                with (
+                    self.subTest(role=role, finalization=finalization),
+                    stage_model(role,sizes) as model,
+                    patch.object(installation,'_native_registry_for_launch',wraps=resolve_registry) as resolve,
+                    patch.object(owner_directory_installation,'_fixed_owner_directory_catalog',return_value=catalog),
+                    patch.object(inspection_mcp.FastMCP,'run',autospec=True) as run_server,
+                    patch.object(inspection_mcp._InspectionMCPCallOwner,'_call_locked') as dispatch,
+                ):
+                    args = stage_arguments(members)
+                    model.startup.return_value = SimpleNamespace(
+                        _manifest_bytes=manifest_bytes, installation_digest=manifest_digest, _config=config,
+                        _experimental_admission_context=None, run_id=args['run_id'],
+                    )
+                    inspection_mcp.run_native_input_mcp(
+                        config_bytes=config_bytes, expected_config_digest=digest_bytes(config_bytes),
+                        manifest_bytes=manifest_bytes, expected_manifest_digest=manifest_digest,
+                    )
+                    tool = run_server.call_args.args[0]._tool_manager._tools['phase_publish_input']
+                    result = asyncio.run(tool.run(args))
+                    self.assertEqual(result['exit_code'],10)
+                    self.assertEqual(result['source_finalization'],finalization)
+                    self.assertEqual(result['bound']['kind'],kind)
+                    self.assertFalse(result['preparation_started'])
+                    self.assertFalse(result['retry_authorized'])
+                    self.assertIsNone(result['refusal']['intent_digest'])
+                    self.assertIsNone(result['refusal']['receipt_digest'])
+                    validate_command_result(result['refusal'],catalog.registry)
+                    resolve.assert_called_once_with(model.startup.return_value)
+                    self.assertFalse(model.body_reads)
+                    self.assertEqual(len(model.opened),int(bool(sizes)))
+                    if model.opened:
+                        self.assertEqual(model.opened[0]._handles,[])
+                    model.spawn.assert_not_called()
+                    dispatch.assert_not_called()
 
 
 if __name__=='__main__':

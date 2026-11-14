@@ -141,10 +141,9 @@ class NativeInputMCPClosedSchemaTests(unittest.TestCase):
         for role,maximum in (('File1',1024**2),('File2',2*1024**3)):
             tool=self.server(role)._tool_manager._tools['phase_publish_input']
             arguments,_,_=vector(role)
-            staged=input_stage._ClosedInputFileRefusal(role,maximum+1,maximum)
+            staged=input_stage._ClosedInputFileRefusal(role,maximum+1,maximum,registry)
             with self.subTest(role=role),patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),\
                     patch.object(input_stage,'run_windows_input_stage',return_value=staged)as stage,\
-                    patch.object(inspection_mcp,'_native_registry_for_manifest',return_value=registry),\
                     patch.object(inspection_mcp._InspectionMCPCallOwner,'_call_locked')as dispatch:
                 result=asyncio.run(tool.run(arguments))
                 for key in ('run_id','input_scope','source_locator','target_locator','request_id'):

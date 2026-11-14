@@ -204,6 +204,43 @@ def input_publication_refusal(candidate,request,outer):
     need(canon(candidate['refusal'])==canon(expected_refusal),'native input refusal payload')
 
 
+def partial_input_publication(candidate,request,outer,run_id):
+    """Validate the closed 1.1 result over the already authenticated child."""
+    fields={'native_input_publication_result_version','run_id','input_scope','role',
+        'source_digest','source_length','request_id','target_locator','command_ack',
+        'independent_inspection','exit_code','retry_authorized','status','inspection_required'}
+    need(outer['native_fixed_startup_version']=='4.0' and set(candidate)==fields
+        and candidate['native_input_publication_result_version']=='1.1'
+        and candidate['run_id']==run_id and candidate['request_id']==request['request_id']
+        and candidate['target_locator']==request['target_locator'] and candidate['input_scope']==request['input_scope']
+        and candidate['status']=='committed_unverified' and candidate['inspection_required'] is True
+        and candidate['retry_authorized'] is False and candidate['independent_inspection'] is None
+        and type(candidate['exit_code']) is int and candidate['exit_code']==30,
+        'native partial input result binding')
+    manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
+    bounds={'file_create.v1':('File1',1,1024**2),'file_create.v2':('File2',0,2*1024**3),
+        'publish_new_version.v1':('Version1',0,16*1024**2),'publish_new_version.v2':('Version2',0,512*1024),
+        'bundle_create.v1':('Bundle1',1,1024**2),'bundle_create.v2':('Bundle2',1,1024**2)}
+    role,minimum,maximum=bounds.get(manifest['contract']['id'],(None,0,0))
+    def digest(value):
+        return type(value) is str and re.fullmatch('sha256:[0-9a-f]{64}',value) is not None
+    need(role is not None and candidate['role']==role and digest(candidate['source_digest'])
+        and type(candidate['source_length']) is int and minimum<=candidate['source_length']<=maximum,
+        'native partial input source binding')
+    ack=candidate['command_ack']
+    ack_fields={'stage3_command_result_version','command','success','run_id','terminal_status',
+        'execution_disposition','mutation_attempted','effect_plan_digest','intent_digest','receipt_digest',
+        'target_verified','blockers','error','exit_code'}
+    need(type(ack) is dict and set(ack)==ack_fields and ack['stage3_command_result_version']=='1.0'
+        and ack['command']=='execute' and ack['success'] is True and ack['run_id']==run_id
+        and ack['terminal_status']=='succeeded_verified' and ack['execution_disposition'] in ('executed','reused_existing')
+        and type(ack['mutation_attempted']) is bool
+        and all(digest(ack[key]) for key in ('effect_plan_digest','intent_digest','receipt_digest'))
+        and ack['target_verified'] is None and ack['blockers']==[] and ack['error'] is None
+        and type(ack['exit_code']) is int and ack['exit_code']==0,
+        'native partial input execute proof')
+
+
 def staged_file_result(candidate,request,outer):
     fields={'publish_file_result_version','success','status','request_id','run_id','evidence_root','target_locator',
         'contract_binding','contract_digest','content_digest','content_length','receipt_digest','intent_digest',
@@ -381,8 +418,11 @@ def main():
                 need(candidate.get('input_scope')==request['input_scope'],'native input caller correlation')
                 if 'native_input_publication_refusal_version'in candidate:
                     input_publication_refusal(candidate,request,outer)
+                elif candidate.get('native_input_publication_result_version')=='1.1':
+                    partial_input_publication(candidate,request,outer,value['run_id'])
                 else:
-                    need(candidate.get('native_input_publication_result_version')=='1.0','native input result version')
+                    need(candidate.get('native_input_publication_result_version')=='1.0'
+                        and 'status' not in candidate and 'inspection_required' not in candidate,'native input result version')
         elif action=='publish-bundle':
             need(set(native)=={'protocol','version','run_id','installation_digest','result','exit_code'}
                 and native['protocol']=='phase.native.publication'and native['version']=='1.0'
@@ -419,6 +459,8 @@ def main():
             else'COMPLETE_NATIVE_COMMAND_FRAME')
         if action=='publish-input'and 'native_input_publication_refusal_version'in candidate:
             report['child_delivery']='COMPLETE_NATIVE_INPUT_REFUSAL_FRAME'
+        elif action=='publish-input' and candidate.get('native_input_publication_result_version')=='1.1':
+            report['child_delivery']='COMPLETE_NATIVE_INPUT_PARTIAL_FRAME'
     except BaseException as error:report['error']={'type':type(error).__name__,'message':str(error)}
     report.update(stdout_bytes=len(out),stderr_bytes=len(err),stdout_sha256=sha(out),stderr_sha256=sha(err))
     try:

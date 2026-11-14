@@ -8,12 +8,15 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from mcp.server.fastmcp.exceptions import ToolError
+
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from phase_tool.command_result import validate_command_result
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.ntfs import bundle_recovery_mcp,input_stage,inspection_mcp
 from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+from .owner_directory_test_data import synthetic_catalog
 
 ROLES=('File1','File2','Version1','Version2','Bundle1','Bundle2')
 HEADER='sha256:'+'a'*64
@@ -165,6 +168,52 @@ class NativeInputMCPClosedSchemaTests(unittest.TestCase):
                 dispatch.assert_not_called();stage.assert_called_once()
                 self.assertFalse(tool.fn.__self__.unknown)
                 self.assertEqual(tool.fn.__self__.held,[])
+
+    def test_partial_raw_input_keeps_the_exact_ack_for_each_contract(self):
+        registry = synthetic_catalog().registry
+        for role in ROLES:
+            arguments, payload, content = vector(role)
+            run_id = arguments['run_id']
+            source = 'phase-native-input-'+HEADER[7:39]+'/payload'
+            if not role.startswith('Bundle'):
+                source += '/payload'
+            prepared = {'header_digest':HEADER,'expected_digest':digest_bytes(payload),
+                        'expected_length':len(payload),'source_locator':source}
+            ack = PhaseApplication._command_payload('execute',success=True,run_id=run_id,
+                terminal_status='succeeded_verified',execution_disposition='executed',mutation_attempted=True,
+                effect_plan_digest='sha256:'+'1'*64,intent_digest='sha256:'+'2'*64,receipt_digest='sha256:'+'3'*64,
+                target_verified=None,blockers=[],error=None,exit_code=0)
+            effect, reader = (SimpleNamespace(_owner_directory_context=object()) for _ in range(2))
+
+            def dispatch(launch, **kwargs):
+                if launch is effect:
+                    self.assertEqual(kwargs,{})
+                    return {'result':ack,'exit_code':0}
+                self.assertIs(launch,reader)
+                self.assertEqual(kwargs,{'_report_closed_staged_inspection_loss':True})
+                raise inspection_mcp._ClosedStagedFileInspectionLoss(reader)
+
+            with (
+                self.subTest(role=role),
+                patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),
+                patch.object(input_stage,'run_windows_input_stage',return_value=(prepared,role,{},content)),
+                patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=[effect,reader]),
+                patch('phase_tool.installation._native_registry_for_launch',return_value=registry),
+                patch.object(inspection_mcp,'run_native_parent',side_effect=dispatch) as parent,
+            ):
+                tools = self.server(role)._tool_manager._tools
+                publish = tools['phase_publish_input']
+                result = asyncio.run(publish.run(arguments))
+                self.assertEqual(result['native_input_publication_result_version'],'1.1')
+                self.assertEqual((result['status'],result['exit_code']),('committed_unverified',30))
+                self.assertEqual(result['command_ack'],ack)
+                self.assertTrue(result['inspection_required'])
+                self.assertIsNone(result['independent_inspection'])
+                self.assertFalse(result['retry_authorized'])
+                self.assertIs(publish.fn.__self__.held[0]._held_launch,reader)
+                with self.assertRaisesRegex(ToolError,'ntfs.inspection_mcp_unavailable'):
+                    asyncio.run(tools['phase_inspect'].run({'run_id':run_id}))
+                self.assertEqual(parent.call_count,2)
 
     def test_bare_member_bound_and_pending_execute_errors_keep_session_unknown(self):
         arguments,payload,_=vector('File2')

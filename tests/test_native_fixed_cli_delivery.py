@@ -45,7 +45,8 @@ if request['request']['operation']=='publish_input':
         raise SystemExit(50)
     role=action['input_scope'].split('.')[-1]
     bundle=role.startswith('Bundle')
-    bound={'File1':1024**2,'File2':2*1024**3,'Bundle1':2*1024**3,'Bundle2':2*1024**3}[role]
+    bound={'File1':1024**2,'File2':2*1024**3,'Bundle1':2*1024**3,'Bundle2':2*1024**3,
+           'Version1':16*1024**2,'Version2':512*1024}[role]
     pure=bundle and mode in {'bundle-count','wrong-count'}
     code=10
     error='bundle.member_count_limit'if pure else'input_stage.member_bound'
@@ -74,8 +75,26 @@ if request['request']['operation']=='publish_input':
     if mode=='fake-receipt':refusal['receipt_digest']='sha256:'+'1'*64
     reply={'protocol':'phase.native.input.publication','version':'1.0','run_id':request['run_id'],
         'installation_digest':'sha256:'+'b'*64,'result':result,'exit_code':code}
+    if mode.startswith('partial-'):
+        proof='sha256:'+'d'*64
+        code=30
+        ack={'stage3_command_result_version':'1.0','command':'execute','success':True,
+            'run_id':request['run_id'],'terminal_status':'succeeded_verified',
+            'execution_disposition':'executed','mutation_attempted':True,'effect_plan_digest':proof,
+            'intent_digest':proof,'receipt_digest':proof,'target_verified':None,'blockers':[],
+            'error':None,'exit_code':0}
+        result={'native_input_publication_result_version':'1.1','run_id':request['run_id'],
+            'input_scope':action['input_scope'],'role':role,'source_digest':proof,'source_length':65536,
+            'request_id':action['request_id'],'target_locator':action['target_locator'],'command_ack':ack,
+            'independent_inspection':None,'exit_code':code,'retry_authorized':False,
+            'status':'committed_unverified','inspection_required':True}
+        if mode=='partial-wrong-digest':ack['receipt_digest']='not-a-digest'
+        if mode=='partial-success-claim':result['independent_inspection']={'target_verified':True}
+        if mode=='partial-retry':result['retry_authorized']=True
+        if mode=='partial-downgrade':result['native_input_publication_result_version']='1.0'
+        reply.update(result=result,exit_code=code)
     b=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
-    if mode=='wrong-exit':code=50
+    if mode in {'wrong-exit','partial-wrong-exit'}:code=50
 if mode=='oversized-diagnostic':
     b=b'{"broken":1.'+b'3'*70000+b'}'
 if request['request']['operation']=='inspect':
@@ -157,7 +176,9 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         if input_role is not None:
             action='publish-input'
             contract={'File1':'file_create.v1','File2':'file_create.v2','Bundle1':'bundle_create.v1',
-                'Bundle2':'bundle_create.v2'}[input_role]
+                'Bundle2':'bundle_create.v2','Version1':'publish_new_version.v1',
+                'Version2':'publish_new_version.v2'}[input_role]
+            if mode.startswith('partial-'):outer['native_fixed_startup_version']='4.0'
             outer['manifest_base64']=base64.b64encode(json.dumps({'contract':{'id':contract}}).encode()).decode()
             members=None
             if input_role.startswith('Bundle'):
@@ -166,7 +187,7 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
             self.request.write_text(json.dumps({'run_id':'model-cli-run','request':{
                 'operation':'publish_input','input_scope':'inputs.'+input_role,'source_locator':'input.bin',
                 'target_locator':'target.bin','request_id':'request-a','members':members,
-                'expected_current_digest':None}}),encoding='utf-8')
+                'expected_current_digest':'sha256:'+'e'*64 if input_role.startswith('Version') else None}}),encoding='utf-8')
         if staged_file_role is not None or inspect_binding is not None:
             version='1' if staged_file_role is None else staged_file_role[-1]
             contract={'id':'file_create.v'+version,'version':'1.0.1','package_digest':'sha256:'+'c'*64}
@@ -209,6 +230,28 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(child.poll())
         self.assertTrue(all(stream.closed for stream in (child.stdin,child.stdout,child.stderr)))
         self.assertTrue(child._handle.closed)
+
+    def test_partial_input_requires_original_ack_and_real_cli_exit_correlation(self):
+        for role in ('File1','File2','Version1','Version2','Bundle1','Bundle2'):
+            with self.subTest(role=role):
+                code,out,err,capture=self.call_model('partial-good',input_role=role)
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,err),(30,b''))
+                result=json.loads(out)
+                self.assertEqual(result['role'],role)
+                self.assertEqual(result['command_ack']['exit_code'],0)
+                self.assertIsNone(result['independent_inspection'])
+                self.assertFalse(result['retry_authorized'])
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'COMPLETE_NATIVE_INPUT_PARTIAL_FRAME')
+        for mode in ('partial-wrong-digest','partial-success-claim','partial-retry','partial-downgrade','partial-wrong-exit'):
+            with self.subTest(mode=mode):
+                code,out,err,capture=self.call_model(mode,input_role='File2')
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,out),(50,b''))
+                self.assertTrue(err)
+                self.assertTrue((capture/'stdout.bin').read_bytes())
+                self.assertEqual(json.loads((capture/'delivery.json').read_bytes())['child_delivery'],'UNKNOWN')
 
     def test_staged_file1_occupancy_keeps_bound_no_intent_receipt_and_known_exit(self):
         code,out,err,capture=self.call_model('file-occupied',staged_file_role='File1')

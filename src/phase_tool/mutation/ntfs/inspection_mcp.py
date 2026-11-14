@@ -407,13 +407,20 @@ class _InspectionMCPCallOwner:
                             'input_stage.execute_uncertain')
                         self._held_launch=None  # Actual known finalized execute only.
                         self._input_publication_phase='inspect'
-                        report_loss=(_file_assertions is not None and _c05_transport is None and _staged_a05 is None)
+                        report_loss=(_c05_transport is None and _staged_a05 is None
+                            and self._startup.get('_experimental_admission_context') is None)
                         options={'_report_closed_staged_inspection_loss':True} if report_loss else {}
                         try:
                             inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True,**options)
                         except _ClosedStagedFileInspectionLoss as error:
                             if (type(error) is not _ClosedStagedFileInspectionLoss or not report_loss
                                     or error.launch is not self._held_launch or not self._unavailable):
+                                raise
+                            # The same CommandResult1.0 has a wider schema for
+                            # other execute outcomes. Preserve only this exact
+                            # completed execute and its literal evidence IDs.
+                            if (_file_assertions is None and (ack['run_id']!=run_id
+                                    or 'target_verified' not in ack or ack['target_verified'] is not None)):
                                 raise
                             inspection_failure=error.code
                         else:
@@ -431,6 +438,9 @@ class _InspectionMCPCallOwner:
                             result['independent_inspection']=inspected
                     if _file_assertions is not None:
                         result=self._staged_file_result(run_id,request_id,target_locator,delivery=result,error=inspection_failure)
+                    elif inspection_failure is not None:
+                        result.update(native_input_publication_result_version='1.1',
+                            status='committed_unverified',inspection_required=True,exit_code=30)
                 self._input_publication_phase='delivery'
                 _left(token.deadline_ns)
                 _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
@@ -864,10 +874,14 @@ class _InputScopeSession:
                 # A returned, validated execute uncertainty describes the
                 # existing effect. Retain the owner and deliver its facts.
                 ack=owner._publication_ack
-                if method=='publish_staged_file' and owner._closed_staged_inspection_deadline is not None:
+                if owner._closed_staged_inspection_deadline is not None:
                     _require(owner._held_launch is not None and type(ack) is dict and ack.get('exit_code')==0
-                        and type(result) is dict and result['status']=='committed_unverified' and result['exit_code']==30
-                        and result['error']==_ClosedStagedFileInspectionLoss.code,
+                        and type(result) is dict and result.get('status')=='committed_unverified'
+                        and result.get('exit_code')==30 and result.get('inspection_required') is True
+                        and ((method=='publish_staged_file' and result.get('error')==_ClosedStagedFileInspectionLoss.code)
+                            or (method=='publish_input' and result.get('native_input_publication_result_version')=='1.1'
+                                and result.get('command_ack') is ack and result.get('retry_authorized') is False
+                                and result.get('independent_inspection') is None)),
                         'input_stage.session_unknown')
                     partial_deadline=owner._closed_staged_inspection_deadline
                     return result

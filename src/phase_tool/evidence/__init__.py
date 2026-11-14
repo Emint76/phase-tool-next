@@ -1,13 +1,17 @@
 from __future__ import annotations
+from contextlib import contextmanager
 
 import ctypes
+import hashlib
+import json
+import time
 import errno
 import os
 import re
 import stat
 import sysconfig
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -40,6 +44,171 @@ def read_evidence_bytes(path: Path) -> bytes:
     with open(_platform_path(path), "rb") as stream:
         return stream.read()
 
+
+def _read_dynamic_a05_fixed(path):
+    """Bounded fixed test artifact IO; caller supplies an accepted fixed path."""
+    from ..mutation.ntfs.native import _require
+    _require(type(path) is type(Path()) and path.is_absolute(), 'ntfs.dynamic_a05_test_binding')
+    for part in (*reversed(path.parents), path):
+        info = part.lstat()
+        _require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0)&0x400,
+                 'ntfs.dynamic_a05_test_binding')
+    before = path.stat()
+    _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= 65536,
+             'ntfs.dynamic_a05_test_binding')
+    def cross(info):
+        # CPython3.12 Windows named stat/fstat may expose different meanings of
+        # ctime. Keep each method's full before/after check; do not compare that
+        # field across methods or weaken size/identity/mtime/birthtime checks.
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                getattr(info, 'st_birthtime_ns', None))
+    def same_method(info):
+        return (*cross(info), info.st_ctime_ns, info.st_mode, info.st_nlink)
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0)
+                 | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    try:
+        opened = os.fstat(fd)
+        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
+                 and cross(before) == cross(opened), 'ntfs.dynamic_a05_test_binding')
+        raw = bytearray()
+        while True:
+            part = os.read(fd, min(65536, 65536-len(raw)+1))
+            if not part:
+                break
+            raw.extend(part)
+            _require(len(raw) <= 65536, 'ntfs.dynamic_a05_test_binding')
+        after_opened = os.fstat(fd)
+        after = path.stat()
+        _require(len(raw) == before.st_size == after.st_size
+                 and same_method(before) == same_method(after)
+                 and same_method(opened) == same_method(after_opened)
+                 and cross(after) == cross(after_opened), 'ntfs.dynamic_a05_test_binding')
+        for parent in (*reversed(path.parents), path):
+            info = parent.lstat()
+            _require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0)&0x400,
+                     'ntfs.dynamic_a05_test_binding')
+        return bytes(raw)
+    finally:
+        os.close(fd)
+
+
+def _write_dynamic_a05_telemetry(path, value):
+    """Exclusive bounded raw test telemetry; no receipt or target semantics."""
+    from ..mutation.ntfs.native import _require
+    raw = canonical_bytes(value)
+    _require(len(raw) <= 65536, 'ntfs.dynamic_a05_test_telemetry_bound')
+    with path.open('xb') as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _write_c05_fixture_raw_member(path, data, *, native, parent, identity):
+    """One fixed C05 member after its caller retained all checked C: ancestors."""
+    from ..mutation.ntfs.c05_windows_transport import _raw_member_allowed
+    from ..mutation.ntfs.native import NativeIO, _require
+    _require(type(native) is NativeIO and _raw_member_allowed(path,data), 'ntfs.fixed_c05_raw_member_required')
+    native.assert_object(parent,directory=True,expected=identity)
+    with path.open('xb') as stream:
+        _require(stream.write(data)==len(data), 'ntfs.c05_raw_member_short_write')
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _qualification_catalog_ordinary(path, *, directory):
+    from ..mutation.ntfs.native import _require
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise PhaseError('ntfs.history_catalog_unavailable') from error
+    _require((stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+        and not getattr(info, 'st_file_attributes', 0)&0x400
+        and (directory or info.st_nlink == 1), 'ntfs.history_catalog_file_unsafe')
+    return info
+
+
+def _read_qualification_catalog_chunk(path, maximum_bytes):
+    """Bounded accepted configuration artifact IO, retaining platform checks."""
+    from ..streaming import read_bounded_file, fingerprint
+    from ..mutation.ntfs.native import _require
+    if os.name != 'nt':
+        # Preserve the complete POSIX fingerprint, including handle ctime.
+        return read_bounded_file(path, maximum_bytes)
+    before = _qualification_catalog_ordinary(path, directory=False)
+    descriptor = os.open(path, os.O_RDONLY | os.O_BINARY | getattr(os, 'O_NOINHERIT', 0))
+    try:
+        opened = os.fstat(descriptor)
+        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1,
+            'ntfs.history_catalog_file_unsafe')
+        # CPython3.12 Windows named stat.ctime is birth time while fstat.ctime
+        # can be change time. Compare birth time across APIs and preserve EACH
+        # API's complete before/after ctime check independently.
+        def cross(info):
+            _require(hasattr(info, 'st_birthtime_ns'), 'ntfs.history_catalog_file_unsafe')
+            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_birthtime_ns
+        _require(cross(before) == cross(opened) and opened.st_size <= maximum_bytes,
+            'ntfs.history_catalog_file_unsafe')
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            data = stream.read(maximum_bytes+1)
+        after_opened = os.fstat(descriptor)
+        after_named = _qualification_catalog_ordinary(path, directory=False)
+        _require(len(data) == opened.st_size <= maximum_bytes
+            and fingerprint(opened) == fingerprint(after_opened)
+            and fingerprint(before) == fingerprint(after_named)
+            and cross(opened) == cross(after_named), 'ntfs.history_catalog_digest_mismatch')
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _write_owned_stderr_bytes(raw, deadline):
+    """Bounded raw bytes on the current owned stderr pipe; no native policy.
+
+    Caller supplies one existing absolute monotonic deadline. This does not
+    create a receipt, prove process exit or acknowledge final result delivery.
+    Descriptor2 is borrowed, never closed; its original mode is restored only
+    while the same declared descriptor identity is still present.
+    """
+    import select
+    import time
+    def remaining():
+        value=deadline-time.monotonic()
+        if not value>0:raise PhaseError('evidence.raw_stderr_deadline')
+        return value
+    if type(raw) is not bytes or not 0<len(raw)<=128*1024 or type(deadline) is not float or not 0<deadline-time.monotonic()<=30:
+        raise PhaseError('evidence.raw_stderr_bound')
+    info=os.fstat(2)
+    if not stat.S_ISFIFO(info.st_mode):raise PhaseError('evidence.raw_stderr_pipe_required')
+    identity=(info.st_dev,info.st_ino);old=os.get_blocking(2)
+    offset=0;primary=None;finalization=None;mode_attempted=False
+    def same_descriptor():
+        current=os.fstat(2)
+        if not stat.S_ISFIFO(current.st_mode) or (current.st_dev,current.st_ino)!=identity:
+            raise PhaseError('evidence.raw_stderr_descriptor_changed')
+    try:
+        mode_attempted=True;os.set_blocking(2,False)
+        while offset<len(raw):
+            poll=select.poll();poll.register(2,select.POLLOUT)
+            events=poll.poll(max(0,int(remaining()*1000)))
+            if not events or any(fd!=2 or not flags&select.POLLOUT or flags&(select.POLLERR|select.POLLNVAL) for fd,flags in events):
+                raise PhaseError('evidence.raw_stderr_not_ready')
+            remaining();same_descriptor()
+            try:count=os.write(2,raw[offset:offset+4096])
+            except BlockingIOError:continue
+            if count<=0:raise PhaseError('evidence.raw_stderr_no_progress')
+            offset+=count;remaining()
+    except BaseException as error:primary=error
+    finally:
+        if mode_attempted:
+            try:
+                same_descriptor() # Never restore flags on a reused foreign fd.
+                os.set_blocking(2,old)
+            except BaseException as error:finalization=error
+    if primary is not None and finalization is not None:
+        raise BaseExceptionGroup('raw stderr delivery and mode finalization failed',[primary,finalization])
+    if primary is not None:raise primary
+    if finalization is not None:raise finalization
+    remaining()
 
 def evidence_file_exists(path: Path) -> bool:
     return os.path.isfile(_platform_path(path))
@@ -233,7 +402,8 @@ def _fsync_pinned_directory(parent_descriptor: int, parent: Path) -> None:
         raise OSError(errno.ESTALE, "evidence parent directory identity changed", str(parent))
 
 
-def _write_bytes_exclusive_atomic(path: Path, data: bytes, label: str) -> None:
+def _write_bytes_exclusive_atomic(path: Path, data: bytes, label: str, *,
+    _parent_descriptor: int | None = None) -> None:
     """Fsync staged bytes, then atomically link an absent canonical name.
 
     Linux uses an anonymous inode, so partial bytes never have a directory
@@ -242,6 +412,10 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes, label: str) -> None:
     Failed or contended attempts retain their stage fail-closed because POSIX
     has no inode-conditional unlink primitive.
     """
+    if _parent_descriptor is not None:
+        if os.name != 'posix':raise PhaseError('platform.mutation_unsupported')
+        _write_bytes_exclusive_at(_parent_descriptor,path,data,label)
+        return
     anonymous = _open_anonymous_staging(path.parent)
     if anonymous is not None:
         parent_descriptor, descriptor = anonymous
@@ -351,6 +525,8 @@ class EvidenceStore:
             raise PhaseError("evidence.initialization_failed") from exc
 
     def write_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         if "/" in relative:
             parent_name, file_name = relative.split("/", 1)
             if parent_name != "attachments" or "/" in file_name:
@@ -398,6 +574,8 @@ class EvidenceStore:
         return True
 
     def write_or_verify_canonical(self, relative: str, value: Any) -> tuple[Path, str]:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         data = canonical_bytes(value)
         if "/" in relative:
             parent_name, file_name = relative.split("/", 1)
@@ -429,9 +607,13 @@ class EvidenceStore:
             return path, digest_bytes(data)
 
     def replace_attachment_canonical(self, file_name: str, value: Any) -> tuple[Path, str]:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         return replace_attachment_canonical(self.attachment_root, file_name, value)
 
     def write_blob_exact(self, digest: str, data: bytes) -> Path:
+        if getattr(self, '_native_recovery_only', False):
+            raise PhaseError('recovery.original_write_forbidden')
         if not digest.startswith("sha256:") or len(digest) != 71:
             raise PhaseError("evidence.invalid_blob_digest", digest)
         actual = digest_bytes(data)
@@ -441,6 +623,71 @@ class EvidenceStore:
         _ensure_directory_durable(path.parent, parents=True)
         _write_bytes_exclusive_atomic(path, data, path.name)
         return path
+
+
+def _open_operational_lock(path: Path):
+    """Legacy lock-file IO; the caller retains its original lock/close lifecycle.
+
+    Preserve parent creation and append/read mode exactly. This does not grant
+    native admission or change the separately checked POSIX lock path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.open("a+b")
+
+
+def _open_checked_operational_lock(path: Path) -> tuple[int, tuple[int, int], tuple[int, int]]:
+    """Open one owned control-lock leaf under its pinned existing parent.
+
+    This is the existing evidence IO boundary, not a target mutation API or
+    native admission. The caller owns the returned FD, takes the original flock
+    and checks namespace identity throughout that lifetime. No mkdir, overwrite,
+    truncation, retry, descriptor transfer or persistent lock index is provided.
+    """
+    if (os.name != 'posix' or not hasattr(os, 'O_NOFOLLOW')
+        or not hasattr(os, 'O_CLOEXEC') or not hasattr(os, 'O_DIRECTORY')
+        or not path.is_absolute()):
+        raise PhaseError("lock.checked_platform_unsupported")
+    _reject_existing_links(path.parent)
+    parent = path.parent.lstat()
+    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022):
+        raise PhaseError("lock.checked_parent_unsafe")
+    parent_identity = parent.st_dev, parent.st_ino
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = None
+    try:
+        pinned = os.fstat(parent_fd)
+        if (pinned.st_dev, pinned.st_ino) != parent_identity:
+            raise PhaseError("lock.checked_namespace_identity_changed")
+        descriptor = os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+            | os.O_CLOEXEC, 0o600, dir_fd=parent_fd)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise PhaseError("lock.checked_object_unsafe")
+        identity = info.st_dev, info.st_ino
+        _reject_existing_links(path.parent)
+        current_parent, named = path.parent.lstat(), path.lstat()
+        if ((current_parent.st_dev, current_parent.st_ino) != parent_identity
+            or current_parent.st_uid != os.geteuid() or current_parent.st_mode & 0o022
+            or not stat.S_ISDIR(current_parent.st_mode) or not stat.S_ISREG(named.st_mode)
+            or (named.st_dev, named.st_ino) != identity):
+            raise PhaseError("lock.checked_namespace_identity_changed")
+    except BaseException as primary:
+        if descriptor is not None:
+            try: os.close(descriptor)
+            except BaseException as error: primary.add_note("Checked lock open cleanup: " + str(error))
+        try: os.close(parent_fd)
+        except BaseException as error: primary.add_note("Checked lock parent cleanup: " + str(error))
+        raise
+    # Parent FD close is consumed once; on failure never return the lock FD.
+    try:
+        os.close(parent_fd)
+    except BaseException as primary:
+        try: os.close(descriptor)
+        except BaseException as error: primary.add_note("Checked lock open cleanup: " + str(error))
+        raise
+    return descriptor, parent_identity, identity
 
 
 def operational_lock_path(lock_root: Path, key_digest: str) -> Path:
@@ -467,10 +714,12 @@ def operational_lock_path(lock_root: Path, key_digest: str) -> Path:
 
 def validate_intent(intent: dict[str, Any], registry: RegistrySnapshot) -> None:
     schema = registry.schema_document("https://phase-tool.local/schemas/phase-intent.schema.json")
-    if intent.get("phase_intent_version") == "1.1":
+    version = intent.get("phase_intent_version")
+    if version in ("1.1", "1.2"):
         binding = intent["contract"]
         contract = registry.resolve_contract(binding["id"], binding["version"], binding["package_digest"], core_version=intent["core"]["version"])
-        resource = "schemas/phase-intent-1.1.schema.json"
+        resource = {"1.1": "schemas/phase-intent-1.1.schema.json",
+                    "1.2": "schemas/phase-intent-1.2.schema.json"}[version]
         matches = [a["digest"] for a in contract.entry["package_artifacts"] if a["resource"] == resource]
         if len(matches) != 1:
             raise PhaseError("intent.schema_unbound")
@@ -500,3 +749,1334 @@ def validate_receipt(receipt: dict[str, Any], registry: RegistrySnapshot) -> Non
         evidence["receipt_schema_digest"],
     )
     Draft202012Validator(exact_schema, registry=validator_registry, format_checker=FormatChecker()).validate(receipt)
+
+
+# DRAFT function intended for existing phase_tool/evidence/__init__.py.
+# No candidate import/test/execution. This extends the existing evidence IO
+# boundary; it is not another store, marker, journal or recovery authority.
+
+def _confirm_native_immutable_files_durable(root, expected_root_identity, run_id, expected_files, *, _version_selection=None):
+    """Confirm current durability ONLY inside the existing native common lock.
+
+    The caller first verifies a permitted positive terminal proof and projects
+    every immutable dependency from the original receipt/intent. Never call
+    from readonly inspect. No mkdir, replacement, deletion, target I/O or retry.
+    Accepted fixed mount contour has NO descendant mounts below this evidence
+    root (including same-device binds); bootstrap must verify this before use.
+    Trusted owner is single-threaded/non-reentrant, with no fork/FD transfer or
+    unrelated close/reuse; inode equality is not open-file-description identity.
+    """
+    import hashlib
+    import threading
+    from ..installation import (qualify_host_authority_roots, _linux_filesystem_type,
+        _require_native_no_descendant_mounts)
+    from ..canonical import digest_bytes
+    from ..mutation.ntfs.native import _require
+
+    _require(os.name == 'posix' and hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'O_CLOEXEC')
+        and hasattr(os, 'O_DIRECTORY') and root.is_absolute(), 'ntfs.native_durability_platform_required')
+    validate_run_id(run_id)
+    qualify_host_authority_roots({'phase_evidence_root':root})
+    _require(_linux_filesystem_type(root) == 'ext4', 'ntfs.original_ext4_evidence_required')
+    _require_native_no_descendant_mounts(root)
+    if _version_selection is None:
+        _require(type(expected_files) is dict and 'receipt.json' in expected_files
+            and 'attachments/native-terminal-proof.json' in expected_files,
+            'ntfs.native_durability_dependency_mismatch')
+    else:
+        from ..mutation.ntfs.version_original_closure import _NativeVersionContinuationSelection,_NativeVersionOriginalClosure
+        from ..mutation.ntfs.publication_observe import _NativePublicationObserveSelection
+        _require(type(_version_selection)in(_NativeVersionContinuationSelection,_NativeVersionOriginalClosure,_NativePublicationObserveSelection)
+            and _version_selection.run_id==run_id,'recovery.selected_original_mismatch')
+        closed=_version_selection.check(root/'.phase/runs'/run_id)
+        closure_leaf=('attachments/native-terminal-proof.json'if closed['closure_kind']=='native_terminal_proof'
+            else'attachments/native-parent-failure.json'if closed['closure_kind']=='validated_parent_failure_completion'else None)
+        _require(closure_leaf is not None and type(expected_files)is dict and expected_files==closed['files']
+            and closure_leaf in expected_files,'ntfs.native_durability_dependency_mismatch')
+    for name, binding in expected_files.items():
+        parts = name.split('/')
+        _require((parts in (['receipt.json'], ['intent.json'], ['preparation-binding.json'])
+                or (len(parts) == 2 and parts[0] == 'attachments'
+                    and re.fullmatch(r'[a-z][a-z0-9.-]*\.json',parts[1]) is not None)
+                or (len(parts) == 2 and parts[0] == 'blobs'
+                    and re.fullmatch('[0-9a-f]{64}',parts[1]) is not None)
+                or (_version_selection is not None and len(parts)==2 and parts[0]=='recovery'
+                    and re.fullmatch(r'[0-9a-f]{64}\.json',parts[1])is not None))
+            and type(binding) is tuple and len(binding) == 2
+            and type(binding[0]) is str and re.fullmatch('sha256:[0-9a-f]{64}',binding[0]) is not None
+            and type(binding[1]) is int and 0 <= binding[1] <= (2*1024**3 if parts[0]=='blobs' else 2*1024**2),
+            'ntfs.native_durability_dependency_mismatch')
+
+    owner = os.getpid(),threading.get_ident()
+    opened = []
+    directories = {}
+    files = {}
+    primary = None
+    secondary = []
+
+    def owned():
+        _require(owner == (os.getpid(),threading.get_ident()), 'ntfs.native_durability_owner_changed')
+
+    def fingerprint(info):
+        return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_nlink,
+            info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+    def safe(info, directory):
+        _require((stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+            and info.st_uid == os.geteuid() and not info.st_mode & 0o022
+            and info.st_dev == expected_root_identity[0]
+            and (directory or info.st_nlink == 1), 'ntfs.original_evidence_object_unsafe')
+
+    def pin(parent, name, *, directory):
+        owned()
+        flags = os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK
+        if directory:flags |= os.O_DIRECTORY
+        try:
+            descriptor = os.open(name,flags,dir_fd=parent) if parent is not None else os.open(name,flags)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise PhaseError('ntfs.original_evidence_object_unsafe') from error
+            raise
+        # Register ownership BEFORE any subsequent failing stat/identity check.
+        record = {'fd':descriptor,'parent':parent,'name':name,'directory':directory,'identity':None}
+        opened.append(record)
+        info = os.fstat(descriptor)
+        safe(info,directory)
+        record['identity'] = info.st_dev,info.st_ino
+        named = os.stat(name,dir_fd=parent,follow_symlinks=False) if parent is not None else root.lstat()
+        safe(named,directory)
+        _require(fingerprint(info) == fingerprint(named), 'ntfs.original_evidence_identity_mismatch')
+        return record
+
+    def check(record):
+        owned()
+        info = os.fstat(record['fd']);safe(info,record['directory'])
+        _require(record['identity'] == (info.st_dev,info.st_ino), 'ntfs.original_evidence_identity_mismatch')
+        named = (os.stat(record['name'],dir_fd=record['parent'],follow_symlinks=False)
+            if record['parent'] is not None else root.lstat())
+        safe(named,record['directory'])
+        _require(fingerprint(info) == fingerprint(named), 'ntfs.original_evidence_identity_mismatch')
+        return info
+
+    def inventory():
+        run = directories['run']['fd']
+        names = set(os.listdir(run))
+        allowed={'intent.json','receipt.json','attachments','blobs'}
+        if _version_selection is not None:allowed.add('recovery')
+        if 'preparation-binding.json' in expected_files:allowed.add('preparation-binding.json')
+        _require(names <= allowed,
+            'ntfs.native_durability_dependency_mismatch')
+        children=('attachments','blobs')if _version_selection is None else('attachments','blobs','recovery')
+        actual = names - set(children)
+        for child in children:
+            if child in names:
+                _require(child in directories, 'ntfs.native_durability_dependency_mismatch')
+                actual.update(child+'/'+name for name in os.listdir(directories[child]['fd']))
+        _require(actual == set(expected_files), 'ntfs.native_durability_dependency_mismatch')
+
+    try:
+        _reject_existing_links(root)
+        directories['root'] = pin(None,root,directory=True)
+        _require(directories['root']['identity'] == expected_root_identity,
+            'ntfs.original_evidence_identity_mismatch')
+        for key,parent,name in [('phase','root','.phase'),('runs','phase','runs'),('run','runs',run_id)]:
+            directories[key] = pin(directories[parent]['fd'],name,directory=True)
+        present = set(os.listdir(directories['run']['fd']))
+        children=('attachments','blobs')if _version_selection is None else('attachments','blobs','recovery')
+        for child in children:
+            if child in present:
+                directories[child] = pin(directories['run']['fd'],child,directory=True)
+        inventory()
+        for name,(expected_digest,expected_length) in sorted(expected_files.items()):
+            parts = name.split('/')
+            parent = directories['run'] if len(parts) == 1 else directories[parts[0]]
+            record = pin(parent['fd'],parts[-1],directory=False)
+            before = check(record)
+            _require(before.st_size == expected_length, 'ntfs.native_durability_bytes_mismatch')
+            digest = hashlib.sha256();length = 0
+            while True:
+                owned()
+                chunk = os.read(record['fd'], min(65536,expected_length-length+1))
+                if not chunk:break
+                length += len(chunk)
+                _require(length <= expected_length, 'ntfs.native_durability_bytes_mismatch')
+                digest.update(chunk)
+            _require(length == expected_length and 'sha256:'+digest.hexdigest() == expected_digest
+                and fingerprint(before) == fingerprint(check(record)),
+                'ntfs.native_durability_bytes_mismatch')
+            files[name] = record,before
+        inventory()
+        # Include receipt/proof, every attachment and every frozen blob. A
+        # visible immutable link is not a successful durability acknowledgement.
+        for record,before in files.values():
+            _require(fingerprint(check(record)) == fingerprint(before),
+                'ntfs.native_durability_bytes_mismatch')
+            os.fsync(record['fd'])
+            _require(fingerprint(check(record)) == fingerprint(before),
+                'ntfs.native_durability_bytes_mismatch')
+        for key in reversed(tuple(directories)):
+            record = directories[key];check(record);os.fsync(record['fd']);check(record)
+        inventory();_reject_existing_links(root);_require_native_no_descendant_mounts(root)
+        for record,before in files.values():
+            _require(fingerprint(check(record)) == fingerprint(before),
+                'ntfs.native_durability_bytes_mismatch')
+    except BaseException as error:
+        primary = error
+    finally:
+        # Each owned FD has ONE close attempt; continue independent cleanup,
+        # preserve primary, never close a descriptor whose identity changed.
+        for record in reversed(opened):
+            try:
+                owned()
+                current = os.fstat(record['fd'])
+                if record['identity'] is not None:
+                    _require(record['identity'] == (current.st_dev,current.st_ino),
+                        'ntfs.original_evidence_identity_mismatch')
+                os.close(record['fd'])
+            except BaseException as error:
+                if primary is None:primary = error
+                else:secondary.append(error)
+    if primary is not None:
+        for error in secondary:
+            try:
+                primary.add_note('Native durability secondary close failure: '+type(error).__name__)
+            except BaseException:
+                pass
+        raise primary
+
+
+def _write_native_parent_failure(store,binding,value):
+    """ONE negative-only write inside Core's EXISTING native common guard.
+
+    Caller consumes its attempt BEFORE this function. Current namespace must be
+    positively known; no fallback, overwrite or retry after any uncertain write.
+    A failure attachment never supplies closure/quiescence or repairs completeness.
+    """
+    if getattr(store, '_native_recovery_only', False):
+        raise PhaseError('recovery.original_write_forbidden')
+    from ..installation import _NativeFileCreateReadBinding
+    from ..mutation.ntfs.failure import validate_native_parent_failure
+    from ..mutation.ntfs.native import _require
+    _require(type(store) is EvidenceStore and type(binding) is _NativeFileCreateReadBinding,
+        'ntfs.native_failure_store_required')
+    validate_native_parent_failure(binding,value)
+    root=binding.check_evidence_root()
+    _require(root==store.evidence_root and store.run_root==root/'.phase'/'runs'/value['run_id'],
+        'ntfs.native_failure_binding_mismatch')
+    _reject_existing_links(store.run_root)
+    for path in (root,root/'.phase',store.runs_root,store.run_root,store.attachment_root):
+        info=path.lstat()
+        _require(stat.S_ISDIR(info.st_mode) and info.st_uid==os.geteuid()
+            and not info.st_mode&0o022,'ntfs.original_evidence_object_unsafe')
+    info=store.run_root.lstat()
+    _require((info.st_dev,info.st_ino)==store._owned_run_identity,
+        'ntfs.original_evidence_identity_mismatch')
+    from ..streaming import read_bounded_file
+    from ..canonical import parse_json_bytes,profile_digest
+    original=parse_json_bytes(read_bounded_file(store.run_root/'intent.json',2*1024**2),
+        maximum_bytes=2*1024**2)
+    _require(profile_digest('intent',original)==value['intent_digest']
+        and original['effect_plan_digest']==value['effect_plan_digest']
+        and original['native_binding']['operation_nonce']==value['operation_nonce'],
+        'ntfs.native_failure_binding_mismatch')
+    binding.check_evidence_root()
+    return _write_native_canonical(store,binding,'attachments/native-parent-failure.json',value)
+
+
+def _open_native_recovery_store(binding, run_id, *, _publication_selection=None, _expected_commit_checkpoint=None):
+    """Open ONE existing original; never call the reserving constructor.
+
+    The caller already holds the native common guard and has fully verified
+    this selected original. Held root/run/attachment FDs survive the exchange.
+    Only _write_native_recovery_canonical can publish through this store.
+    """
+    import threading
+    from ..installation import _NativeFileCreateReadBinding
+    from ..canonical import parse_json_bytes
+    from ..mutation.ntfs.native import _require
+    _require(type(binding) is _NativeFileCreateReadBinding, 'ntfs.original_read_binding_required')
+    manifest = parse_json_bytes(binding.manifest_bytes, maximum_bytes=2*1024**2)
+    if _publication_selection is None and manifest['native_read_installation_version']!='1.9':
+        from ..mutation.ntfs.version_original_closure import version_original_role
+        version_original_role(binding)
+
+    validate_run_id(run_id)
+    root = binding.check_evidence_root()
+    if _publication_selection is not None:
+        from ..mutation.ntfs.publication_observe import _NativePublicationObserveSelection
+        _require(type(_publication_selection) is _NativePublicationObserveSelection
+            and _publication_selection.binding is binding and _publication_selection.run_id == run_id,
+            'recovery.selected_original_mismatch')
+        _publication_selection.check(root / '.phase' / 'runs' / run_id)
+    opened = []
+    try:
+        current = os.open(root, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        opened.append((current, None, root))
+        expected = manifest['evidence_identity']
+        info = os.fstat(current)
+        _require((info.st_dev, info.st_ino) == (expected['device'], expected['inode']),
+                 'ntfs.original_evidence_identity_mismatch')
+        for name in ('.phase', 'runs', run_id, 'attachments'):
+            parent = current
+            current = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC, dir_fd=parent)
+            opened.append((current, parent, name))
+        if _expected_commit_checkpoint is not None:
+            # A terminal writer reopens the already existing checkpoint only.
+            # Never create a replacement directory when its identity drifted.
+            parent = opened[3][0]  # The selected run, not its attachment directory.
+            name = 'recovery'
+            current = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC, dir_fd=parent)
+            opened.append((current, parent, name))
+        identities = []
+        for fd, parent, name in opened:
+            info = os.fstat(fd)
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                     and not info.st_mode&0o022 and info.st_dev==expected['device']
+                     and (info.st_dev,info.st_ino)==(named.st_dev,named.st_ino),
+                     'ntfs.original_evidence_object_unsafe')
+            identities.append((info.st_dev,info.st_ino))
+        store = object.__new__(EvidenceStore)
+        store.evidence_root = root
+        store.runs_root = root/'.phase/runs'
+        store.run_root = store.runs_root/run_id
+        store.attachment_root = store.run_root/'attachments'
+        store.blob_root = store.run_root/'blobs'
+        store.operational_lock_root = root/'.phase/locks'
+        store._owned_run_identity = identities[3]
+        store._native_owned_attachment_identity = identities[4]
+        store._authoritative_evidence_published = True
+        store._native_recovery_only = True
+        store._native_recovery_owner = os.getpid(), threading.get_ident()
+        store._native_recovery_fds = [list(row)+[identity] for row,identity in zip(opened,identities)]
+        store._native_recovery_binding = binding
+        if _expected_commit_checkpoint is not None:
+            _require(_native_recovery_checkpoint_identity(store) == _expected_commit_checkpoint,
+                     'recovery.commit_checkpoint_identity_changed')
+        return store
+    except BaseException as primary:
+        from ..mutation.ntfs.uncertainty import _diagnostic
+        errors=[]
+        for fd,_parent,_name in reversed(opened):
+            try:os.close(fd)
+            except BaseException as secondary:errors.append(secondary)
+        if errors:
+            raise PhaseError('recovery.store_open_failed',details={'primary':_diagnostic(primary),
+                'secondary':[_diagnostic(e)for e in errors]}) from primary
+        raise
+
+
+def _check_native_recovery_store(store):
+    import threading
+    from ..mutation.ntfs.native import _require
+    _require(type(store) is EvidenceStore and getattr(store,'_native_recovery_only',False) is True
+             and store._native_recovery_owner == (os.getpid(),threading.get_ident())
+             and store._native_recovery_fds, 'recovery.closed_native_store_required')
+    expected=store._native_recovery_fds[0][3][0]
+    for fd,parent,name,identity in store._native_recovery_fds:
+        current = os.fstat(fd)
+        named = os.stat(name,dir_fd=parent,follow_symlinks=False)
+        _require(stat.S_ISDIR(current.st_mode) and stat.S_ISDIR(named.st_mode)
+                 and current.st_uid==os.geteuid() and not current.st_mode&0o022 and current.st_dev==expected
+                 and identity==(current.st_dev,current.st_ino)==(named.st_dev,named.st_ino),
+                 'ntfs.original_evidence_identity_mismatch')
+    store._native_recovery_binding.check_evidence_root()
+
+
+def _native_recovery_checkpoint_identity(store):
+    """Identify the existing Bundle2 commit checkpoint through its owned descriptors."""
+    from ..mutation.ntfs.native import _require
+    _check_native_recovery_store(store)
+    records = store._native_recovery_fds
+    _require(len(records) == 6 and records[-1][1:3] == [records[3][0], 'recovery'],
+             'recovery.commit_checkpoint_identity_changed')
+    info = os.stat('commit-intent.json', dir_fd=records[-1][0], follow_symlinks=False)
+    _require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode&0o022
+             and info.st_nlink == 1 and info.st_dev == records[0][3][0]
+             and 0 < info.st_size <= 2*1024**2, 'recovery.commit_checkpoint_identity_changed')
+    return (tuple(row[3] for row in records),
+            (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size,
+             info.st_mtime_ns, info.st_ctime_ns))
+
+
+def _write_native_recovery_canonical(store, leaf, value):
+    """Only existing recovery records/proof/digest observations; no original writes."""
+    from ..mutation.ntfs.native import _require
+    from ..streaming import read_bounded_file
+    _check_native_recovery_store(store)
+    _require(type(leaf) is str and (leaf in {'commit-intent.json','commit-receipt.json',
+        'native-commit-proof.json'} or re.fullmatch(r'[0-9a-f]{64}\.json',leaf) is not None),
+        'evidence.invalid_path')
+    records = store._native_recovery_fds
+    if len(records)==5:
+        run_fd = records[3][0]
+        try:
+            fd=os.open('recovery',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=run_fd)
+        except FileNotFoundError:
+            os.mkdir('recovery',0o700,dir_fd=run_fd)
+            os.fsync(run_fd)
+            fd=os.open('recovery',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=run_fd)
+        info=os.fstat(fd)
+        records.append([fd,run_fd,'recovery',(info.st_dev,info.st_ino)])
+    _check_native_recovery_store(store)
+    path=store.run_root/'recovery'/leaf
+    data=canonical_bytes(value)
+    _require(len(data)<=2*1024**2,'recovery.record_limit')
+    # An existing exact object is verified and durability-confirmed under the
+    # SAME common guard. A mismatching object never receives overwrite/retry.
+    if evidence_file_exists(path):
+        _require(read_bounded_file(path,2*1024**2)==data,'recovery.continuation_conflict')
+        descriptor=os.open(leaf,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=records[-1][0])
+        try:
+            info=os.fstat(descriptor);named=os.stat(leaf,dir_fd=records[-1][0],follow_symlinks=False)
+            _require(stat.S_ISREG(info.st_mode) and info.st_uid==os.geteuid()
+                and info.st_nlink==1 and not info.st_mode&0o022
+                and info.st_dev==records[0][3][0]
+                and (info.st_dev,info.st_ino)==(named.st_dev,named.st_ino),
+                'ntfs.original_evidence_object_unsafe')
+            os.fsync(descriptor)
+            _check_native_recovery_store(store)
+            named=os.stat(leaf,dir_fd=records[-1][0],follow_symlinks=False)
+            _require((info.st_dev,info.st_ino)==(named.st_dev,named.st_ino),
+                'ntfs.original_evidence_identity_mismatch')
+        finally:os.close(descriptor)
+        os.fsync(records[-1][0])
+    else:
+        _write_bytes_exclusive_atomic(path,data,'native-recovery',_parent_descriptor=records[-1][0])
+    _check_native_recovery_store(store)
+    _require(read_bounded_file(path,2*1024**2)==data,'recovery.continuation_conflict')
+    return path,digest_bytes(data)
+
+
+def _close_native_recovery_store(store):
+    from ..mutation.ntfs.native import _require
+    from ..mutation.ntfs.uncertainty import _diagnostic
+    errors=[]
+    try:
+        _check_native_recovery_store(store)
+    except BaseException as error:
+        errors.append(error)
+    for fd,_parent,_name,identity in reversed(store._native_recovery_fds):
+        try:
+            actual=os.fstat(fd)
+            _require((actual.st_dev,actual.st_ino)==identity,'ntfs.original_evidence_identity_mismatch')
+            os.close(fd)
+        except BaseException as error:
+            errors.append(error)
+    store._native_recovery_fds=[]
+    if errors:
+        raise PhaseError('recovery.store_finalization_unknown',details={
+            'primary':_diagnostic(errors[0]),'secondary':[_diagnostic(e)for e in errors[1:]]}) from errors[0]
+
+
+def _confirm_native_original_absent(binding,run_id):
+    """Positive no-follow absence under current qualified ext4 identity.
+
+    Single accepted owner/no fork/FD replacement/mount changes. This is not a
+    history reset, empty-history inference, dispatch permission or durability
+    acknowledgement. Every descriptor closes before absence is returned.
+    """
+    from ..installation import _NativeFileCreateReadBinding
+    from ..mutation.ntfs.native import _require
+    from ..canonical import parse_json_bytes
+    _require(type(binding) is _NativeFileCreateReadBinding,'ntfs.original_read_binding_required')
+    root=binding.check_evidence_root()
+    manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
+    identity=manifest['evidence_identity']
+    opened=[]
+    primary=None
+    absent=False
+    try:
+        def pin(name,parent=None):
+            descriptor=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,
+                dir_fd=parent)
+            record=[descriptor,None,parent,name]
+            opened.append(record)
+            info=os.fstat(descriptor)
+            _require(stat.S_ISDIR(info.st_mode) and info.st_uid==os.geteuid()
+                and not info.st_mode&0o022 and info.st_dev==identity['device'],
+                'ntfs.original_evidence_object_unsafe')
+            record[1]=(info.st_dev,info.st_ino)
+            try:named=os.stat(name,dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError as error:
+                # Successful open followed by a missing namespace edge is NOT
+                # evidence of absence, even if a later rename restores it.
+                raise PhaseError('ntfs.original_evidence_identity_mismatch') from error
+            _require(stat.S_ISDIR(named.st_mode) and (named.st_dev,named.st_ino)==record[1],
+                'ntfs.original_evidence_identity_mismatch')
+            return descriptor
+        current=pin(root)
+        _require(opened[0][1]==(identity['device'],identity['inode']),
+            'ntfs.original_evidence_identity_mismatch')
+        for component in ('.phase','runs',run_id):
+            try:current=pin(component,current)
+            except FileNotFoundError:
+                absent=True
+                break
+        else:
+            try:os.stat('intent.json',dir_fd=current,follow_symlinks=False)
+            except FileNotFoundError:absent=True
+        _require(absent,'ntfs.original_unexpected_intent')
+        for descriptor,expected,parent,name in opened:
+            current_info=os.fstat(descriptor)
+            named=os.stat(name,dir_fd=parent,follow_symlinks=False)
+            _require(expected==(current_info.st_dev,current_info.st_ino)==(named.st_dev,named.st_ino)
+                and stat.S_ISDIR(named.st_mode),'ntfs.original_evidence_identity_mismatch')
+        binding.check_evidence_root()
+    except BaseException as error:
+        primary=error
+    finally:
+        for descriptor,expected,_parent,_name in reversed(opened):
+            try:
+                if expected is not None:
+                    info=os.fstat(descriptor)
+                    _require(expected==(info.st_dev,info.st_ino),'ntfs.original_evidence_identity_mismatch')
+                os.close(descriptor)  # Exactly one attempt, no close/reuse recovery.
+            except BaseException as error:
+                if primary is None:primary=error
+                else:
+                    try:primary.add_note('Original absence secondary close: '+type(error).__name__)
+                    except BaseException:pass
+    if primary is not None:raise primary
+
+
+
+# Source fragment for the existing EvidenceIO module, not another store.
+
+def _write_bytes_exclusive_at(parent_descriptor, path, data, label):
+    """Existing exclusive primitives with an already verified borrowed parent.
+
+    The caller owns the parent FD and namespace checks. This function owns only
+    its single staging FD; it never reopens a pathname, retries a publication,
+    replaces an object, removes a stage or closes the borrowed descriptor.
+    """
+    descriptor=None
+    primary=None
+    try:
+        try:
+            descriptor=os.open('.',os.O_WRONLY|os.O_TMPFILE|os.O_CLOEXEC,
+                0o600,dir_fd=parent_descriptor)
+        except OSError as error:
+            unsupported={errno.EINVAL,errno.EISDIR,errno.ENOSYS,errno.EOPNOTSUPP}
+            if hasattr(errno,'ENOTSUP'):unsupported.add(errno.ENOTSUP)
+            if error.errno not in unsupported:raise
+        if descriptor is not None:
+            _write_descriptor(descriptor,data,label)
+            _link_anonymous(descriptor,parent_descriptor,path.name)
+        else:
+            temporary_name=_temporary_path(path).name
+            descriptor=_open_temporary(parent_descriptor,temporary_name)
+            _write_descriptor(descriptor,data,label)
+            _rename_noreplace(parent_descriptor,temporary_name,path.name)
+        _fsync_pinned_directory(parent_descriptor,path.parent)
+    except BaseException as error:
+        primary=error
+    finally:
+        if descriptor is not None:
+            try:os.close(descriptor)
+            except BaseException as error:
+                if primary is None:primary=error
+                else:
+                    try:primary.add_note('Native publication secondary stage close: '+type(error).__name__)
+                    except BaseException:pass
+    if primary is not None:raise primary
+
+
+def _write_native_canonical(store,binding,relative,value):
+    """Anchor native terminal/negative writes in the ONE existing EvidenceStore.
+
+    A caller consumes each attempt first. Pin and check the current qualified
+    root, run and attachment parent BEFORE staging; retain those exact FDs for
+    exclusive publication. A rename after pin cannot redirect bytes into a
+    replacement directory. A changed namespace or failed ack is unresolved,
+    never permission to repeat, overwrite, downgrade or publish elsewhere.
+    """
+    if getattr(store, '_native_recovery_only', False):
+        raise PhaseError('recovery.original_write_forbidden')
+    import threading
+    from ..canonical import parse_json_bytes
+    from ..installation import _NativeFileCreateReadBinding
+    from ..mutation.ntfs.native import _require
+    _require(type(store) is EvidenceStore and type(binding) is _NativeFileCreateReadBinding,
+        'ntfs.native_failure_store_required')
+    _require(relative in {'receipt.json','attachments/native-terminal-proof.json',
+        'attachments/native-parent-failure.json','prepared-stage-checkpoint'},'evidence.invalid_path')
+    root=binding.check_evidence_root()
+    manifest=parse_json_bytes(binding.manifest_bytes,maximum_bytes=2*1024**2)
+    expected_root=manifest['evidence_identity']
+    run_id=validate_run_id(store.run_root.name)
+    checkpoint=relative=='prepared-stage-checkpoint'
+    if checkpoint:
+        from ..prepared_binding import NATIVE_BOUND_CONTRACT, NATIVE_BOUND_CONTRACT_V2, PreparationBinding
+        from ..continuation import PreparedStage
+        from ..mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+        version=manifest['native_read_installation_version']
+        exact=manifest['contract']
+        if version=='1.9' and exact==semantic_owner_contract('Bundle2'):
+            from ..mutation.ntfs.owner_directory import require_owner_or_semantic_binding
+            require_owner_or_semantic_binding(binding,'Bundle2')
+        else:
+            selected={'1.7':NATIVE_BOUND_CONTRACT,'1.8':NATIVE_BOUND_CONTRACT_V2,
+                      '1.9':NATIVE_BOUND_CONTRACT_V2}.get(version)
+            _require(selected is not None and exact==dict(zip(('id','version','package_digest'),selected)),
+                'ntfs.original_closed_checkpoint_required')
+        _require(type(value) is dict and set(value)=={'prepared','binding'},
+            'ntfs.original_closed_checkpoint_required')
+        PreparedStage.model_validate(value['prepared'])
+        PreparationBinding.model_validate(value['binding'])
+        _require(value['prepared']['run_id']==value['binding']['run_id']==run_id
+            and value['prepared']['contract']==value['binding']['contract']==exact
+            and value['binding']['preparation_digest']==digest_bytes(canonical_bytes(value['prepared'])),
+            'recovery.preparation_binding_mismatch')
+    _require(root==store.evidence_root and store.run_root==root/'.phase'/'runs'/run_id,
+        'ntfs.native_failure_binding_mismatch')
+    owner=os.getpid(),threading.get_ident()
+    opened=[]
+    primary=None
+    result=None
+
+    def check(record):
+        _require(owner==(os.getpid(),threading.get_ident()),'ntfs.native_durability_owner_changed')
+        fd,identity,parent,name=record
+        current=os.fstat(fd)
+        named=os.stat(name,dir_fd=parent,follow_symlinks=False)
+        _require(stat.S_ISDIR(current.st_mode) and stat.S_ISDIR(named.st_mode)
+            and identity==(current.st_dev,current.st_ino)==(named.st_dev,named.st_ino)
+            and current.st_uid==os.geteuid() and not current.st_mode&0o022,
+            'ntfs.original_evidence_identity_mismatch')
+
+    def pin(name,parent=None):
+        fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
+        record=[fd,None,parent,name]
+        opened.append(record)
+        info=os.fstat(fd)
+        record[1]=info.st_dev,info.st_ino
+        _require(info.st_dev==expected_root['device'],'ntfs.original_evidence_identity_mismatch')
+        check(record)
+        return fd
+
+    try:
+        current=pin(root)
+        _require(opened[0][1]==(expected_root['device'],expected_root['inode']),
+            'ntfs.original_evidence_identity_mismatch')
+        for component in ('.phase','runs',run_id):current=pin(component,current)
+        _require(opened[-1][1]==store._owned_run_identity,'ntfs.original_evidence_identity_mismatch')
+        run_descriptor=current
+        expected_attachment=getattr(store,'_native_owned_attachment_identity',None)
+        _require(relative!='receipt.json' or expected_attachment is not None,
+            'ntfs.native_terminal_attachment_unowned')
+        if checkpoint or relative.startswith('attachments/') or expected_attachment is not None:
+            before_pin=len(opened)
+            try:attachment=pin('attachments',run_descriptor)
+            except FileNotFoundError:
+                # Open may prove absence only before it acquired a descriptor.
+                # An already owned parent may never be silently recreated.
+                if len(opened)!=before_pin or expected_attachment is not None:raise
+                os.mkdir('attachments',0o700,dir_fd=run_descriptor)
+                os.fsync(run_descriptor)
+                attachment=pin('attachments',run_descriptor)
+            observed_attachment=opened[-1][1]
+            if expected_attachment is None:
+                store._native_owned_attachment_identity=observed_attachment
+            else:
+                _require(observed_attachment==expected_attachment,
+                    'ntfs.original_evidence_identity_mismatch')
+            current=attachment if relative.startswith('attachments/') else run_descriptor
+        for record in opened:check(record)
+        binding.check_evidence_root()
+        if checkpoint:
+            from ..recovery import read_record
+            writes=(('attachments/prepared-stage.json',value['prepared'],attachment),
+                    ('preparation-binding.json',value['binding'],run_descriptor))
+            for leaf,record_value,parent_fd in writes:
+                for record in opened:check(record)
+                _write_bytes_exclusive_atomic(store.run_root/leaf,canonical_bytes(record_value),leaf,
+                    _parent_descriptor=parent_fd)
+                for record in opened:check(record)
+            for leaf,record_value,_parent_fd in writes:
+                _require(read_record(store.run_root/leaf)==record_value,'recovery.preparation_binding_mismatch')
+                for record in opened:check(record)
+            path=store.run_root/'attachments/prepared-stage.json'
+            data=canonical_bytes(value['prepared'])
+        else:
+            path=store.run_root/relative
+            data=canonical_bytes(value)
+            _write_bytes_exclusive_atomic(path,data,relative,_parent_descriptor=current)
+        for record in opened:check(record)
+        binding.check_evidence_root()
+        if relative=='receipt.json':store._authoritative_evidence_published=True
+        result=path,digest_bytes(data)
+    except BaseException as error:
+        primary=error
+    finally:
+        for fd,identity,_parent,_name in reversed(opened):
+            try:
+                _require(owner==(os.getpid(),threading.get_ident()),'ntfs.native_durability_owner_changed')
+                if identity is not None:
+                    info=os.fstat(fd)
+                    _require(identity==(info.st_dev,info.st_ino),'ntfs.original_evidence_identity_mismatch')
+                os.close(fd)
+            except BaseException as error:
+                if primary is None:primary=error
+                else:
+                    try:primary.add_note('Native publication secondary directory close: '+type(error).__name__)
+                    except BaseException:pass
+    if primary is not None:raise primary
+    return result
+
+
+class _RegularTreeReadError(RuntimeError):
+    def __init__(self, code, details=None):
+        self.code = code
+        self.details = {} if details is None else details
+        super().__init__(code + ('' if not self.details else ' ' + json.dumps(self.details, sort_keys=True, separators=(',', ':'))))
+
+def _tree_require(value, code, details=None):
+    if not value:
+        raise _RegularTreeReadError(code, details)
+
+class _RegularTreeOSIO:
+    def lstat(self, path):
+        return path.lstat()
+
+    def names(self, path, maximum):
+        found = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                _tree_require(len(found) < maximum, 'file_tree.entry_limit')
+                found.append(entry.name)
+        return tuple(found)
+
+    def open_read(self, path):
+        return os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0)
+                       | getattr(os, 'O_NOINHERIT', 0) | getattr(os, 'O_CLOEXEC', 0)
+                       | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+
+    def fstat(self, handle):
+        return os.fstat(handle)
+
+    def read(self, handle, count):
+        return os.read(handle, count)
+
+    def close(self, handle):
+        os.close(handle)
+
+class _RegularTreeCountedIO:
+    def __init__(self, io, deadline_ns):
+        self.io = io
+        self.deadline_ns = deadline_ns
+        self.counts = {name: 0 for name in ('lstat', 'names', 'open_read', 'fstat', 'read', 'close')}
+
+    def remaining(self):
+        _tree_require(time.monotonic_ns() < self.deadline_ns, 'file_tree.deadline')
+
+    def call(self, name, *args):
+        # Cleanup is compulsory even after the fixed operation deadline. A late
+        # close is a failed observation, never a successful extended operation.
+        if name != 'close':
+            self.remaining()
+        self.counts[name] += 1
+        value = getattr(self.io, name)(*args)
+        self.remaining()
+        return value
+
+def _tree_ordinary(info, *, directory):
+    _tree_require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400,
+                  'file_tree.reparse_forbidden')
+    _tree_require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode),
+                  'file_tree.ordinary_type_required')
+    if not directory:
+        _tree_require(info.st_nlink == 1, 'file_tree.hardlink_forbidden')
+
+def _tree_identity(info, windows):
+    fields = (info.st_dev, info.st_ino, info.st_mode)
+    if windows:
+        _tree_require(hasattr(info, 'st_birthtime_ns'), 'file_tree.birthtime_required')
+        fields += (info.st_birthtime_ns,)
+    return fields
+
+def _tree_state(info, windows):
+    # Full mode and ctime remain in every SAME-METHOD before/after comparison.
+    return _tree_identity(info, windows) + (info.st_nlink, info.st_size, info.st_mtime_ns,
+        info.st_ctime_ns, getattr(info, 'st_file_attributes', 0), getattr(info, 'st_reparse_tag', 0))
+
+def _tree_cross(info, windows):
+    # Measured CPython3.12 Windows lstat/fstat executable-bit and ctime variance
+    # is confined to this CROSS-METHOD comparison. Identity is not normalized.
+    identity = ((info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_birthtime_ns)
+                if windows else _tree_identity(info, windows))
+    return identity + (info.st_nlink, info.st_size, info.st_mtime_ns)
+
+def _tree_expected(document, maximum_files, maximum_file_bytes, maximum_total_bytes):
+    if document is None:
+        return None
+    _tree_require(type(document) is dict and len(document) <= maximum_files, 'file_tree.manifest_shape')
+    checked = {}
+    total = 0
+    for name, row in document.items():
+        _tree_require(type(name) is str and name and '\\' not in name and ':' not in name and '\x00' not in name,
+                      'file_tree.relative_member_required')
+        path = PurePosixPath(name)
+        _tree_require(not path.is_absolute() and str(path) == name
+                      and all(part not in {'', '.', '..'} for part in path.parts), 'file_tree.member_escape')
+        _tree_require(type(row) is dict and set(row) == {'bytes', 'sha256'}
+                      and type(row['bytes']) is int and 0 <= row['bytes'] <= maximum_file_bytes
+                      and type(row['sha256']) is str and len(row['sha256']) == 71
+                      and row['sha256'].startswith('sha256:')
+                      and all(ch in '0123456789abcdef' for ch in row['sha256'][7:]), 'file_tree.manifest_row')
+        total += row['bytes']
+        _tree_require(total <= maximum_total_bytes, 'file_tree.total_limit')
+        checked[name] = dict(row)
+    _tree_require(len({name.casefold() for name in checked}) == len(checked), 'file_tree.case_alias')
+    return checked
+
+def _hash_regular_tree_member(io, path, before, expected, windows):
+    _tree_ordinary(before, directory=False)
+    _tree_require(before.st_size == expected['bytes'], 'file_tree.initial_length')
+    handle = None
+    primary = finalization = opened_after = None
+    size = 0
+    hasher = hashlib.sha256()
+    try:
+        # Store the owned handle BEFORE the post-open deadline check. An open
+        # returning after the deadline must still be closed exactly once.
+        io.remaining()
+        io.counts['open_read'] += 1
+        handle = io.io.open_read(path)
+        io.remaining()
+        opened_before = io.call('fstat', handle)
+        _tree_ordinary(opened_before, directory=False)
+        _tree_require(_tree_cross(before, windows) == _tree_cross(opened_before, windows),
+                      'file_tree.named_opened_identity', {'named_cross': _tree_cross(before, windows),
+                                                        'opened_cross': _tree_cross(opened_before, windows)})
+        while True:
+            part = io.call('read', handle, min(65536, expected['bytes'] - size + 1))
+            _tree_require(type(part) is bytes, 'file_tree.binary_read_required')
+            if not part:
+                break
+            size += len(part)
+            _tree_require(size <= expected['bytes'], 'file_tree.grew_during_read')
+            hasher.update(part)
+        opened_after = io.call('fstat', handle)
+        _tree_ordinary(opened_after, directory=False)
+        _tree_require(_tree_state(opened_before, windows) == _tree_state(opened_after, windows),
+                      'file_tree.opened_changed')
+        _tree_require(size == expected['bytes'], 'file_tree.complete_length')
+        if expected['sha256'] is not None:
+            _tree_require('sha256:' + hasher.hexdigest() == expected['sha256'], 'file_tree.complete_hash')
+    except BaseException as error:
+        primary = error
+    finally:
+        if handle is not None:
+            owned, handle = handle, None
+            try:
+                io.call('close', owned)
+            except BaseException as error:
+                finalization = error
+    if primary is not None and finalization is not None:
+        raise BaseExceptionGroup('file-tree read and owned-handle finalization failed', [primary, finalization])
+    if primary is not None:
+        raise primary
+    if finalization is not None:
+        raise finalization
+    after = io.call('lstat', path)
+    _tree_ordinary(after, directory=False)
+    _tree_require(_tree_state(before, windows) == _tree_state(after, windows)
+                  and _tree_cross(before, windows) == _tree_cross(opened_after, windows) == _tree_cross(after, windows),
+                  'file_tree.named_changed')
+    return {'bytes': size, 'sha256': 'sha256:' + hasher.hexdigest()}, _tree_state(after, windows)
+
+def _snapshot_regular_file_tree(root, *, expected_files, maximum_files, maximum_directories,
+                                maximum_file_bytes, maximum_total_bytes, deadline_ns,
+                                _io=None, _windows=None):
+    """Bounded generic no-follow identity census and COMPLETE byte hashes.
+
+    expected_files=None captures a fresh bounded snapshot; callers still own
+    comparison/admission policy. A supplied manifest requires exact membership,
+    sizes and hashes. Every observation gets fresh IO. No cross-run cache.
+    The caller supplies one existing absolute monotonic deadline; it is never
+    renewed. Post-failure handle closure is compulsory and cannot rescue expiry.
+    """
+    for value in (maximum_files, maximum_directories, maximum_file_bytes, maximum_total_bytes, deadline_ns):
+        _tree_require(type(value) is int and value > 0, 'file_tree.invalid_bound')
+    _tree_require(maximum_files <= 8192 and maximum_directories <= 8192
+                  and maximum_file_bytes <= 16 * 1024**2 and maximum_total_bytes <= 256 * 1024**2,
+                  'file_tree.boundary_limit')
+    root = Path(root)
+    _tree_require(root.is_absolute() and root == Path(os.path.abspath(root)), 'file_tree.absolute_root')
+    windows = os.name == 'nt' if _windows is None else _windows
+    _tree_require(type(windows) is bool, 'file_tree.fixed_host_method')
+    wanted = _tree_expected(expected_files, maximum_files, maximum_file_bytes, maximum_total_bytes)
+    io = _RegularTreeCountedIO(_RegularTreeOSIO() if _io is None else _io, deadline_ns)
+    io.remaining()
+    anchors = {}
+    directories = {}
+    memberships = {}
+    named_before = {}
+    observed = {}
+    file_states = {}
+    total = 0
+    for path in (*reversed(root.parents), root):
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=True)
+        anchors[path] = _tree_identity(info, windows)
+        if path == root:
+            directories[path] = _tree_state(info, windows)
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        names = io.call('names', directory, maximum_files + maximum_directories)
+        _tree_require(type(names) is tuple and len(names) <= maximum_files + maximum_directories
+                      and len(names) == len(set(names)), 'file_tree.entry_limit')
+        _tree_require(all(type(name) is str and name not in {'', '.', '..'} and '/' not in name
+                          and '\\' not in name and ':' not in name and '\x00' not in name for name in names),
+                      'file_tree.ordinary_component')
+        _tree_require(len({name.casefold() for name in names}) == len(names), 'file_tree.case_alias')
+        memberships[directory] = frozenset(names)
+        for name in sorted(names, key=lambda value: value.encode('utf-8')):
+            path = directory / name
+            info = io.call('lstat', path)
+            if stat.S_ISDIR(info.st_mode):
+                _tree_ordinary(info, directory=True)
+                _tree_require(path not in directories and len(directories) < maximum_directories,
+                              'file_tree.directory_limit')
+                directories[path] = _tree_state(info, windows)
+                pending.append(path)
+                continue
+            _tree_ordinary(info, directory=False)
+            relative = path.relative_to(root).as_posix()
+            _tree_require(relative not in named_before and len(named_before) < maximum_files,
+                          'file_tree.file_limit')
+            _tree_require(0 <= info.st_size <= maximum_file_bytes, 'file_tree.file_byte_limit')
+            total += info.st_size
+            _tree_require(total <= maximum_total_bytes, 'file_tree.total_limit')
+            if wanted is not None:
+                _tree_require(relative in wanted and info.st_size == wanted[relative]['bytes'],
+                              'file_tree.initial_membership_length')
+            named_before[relative] = info
+    if wanted is not None:
+        _tree_require(set(named_before) == set(wanted), 'file_tree.initial_membership')
+    # ALL directory/file identities precede the first hash, including siblings.
+    for relative in sorted(named_before, key=lambda value: value.encode('utf-8')):
+        before = named_before[relative]
+        expected = ({'bytes': before.st_size, 'sha256': None} if wanted is None else wanted[relative])
+        try:
+            row, after = _hash_regular_tree_member(io, root / PurePosixPath(relative), before, expected, windows)
+        except BaseException as error:
+            error.add_note('file_tree_context=' + json.dumps({'relative_file': relative,
+                'operation_counts': dict(io.counts)}, sort_keys=True, separators=(',', ':')))
+            raise
+        observed[relative] = row
+        file_states[root / PurePosixPath(relative)] = after
+    if wanted is not None:
+        _tree_require(observed == wanted, 'file_tree.final_manifest')
+    for path, snapshot in directories.items():
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=True)
+        _tree_require(_tree_state(info, windows) == snapshot, 'file_tree.directory_changed')
+        names = io.call('names', path, maximum_files + maximum_directories)
+        _tree_require(type(names) is tuple and len(names) == len(set(names))
+                      and frozenset(names) == memberships[path], 'file_tree.membership_changed')
+    for path, snapshot in file_states.items():
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=False)
+        _tree_require(_tree_state(info, windows) == snapshot, 'file_tree.file_changed_after_hash')
+    for path, snapshot in anchors.items():
+        info = io.call('lstat', path)
+        _tree_ordinary(info, directory=True)
+        _tree_require(_tree_identity(info, windows) == snapshot, 'file_tree.ancestor_changed')
+    io.remaining()
+    return {'scope': 'READ_ONLY_REGULAR_FILE_TREE_SNAPSHOT_NOT_PHASE_EVIDENCE', 'files': observed,
+        'file_count': len(observed), 'directory_count': len(directories), 'byte_count': total,
+        'operation_counts': dict(io.counts),
+        'all_opened_file_descriptors_closed': io.counts['open_read'] == io.counts['close'],
+        'deadline_ns': deadline_ns, 'cross_run_cache': False}
+
+
+"""Generic ext4 input staging IO; inserted in the existing Evidence owner."""
+
+class _InputStagePosixIO:
+    """Only this existing IO-owner module performs physical staging writes."""
+    def lstat(self,path):return path.lstat()
+    def fstat(self,fd):return os.fstat(fd)
+    def open_root(self,path):return os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    def child_stat(self,parent,name):return os.stat(name,dir_fd=parent,follow_symlinks=False)
+    def mkdir(self,parent,name):os.mkdir(name,0o700,dir_fd=parent)
+    def directory(self,parent,name):return os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
+    def file(self,parent,name):return os.open(name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+    def write(self,fd,raw):return os.write(fd,raw)
+    def rewind(self,fd):return os.lseek(fd,0,os.SEEK_SET)
+    def read(self,fd,count):return os.read(fd,count)
+    def flush(self,fd):os.fsync(fd)
+    def close(self,fd):os.close(fd)
+    def uid(self):return os.geteuid()
+
+
+class _OwnedInputStageSink:
+    """One owned generic preparation subtree, never a receipt or write grant.
+
+    Policy/contract/input-scope validation stays in input_stage.py. The sink
+    owns exclusive descriptor-relative files, complete readback, flush/close,
+    and the existing installed preparation directory identity. No deletion.
+    """
+    def __init__(self,root,expected_identity,stage_name,deadline_ns,*,_io=None):
+        import time,threading
+        self.owner=(os.getpid(),threading.get_ident())
+        self._clock=time.monotonic_ns;self.deadline=deadline_ns
+        self.io=_InputStagePosixIO()if _io is None else _io
+        self.root=Path(root);self.name=stage_name;self.opened=[];self.directories={};self.current=None
+        self.rows=[];self.consumed=False;self.close_attempted=False;self.root_state=None
+        self.primary=None;self.ancestors=[]
+        if (not self.root.is_absolute()or type(stage_name)is not str
+            or re.fullmatch('phase-native-input-[0-9a-f]{32}',stage_name)is None
+            or type(expected_identity)is not dict or set(expected_identity)!={'device','inode'}
+            or type(expected_identity['device'])is not int or expected_identity['device']<0
+            or type(expected_identity['inode'])is not int or expected_identity['inode']<=0):
+            raise PhaseError('input_stage.invalid_preparation_binding')
+        self.expected=(expected_identity['device'],expected_identity['inode'])
+        try:
+            self._time()
+            for path in (*reversed(self.root.parents),self.root):
+                info=self.io.lstat(path)
+                if not stat.S_ISDIR(info.st_mode)or stat.S_ISLNK(info.st_mode):raise PhaseError('input_stage.preparation_link')
+                self.ancestors.append((path,self._ancestor_identity(info)))
+            before=self.io.lstat(self.root)
+            if self._identity(before)!=self.expected or before.st_uid!=self.io.uid()or before.st_mode&0o022:
+                raise PhaseError('input_stage.preparation_identity')
+            fd=self.io.open_root(self.root)
+            self.rootfd=self._owned(fd,None,None,True)
+            if self._identity(self.io.fstat(fd))!=self.expected:raise PhaseError('input_stage.preparation_identity')
+            self.io.mkdir(self.rootfd,self.name)
+            self.stagefd=self._owned(self.io.directory(self.rootfd,self.name),self.rootfd,self.name,True)
+            self.directories['']=self.stagefd
+        except BaseException as primary:
+            self.abort(primary)
+
+    @staticmethod
+    def _identity(info):return info.st_dev,info.st_ino
+
+    @staticmethod
+    def _ancestor_identity(info):return info.st_dev,info.st_ino,info.st_mode,info.st_uid
+
+    def _check_ancestors(self):
+        for path,expected in self.ancestors:
+            info=self.io.lstat(path)
+            if (not stat.S_ISDIR(info.st_mode)or stat.S_ISLNK(info.st_mode)
+                or self._ancestor_identity(info)!=expected):raise PhaseError('input_stage.preparation_ancestor_changed')
+
+    def _time(self):
+        import threading
+        if self.owner!=(os.getpid(),threading.get_ident()):raise PhaseError('input_stage.preparation_owner_changed')
+        if type(self.deadline)is not int or self._clock()>=self.deadline:raise PhaseError('input_stage.deadline')
+
+    def _owned(self,fd,parent,name,directory):
+        # Retain first, query second. Cleanup can never lose a successful open.
+        record={'fd':fd,'parent':parent,'name':name,'directory':directory,'identity':None,'closed':False,'close_attempted':False}
+        self.opened.append(record)
+        record['path']=self.root if parent is None else self._record(parent)['path']/name
+        info=self.io.fstat(fd);record['identity']=self._identity(info)
+        if (not(stat.S_ISDIR(info.st_mode)if directory else stat.S_ISREG(info.st_mode))
+            or info.st_uid!=self.io.uid()or info.st_mode&0o022
+            or(not directory and info.st_nlink!=1)):
+            raise PhaseError('input_stage.preparation_object')
+        self._time();self._check(record);return fd
+
+    def _record(self,fd):
+        found=[r for r in self.opened if r['fd']==fd and not r['closed']]
+        if len(found)!=1:raise PhaseError('input_stage.owned_descriptor_required')
+        return found[0]
+
+    def _owned_descriptor(self,record):
+        # Namespace drift does not make an unchanged owned descriptor foreign.
+        # A foreign/reused number must never be closed by this owner.
+        info=self.io.fstat(record['fd'])
+        if record['identity']is not None and self._identity(info)!=record['identity']:
+            raise PhaseError('input_stage.descriptor_changed')
+        return info
+
+    def _check(self,record):
+        info=self._owned_descriptor(record)
+        if (not(stat.S_ISDIR(info.st_mode)if record['directory']else stat.S_ISREG(info.st_mode))
+            or info.st_uid!=self.io.uid()or info.st_mode&0o022
+            or(not record['directory']and info.st_nlink!=1)):
+            raise PhaseError('input_stage.preparation_object_changed')
+        if record['parent']is not None:
+            self._check(self._record(record['parent']))
+            named=self.io.child_stat(record['parent'],record['name'])
+            if self._identity(named)!=record['identity']or stat.S_ISLNK(named.st_mode):
+                raise PhaseError('input_stage.preparation_name_changed')
+        else:
+            self._check_ancestors()
+            if self._identity(self.io.lstat(self.root))!=self.expected:
+                raise PhaseError('input_stage.preparation_identity')
+        return info
+
+    def _check_closed_names(self):
+        self._check_ancestors()
+        for record in self.opened:
+            self._time();info=self.io.lstat(record['path'])
+            if (self._identity(info)!=record['identity']or stat.S_ISLNK(info.st_mode)
+                or not(stat.S_ISDIR(info.st_mode)if record['directory']else stat.S_ISREG(info.st_mode))
+                or info.st_uid!=self.io.uid()or info.st_mode&0o022
+                or(not record['directory']and info.st_nlink!=1)):
+                raise PhaseError('input_stage.preparation_name_changed')
+
+    def _directory(self,relative):
+        if relative in self.directories:return self.directories[relative]
+        parts=relative.split('/');parent_relative='/'.join(parts[:-1]);parent=self._directory(parent_relative)
+        self._time();self._check(self._record(parent));self.io.mkdir(parent,parts[-1])
+        fd=self._owned(self.io.directory(parent,parts[-1]),parent,parts[-1],True)
+        self.directories[relative]=fd;return fd
+
+    def begin_member(self,index,path,length):
+        from pathlib import PurePosixPath
+        self._time()
+        value=PurePosixPath(path)
+        if (self.consumed or self.current is not None or type(index)is not int or index!=len(self.rows)
+            or type(path)is not str or str(value)!=path or value.is_absolute()
+            or any(p in {'','.','..'}or'\\'in p or':'in p or'\x00'in p for p in value.parts)
+            or type(length)is not int or not 0<=length<=2*1024**3):
+            raise PhaseError('input_stage.invalid_member')
+        # All payloads are below one new owned subtree; policy selected paths
+        # already passed the closed bundle/file grammar before sink creation.
+        relative='payload/'+path;parent_relative='/'.join(relative.split('/')[:-1])
+        parent=self._directory(parent_relative);leaf=value.name
+        self._check(self._record(parent));fd=self._owned(self.io.file(parent,leaf),parent,leaf,False)
+        self.current={'fd':fd,'index':index,'path':path,'length':length,'offset':0,'hash':hashlib.sha256()}
+
+    def write(self,raw):
+        self._time();current=self.current
+        if (self.consumed or current is None or type(raw)is not bytes or not 0<len(raw)<=256*1024
+            or current['offset']+len(raw)>current['length']):raise PhaseError('input_stage.write_bound')
+        offset=0
+        while offset<len(raw):
+            self._time();self._check(self._record(current['fd']))
+            count=self.io.write(current['fd'],raw[offset:])
+            if type(count)is not int or not 0<count<=len(raw)-offset:raise PhaseError('input_stage.write_no_progress')
+            offset+=count;self._time()
+        current['hash'].update(raw);current['offset']+=len(raw)
+
+    def _close_one(self,record):
+        # Consume before close. Never retry an ambiguous close. A changed
+        # descriptor is not ours to close; retain failure for the caller.
+        if record['close_attempted']:raise PhaseError('input_stage.descriptor_close_consumed')
+        if record['identity']is not None:self._owned_descriptor(record)
+        record['close_attempted']=True
+        self.io.close(record['fd'])
+        record['closed']=True
+
+    def finish_member(self,expected):
+        self._time();current=self.current
+        if current is None or current['offset']!=current['length']:raise PhaseError('input_stage.member_incomplete')
+        actual={'path':current['path'],'length':current['offset'],'digest':'sha256:'+current['hash'].hexdigest()}
+        if actual!=expected:raise PhaseError('input_stage.member_digest')
+        record=self._record(current['fd']);self._check(record);self.io.flush(current['fd']);self._time()
+        if self.io.rewind(current['fd'])!=0:raise PhaseError('input_stage.readback_seek')
+        observed=hashlib.sha256();length=0
+        while True:
+            self._time();raw=self.io.read(current['fd'],min(256*1024,current['length']-length+1))
+            if not raw:break
+            length+=len(raw)
+            if length>current['length']:raise PhaseError('input_stage.readback_length')
+            observed.update(raw)
+        if length!=current['length']or'sha256:'+observed.hexdigest()!=actual['digest']:
+            raise PhaseError('input_stage.readback_digest')
+        self._check(record);self._close_one(record);self._time()
+        self.rows.append(actual);self.current=None
+
+    def finish(self,header_digest,rows,payload_kind,preparation_binding=None):
+        self._time()
+        if self.consumed or self.current is not None or rows!=self.rows or payload_kind not in{'file','bundle'}:
+            raise PhaseError('input_stage.finish_binding')
+        self.consumed=True
+        manifest={'bundle_version':'1.0','members':rows,'total_length':sum(row['length']for row in rows)}
+        raw_manifest=canonical_bytes(manifest)
+        if payload_kind=='file':
+            if len(rows)!=1 or rows[0]['path']!='payload':raise PhaseError('input_stage.file_binding')
+            locator=self.name+'/payload/payload';expected_digest=rows[0]['digest'];expected_length=rows[0]['length']
+        else:
+            locator=self.name+'/payload';expected_digest=digest_bytes(raw_manifest);expected_length=len(raw_manifest)
+        result={'native_prepared_input_version':'1.0','header_digest':header_digest,'payload_kind':payload_kind,
+            'source_locator':locator,'expected_digest':expected_digest,'expected_length':expected_length,
+            'member_count':len(rows),'total_length':manifest['total_length'],'members':rows,
+            'source_header':preparation_binding}
+        # This marker binds prepared input only. It never preclaims its own
+        # close, process exit, authoritative completion or Phase acceptance.
+        marker=canonical_bytes(dict(result,telemetry_stage='PRE_RETURN_PREPARATION_DATA',final_acceptance=None))
+        if len(marker)>4*1024**2:raise PhaseError('input_stage.marker_bound')
+        fd=self._owned(self.io.file(self.stagefd,'input-stage.json'),self.stagefd,'input-stage.json',False)
+        offset=0
+        while offset<len(marker):
+            self._time();self._check(self._record(fd));count=self.io.write(fd,marker[offset:offset+65536])
+            if type(count)is not int or count<=0 or count>min(65536,len(marker)-offset):raise PhaseError('input_stage.marker_write')
+            offset+=count
+        self.io.flush(fd);self._close_one(self._record(fd))
+        for fd in reversed(list(self.directories.values())):
+            self._time();self._check(self._record(fd));self.io.flush(fd)
+        self.io.flush(self.rootfd);self._time();self._close_all();self._time()
+        self._check_closed_names();self._time()
+        # The sender already retains its exact header. Do not duplicate that
+        # full inventory in a <=2MiB ACK alongside 1024 long member paths.
+        return dict({key:value for key,value in result.items()if key!='source_header'},
+            owned_preparation_descriptors_closed=True)
+
+    def _close_all(self):
+        if self.close_attempted:raise PhaseError('input_stage.close_consumed')
+        self.close_attempted=True;errors=[]
+        for record in reversed(self.opened):
+            if record['close_attempted']:continue
+            try:self._close_one(record)
+            except BaseException as error:errors.append(error)
+        if errors:raise BaseExceptionGroup('input staging descriptor finalization failed',errors)
+
+    def abort(self,primary):
+        try:
+            if not self.close_attempted:self._close_all()
+        except BaseException as finalization:
+            raise BaseExceptionGroup('input staging and finalization failed',[primary,finalization])
+        raise primary
+
+
+class _InputStageFrames:
+    """Finite raw-byte stdio framing owned by the existing Evidence IO module.
+
+    This is separate from control-only NativeChannel. Inherited 0/1 are already
+    made nonblocking by their fixed entrypoint; they are borrowed, never closed,
+    duplicated, reopened or switched to another mode here.
+    """
+    def __init__(self,deadline_ns):
+        import time,threading
+        self.owner=(os.getpid(),threading.get_ident());self.deadline=deadline_ns
+        self.failed=False;self.sealed=False;self.busy=False;self.identities=tuple(self._pipe(fd)for fd in(0,1))
+        self._time()
+
+    @staticmethod
+    def _pipe(fd):
+        import fcntl
+        info=os.fstat(fd);flags=fcntl.fcntl(fd,fcntl.F_GETFL)
+        if (not stat.S_ISFIFO(info.st_mode)or os.isatty(fd)
+            or flags&os.O_ACCMODE!=(os.O_RDONLY if fd==0 else os.O_WRONLY)
+            or not flags&os.O_NONBLOCK):raise PhaseError('input_stage.owned_stdio_required')
+        return info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode)
+
+    def _time(self):
+        import time,threading
+        if self.owner!=(os.getpid(),threading.get_ident())or type(self.deadline)is not int or time.monotonic_ns()>=self.deadline:
+            raise PhaseError('input_stage.deadline')
+
+    def _fd(self,fd):
+        self._time()
+        if self.failed or self.sealed or self._pipe(fd)!=self.identities[fd]:raise PhaseError('input_stage.stdio_changed')
+        return fd
+
+    def _ready(self,fd,writing):
+        import select,time
+        poll=select.poll();poll.register(self._fd(fd),select.POLLOUT if writing else select.POLLIN)
+        while True:
+            self._time();left=self.deadline-time.monotonic_ns()
+            if poll.poll(min(100,max(1,left//1_000_000))):return
+
+    def _read(self,count):
+        out=bytearray()
+        while len(out)<count:
+            self._ready(0,False)
+            try:part=os.read(self._fd(0),min(65536,count-len(out)))
+            except BlockingIOError:continue
+            if not part:raise PhaseError('input_stage.truncated_stream')
+            out.extend(part);self._time()
+        return bytes(out)
+
+    def receive_frame(self,maximum_bytes):
+        if self.busy:raise PhaseError('input_stage.frame_reentrant')
+        self.busy=True
+        try:
+            if type(maximum_bytes)is not int or not 0<maximum_bytes<=2*1024**2:raise PhaseError('input_stage.frame_bound')
+            header=self._read(9)
+            if re.fullmatch(b'[0-9a-f]{8}\n',header)is None:raise PhaseError('input_stage.frame_header')
+            length=int(header[:8],16)
+            if not 0<length<=maximum_bytes:raise PhaseError('input_stage.frame_bound')
+            raw=self._read(length)
+            if self._read(1)!=b'\n':raise PhaseError('input_stage.frame_terminator')
+            self._time();return raw
+        except BaseException:
+            self.failed=True;raise
+        finally:self.busy=False
+
+    def send_frame(self,raw):
+        if self.busy:raise PhaseError('input_stage.frame_reentrant')
+        self.busy=True
+        try:
+            if type(raw)is not bytes or not 0<len(raw)<=2*1024**2:raise PhaseError('input_stage.frame_bound')
+            data=f'{len(raw):08x}\n'.encode()+raw+b'\n';offset=0
+            while offset<len(data):
+                self._ready(1,True)
+                try:count=os.write(self._fd(1),data[offset:offset+65536])
+                except BlockingIOError:continue
+                if count<=0:raise PhaseError('input_stage.frame_no_progress')
+                offset+=count;self._time()
+        except BaseException:
+            self.failed=True;raise
+        finally:self.busy=False
+
+    def seal(self):
+        if self.sealed:raise PhaseError('input_stage.frame_consumed')
+        self.sealed=True
+
+
+@contextmanager
+def _opened_owned_private_directory(path, expected_identity):
+    """Own one checked POSIX parent FD; caller borrows it, never closes it.
+
+    Identity is verified BEFORE publication. A substituted name cannot select
+    a different directory inode for the borrowed-fd writer. Later name drift
+    can still reject a publication into the original owned directory; it does
+    not mean that publication never happened. No pathname write or retry here.
+    """
+    def require(value, code):
+        if not value:raise PhaseError(code)
+    require(os.name=='posix' and type(expected_identity) is tuple
+        and len(expected_identity)==2 and all(type(value) is int and value>=0 for value in expected_identity),
+        'evidence.private_directory_binding')
+    path=Path(path)
+    require(path.is_absolute(),'evidence.private_directory_binding')
+    descriptor=None;opened_identity=None;yielded=False;primary=None;finalization=[]
+    def identity(info):return info.st_dev,info.st_ino
+    def private(info):
+        return (stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and not getattr(info,'st_file_attributes',0)&0x400 and info.st_uid==os.geteuid()
+            and not info.st_mode&0o077)
+    try:
+        before=path.lstat()
+        require(private(before) and identity(before)==expected_identity,'evidence.private_directory_identity')
+        descriptor=_open_pinned_directory(path)
+        # Ownership is retained before any fstat, type or binding check fails.
+        opened=os.fstat(descriptor);opened_identity=identity(opened)
+        named=path.lstat()
+        require(private(opened) and private(named)
+            and identity(before)==opened_identity==identity(named)==expected_identity,
+            'evidence.private_directory_identity')
+        yielded=True
+        yield descriptor
+    except BaseException as error:
+        primary=error
+    finally:
+        if descriptor is not None:
+            owned,descriptor=descriptor,None
+            same=True
+            if opened_identity is not None:
+                same=False
+                try:
+                    current=os.fstat(owned);same=identity(current)==opened_identity
+                    require(same,'evidence.private_directory_descriptor_changed')
+                    if yielded:require(private(current),'evidence.private_directory_identity')
+                except BaseException as error:finalization.append(error)
+            # A replaced borrowed fd must never cause closure of a foreign fd.
+            # Before yielding, even an unexpected opened inode is our own open.
+            if same:
+                try:os.close(owned)
+                except BaseException as error:finalization.append(error)
+    if primary is not None and finalization:
+        raise BaseExceptionGroup('owned parent operation and finalization failed',[primary,*finalization])
+    if primary is not None:raise primary
+    if len(finalization)==1:raise finalization[0]
+    if finalization:raise BaseExceptionGroup('owned parent finalization failed',finalization)

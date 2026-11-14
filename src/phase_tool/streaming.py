@@ -5,11 +5,12 @@ fingerprints detect ordinary drift, not an atomic snapshot of a hostile writer.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
 import stat
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryFile
 
 from .errors import PhaseError
 from .evidence import _ensure_directory_durable, _reject_existing_links
@@ -153,6 +154,46 @@ def copy_and_hash_stream(binding_id: str, input_root: Path, relative_locator: st
         # Only this invocation's private temporary link; never the retained blob.
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _verified_blob_snapshot(blob: Path, expected: tuple[str, int]):
+    """Borrow one fully verified private copy, capped at its trusted length.
+
+    This authenticates neither caller nor installation. FILE_LIMIT remains
+    unchanged; an invalid/mismatched expected binding cannot authorize I/O.
+    The shared source is never reopened during snapshot consumption.
+    """
+    if (type(expected) is not tuple or len(expected) != 2
+            or type(expected[0]) is not str or len(expected[0]) != 71
+            or not expected[0].startswith("sha256:")
+            or any(c not in "0123456789abcdef" for c in expected[0][7:])
+            or type(expected[1]) is not int or not 0 <= expected[1] <= FILE_LIMIT):
+        raise PhaseError("mechanism.content_binding_mismatch")
+    with TemporaryFile(dir=blob.parent) as snapshot:
+        source = os.open(blob, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(source)
+            if not stat.S_ISREG(opened.st_mode):
+                raise PhaseError("stream.not_regular_file")
+            if opened.st_size != expected[1]:
+                raise PhaseError("mechanism.content_binding_mismatch")
+            try:
+                captured = transfer(source, expected[1], snapshot.fileno())
+            except PhaseError as error:
+                # Preserve the existing ordinary-drift classification. A
+                # growing source now reaches its trusted cap earlier, before
+                # transfer's final fingerprint comparison could run.
+                if (error.code == "stream.limit_exceeded"
+                        and fingerprint(opened) != fingerprint(os.fstat(source))):
+                    raise PhaseError("freeze.source_changed_during_capture") from error
+                raise
+        finally:
+            os.close(source)
+        if captured != expected:
+            raise PhaseError("mechanism.content_binding_mismatch")
+        os.lseek(snapshot.fileno(), 0, os.SEEK_SET)
+        yield snapshot.fileno()
 
 
 def open_regular_target(authority) -> int:

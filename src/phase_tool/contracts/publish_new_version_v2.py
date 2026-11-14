@@ -60,16 +60,25 @@ def _absent(state: Mapping[str, Any]) -> bool:
     return state == {"exists": False, "digest": None, "length": None}
 
 
-def _classify(plan: Mapping[str, Any], root_bindings: Mapping[str, Path]) -> str:
+def _effect_states(effect: Mapping[str, Any], root_bindings: Mapping[str, Path], *, _observe=None) -> dict[str, Any]:
+    observe = _state if _observe is None else _observe
+    current_root = Path(root_bindings[effect["target"]["root_binding"]])
+    objects_root = Path(root_bindings[effect["archive_target"]["root_binding"]])
+    return {
+        "current": observe(current_root, effect["target"]["relative_locator"]),
+        "old_object": observe(objects_root, effect["archive_target"]["relative_locator"]),
+        "new_object": observe(objects_root, effect["content_object_target"]["relative_locator"]),
+    }
+
+
+def _classify(plan: Mapping[str, Any], root_bindings: Mapping[str, Path], *, _observe_effect=None) -> str:
     if plan.get("operation_intent") != "publish_new_version" or len(plan.get("effects", [])) != 1:
         return "blocked"
     effect = plan["effects"][0]
     try:
-        current_root = Path(root_bindings[effect["target"]["root_binding"]])
-        objects_root = Path(root_bindings[effect["archive_target"]["root_binding"]])
-        current = _state(current_root, effect["target"]["relative_locator"])
-        old_object = _state(objects_root, effect["archive_target"]["relative_locator"])
-        new_object = _state(objects_root, effect["content_object_target"]["relative_locator"])
+        observe = _effect_states if _observe_effect is None else _observe_effect
+        states = observe(effect, root_bindings)
+        current, old_object, new_object = states["current"], states["old_object"], states["new_object"]
     except (KeyError, PhaseError):
         return "blocked"
     current_old = _exact(current, effect["archive_digest"], effect["archive_length"])
@@ -87,8 +96,34 @@ def _classify(plan: Mapping[str, Any], root_bindings: Mapping[str, Path]) -> str
     return "blocked"
 
 
+def _postcondition_result(effect: Mapping[str, Any], states: Mapping[str, Any]):
+    """Single semantic owner, also reusable for immutable saved-proof checks."""
+    expected = {
+        "current": {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]},
+        "old_object": {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]},
+        "new_object": {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]},
+    }
+    actual = {name: states[name] for name in ("current", "old_object", "new_object")}
+    ok = actual == expected
+    return "pass" if ok else "fail", "validation.pass" if ok else "verification.result_mismatch", expected, actual, [] if ok else ["verification.result_mismatch"]
+
+
+def _validate_root_bindings(root_bindings: Mapping[str, Path]) -> None:
+    current_root = Path(root_bindings[CURRENT_ROOT_BINDING]).resolve(strict=True)
+    objects_root = Path(root_bindings[OBJECTS_ROOT_BINDING]).resolve(strict=True)
+    if current_root == objects_root:
+        raise PhaseError("publish.objects_root_not_separate")
+    for child, parent in ((objects_root, current_root), (current_root, objects_root)):
+        try:
+            child.relative_to(parent)
+        except ValueError:
+            continue
+        raise PhaseError("publish.objects_root_not_separate")
+
+
 def validate_candidate(
-    value: Mapping[str, Any], schema: Mapping[str, Any], registry: RegistrySnapshot, root_bindings: Mapping[str, Path]
+    value: Mapping[str, Any], schema: Mapping[str, Any], registry: RegistrySnapshot, root_bindings: Mapping[str, Path],
+    *, _validate_roots=None,
 ) -> tuple[str, str, Any, Any, list[str]]:
     errors = sorted(
         Draft202012Validator(schema, registry=registry.schema_registry(), format_checker=FormatChecker()).iter_errors(value),
@@ -100,42 +135,129 @@ def validate_candidate(
         safe_relative_locator(str(value["target_locator"]))
         object_locator(str(value["expected_current_digest"]))
         inline_content(value)
-        current_root = Path(root_bindings[CURRENT_ROOT_BINDING]).resolve(strict=True)
-        objects_root = Path(root_bindings[OBJECTS_ROOT_BINDING]).resolve(strict=True)
-        if current_root == objects_root:
-            raise PhaseError("publish.objects_root_not_separate")
-        for child, parent in ((objects_root, current_root), (current_root, objects_root)):
-            try:
-                child.relative_to(parent)
-            except ValueError:
-                continue
-            raise PhaseError("publish.objects_root_not_separate")
+        check_roots = _validate_root_bindings if _validate_roots is None else _validate_roots
+        check_roots(root_bindings)
     except (KeyError, PhaseError) as exc:
         code = exc.code if isinstance(exc, PhaseError) else "plan.root_binding_missing"
         return "fail", code, "publish_v2_candidate_valid", "invalid", [code]
     return "pass", "validation.pass", "publish_v2_candidate_valid", "publish_v2_candidate_valid", []
 
 
-def validate_preconditions(value: Mapping[str, Any], current_root: Path, objects_root: Path) -> tuple[str, str, Any, Any, list[str]]:
-    content = inline_content(value)
-    old_digest = str(value["expected_current_digest"])
-    new_digest = digest_bytes(content)
-    current = _state(current_root, safe_relative_locator(str(value["target_locator"])))
-    old_object = _state(objects_root, object_locator(old_digest))
-    new_object = _state(objects_root, object_locator(new_digest))
+def _precondition_result(old_digest, new_digest, new_length, current, old_object, new_object):
+    """One pure predicate for live observations and saved pre-validator claims."""
     current_old = current.get("digest") == old_digest
     if current_old and (not isinstance(current.get("length"), int) or current["length"] > _MAX_CONTENT_BYTES):
         return "fail", "publish.archive_too_large", _MAX_CONTENT_BYTES, current.get("length"), ["publish.archive_too_large"]
     old_allowed = _absent(old_object) or (old_object.get("digest") == old_digest and old_object.get("length") == current.get("length"))
-    new_allowed = _absent(new_object) or _exact(new_object, new_digest, len(content))
-    completed = _exact(current, new_digest, len(content)) and old_object.get("digest") == old_digest and new_allowed
+    new_allowed = _absent(new_object) or _exact(new_object, new_digest, new_length)
+    completed = _exact(current, new_digest, new_length) and old_object.get("digest") == old_digest and new_allowed
     if (current_old and old_allowed and new_allowed) or completed:
         return "pass", "validation.pass", "current_and_objects_safe", {"current": current, "old_object": old_object, "new_object": new_object}, []
     code = "publish.object_conflict" if not old_allowed or not new_allowed else "publish.state_conflict"
     return "fail", code, "current_old_or_completed", {"current": current, "old_object": old_object, "new_object": new_object}, [code]
 
 
+def validate_preconditions(value: Mapping[str, Any], current_root: Path, objects_root: Path, *, _observe=None) -> tuple[str, str, Any, Any, list[str]]:
+    observe = _state if _observe is None else _observe
+    content = inline_content(value)
+    old_digest = str(value["expected_current_digest"])
+    new_digest = digest_bytes(content)
+    current = observe(current_root, safe_relative_locator(str(value["target_locator"])))
+    old_object = observe(objects_root, object_locator(old_digest))
+    new_object = observe(objects_root, object_locator(new_digest))
+    return _precondition_result(old_digest,new_digest,len(content),current,old_object,new_object)
+
+
+def _saved_content_binding(intent,plan):
+    """Pure captured-candidate/effect lineage; actual blob reads belong to callers."""
+    if len(plan['effects'])!=1 or intent['inputs']!=[]:
+        raise ValueError('version2 inline input binding')
+    effect=plan['effects'][0];value=intent['candidate']['storage']['value']
+    content=inline_content(value);digest=digest_bytes(content)
+    locator=safe_relative_locator(value['target_locator'])
+    expected={
+        'kind':'publish_new_version','target':{'root_binding':'current_root','relative_locator':locator},
+        'input_binding':None,'content_source':{'kind':'captured_candidate','binding_id':None,'source_digest':digest},
+        'content_digest':digest,'content_blob_digest':digest,'content_length':len(content),
+        'content_bytes_b64':base64.b64encode(content).decode('ascii'),
+        'archive_digest':value['expected_current_digest'],
+        'archive_target':{'root_binding':'objects_root','relative_locator':object_locator(value['expected_current_digest'])},
+        'content_object_target':{'root_binding':'objects_root','relative_locator':object_locator(digest)},
+        'operation_identity':value['operation_id'],'media_type':value['media_type'],
+        'preconditions':{'existence':'present','expected_digest':value['expected_current_digest'],
+            'expected_head':None,'concurrency_token':value['expected_current_digest']},
+        'lock_scope':'publish.'+digest_bytes(locator.encode('utf-8')).removeprefix('sha256:'),
+        'durability_policy_id':'file_and_directory_synced','on_failure':'stop_and_classify'}
+    # Canonical equality prevents bool/int aliasing in lengths or nested fields.
+    from ..canonical import canonical_bytes
+    if (canonical_bytes({key:effect[key] for key in expected})!=canonical_bytes(expected)
+        or type(effect['archive_length']) is not int or not 0<=effect['archive_length']<=_MAX_CONTENT_BYTES
+        or intent['evidence']['content_blob_digests']!=[digest]):
+        raise ValueError('version2 captured content binding')
+    return content
+
+
+def _saved_precondition_expectation(identifier,item,plan):
+    """Saved claims only: no filesystem read, native context or recovery grant."""
+    if identifier=='publish_new_version.candidate_v2':
+        return 'publish_v2_candidate_valid','publish_v2_candidate_valid'
+    if identifier=='publish_new_version.result_v2':return 'prior_phases_pass',None
+    if identifier!='publish_new_version.preconditions_v2':raise ValueError('unsupported version2 saved validator')
+    effect=plan['effects'][0];actual=item['actual']
+    if type(actual) is not dict or set(actual)!={'current','old_object','new_object'}:
+        raise ValueError('version2 saved states shape')
+    for state in actual.values():
+        if type(state) is not dict or set(state)!={'exists','digest','length'} or type(state['exists']) is not bool:
+            raise ValueError('version2 saved state shape')
+        if state['exists']:
+            digest=state['digest']
+            if (type(state['length']) is not int or not 0<=state['length']<=_MAX_CONTENT_BYTES
+                or type(digest) is not str or len(digest)!=71 or not digest.startswith('sha256:')
+                or any(c not in '0123456789abcdef' for c in digest[7:])):
+                raise ValueError('version2 saved present state')
+        elif state['digest'] is not None or state['length'] is not None:
+            raise ValueError('version2 saved absent state')
+    for name in ('current','old_object'):
+        state=actual[name]
+        if state['exists'] and state['digest']==effect['archive_digest'] and state['length']!=effect['archive_length']:
+            raise ValueError('version2 saved archive length')
+    status,code,expected,observed,blockers=_precondition_result(effect['archive_digest'],effect['content_digest'],
+        effect['content_length'],actual['current'],actual['old_object'],actual['new_object'])
+    if status!='pass' or code!='validation.pass' or blockers:raise ValueError('version2 saved state conflict')
+    return expected,observed
+
+
 class PublishNewVersionV2Hook:
+    # Trusted code-selected implementations override I/O only. Candidate and
+    # registry documents never select a callback or change Version2 semantics.
+    def _observe_state(self, root: Path, locator: str) -> dict[str, Any]:
+        return _state(root, locator)
+
+    def _validate_roots(self, root_bindings: Mapping[str, Path]) -> None:
+        _validate_root_bindings(root_bindings)
+
+    def _observe_effect(self, effect: Mapping[str, Any], root_bindings: Mapping[str, Path]) -> dict[str, Any]:
+        return _effect_states(effect, root_bindings, _observe=self._observe_state)
+
+    def _observe_result(self, effect: Mapping[str, Any], root_bindings: Mapping[str, Path]) -> dict[str, Any]:
+        # Historical Host result validation has fixed contract roles. Prior
+        # incomplete-execution classification separately uses effect labels.
+        current_root = Path(root_bindings[CURRENT_ROOT_BINDING])
+        objects_root = Path(root_bindings[OBJECTS_ROOT_BINDING])
+        return {
+            "current": self._observe_state(current_root, effect["target"]["relative_locator"]),
+            "old_object": self._observe_state(objects_root, effect["archive_target"]["relative_locator"]),
+            "new_object": self._observe_state(objects_root, effect["content_object_target"]["relative_locator"]),
+        }
+
+    def _observe_post_result(self, effect: Mapping[str, Any], root_bindings: Mapping[str, Path], *, run_id: str | None) -> dict[str, Any]:
+        del run_id
+        return self._observe_result(effect, root_bindings)
+
+    def _preconditions(self, value: Mapping[str, Any], root_bindings: Mapping[str, Path]):
+        return validate_preconditions(value, Path(root_bindings[CURRENT_ROOT_BINDING]),
+            Path(root_bindings[OBJECTS_ROOT_BINDING]), _observe=self._observe_state)
+
     def idempotency_locator(self, value: Mapping[str, Any], frozen_inputs: Mapping[str, FrozenInput], *, default: Any) -> Any:
         del frozen_inputs
         try:
@@ -159,10 +281,10 @@ class PublishNewVersionV2Hook:
         old_digest = str(value["expected_current_digest"])
         new_digest = digest_bytes(content)
         locator = safe_relative_locator(str(value["target_locator"]))
-        current = _state(Path(roots[CURRENT_ROOT_BINDING]), locator)
+        current = self._observe_state(Path(roots[CURRENT_ROOT_BINDING]), locator)
         old_length = current["length"] if current.get("digest") == old_digest else None
         if old_length is None:
-            old_state = _state(Path(roots[OBJECTS_ROOT_BINDING]), object_locator(old_digest))
+            old_state = self._observe_state(Path(roots[OBJECTS_ROOT_BINDING]), object_locator(old_digest))
             old_length = old_state["length"] if old_state.get("digest") == old_digest else None
         if not isinstance(old_length, int) or old_length > _MAX_CONTENT_BYTES:
             raise PhaseError("publish.archive_too_large")
@@ -208,9 +330,9 @@ class PublishNewVersionV2Hook:
         del frozen_inputs, evidence_root
         if identifier == "publish_new_version.candidate_v2":
             schema = registry.schema_document(contract.document["candidate"]["schema_ref"], contract.document["candidate"]["schema_digest"])
-            return validate_candidate(value, schema, registry, root_bindings)
+            return validate_candidate(value, schema, registry, root_bindings, _validate_roots=self._validate_roots)
         if identifier == "publish_new_version.preconditions_v2":
-            return validate_preconditions(value, Path(root_bindings[CURRENT_ROOT_BINDING]), Path(root_bindings[OBJECTS_ROOT_BINDING]))
+            return self._preconditions(value, root_bindings)
         return None
 
     def before_effect(
@@ -227,7 +349,7 @@ class PublishNewVersionV2Hook:
         if not isinstance(value, Mapping) or effect.get("kind") != "publish_new_version":
             return
         roots = root_bindings or {}
-        status, code, *_ = validate_preconditions(value, Path(roots[CURRENT_ROOT_BINDING]), Path(roots[OBJECTS_ROOT_BINDING]))
+        status, code, *_ = self._preconditions(value, roots)
         if status != "pass":
             raise PhaseError(code)
 
@@ -243,18 +365,8 @@ class PublishNewVersionV2Hook:
         if identifier != "publish_new_version.result_v2":
             return None
         effect = effect_plan["effects"][0]
-        current = _state(Path(root_bindings[CURRENT_ROOT_BINDING]), effect["target"]["relative_locator"])
-        objects = Path(root_bindings[OBJECTS_ROOT_BINDING])
-        old_object = _state(objects, effect["archive_target"]["relative_locator"])
-        new_object = _state(objects, effect["content_object_target"]["relative_locator"])
-        expected = {
-            "current": {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]},
-            "old_object": {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]},
-            "new_object": {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]},
-        }
-        actual = {"current": current, "old_object": old_object, "new_object": new_object}
-        ok = actual == expected
-        return "pass" if ok else "fail", "validation.pass" if ok else "verification.result_mismatch", expected, actual, [] if ok else ["verification.result_mismatch"]
+        states = self._observe_post_result(effect, root_bindings, run_id=effect_plan.get("run_id"))
+        return _postcondition_result(effect, states)
 
     def inspect_result(self, data: bytes, current_digest: str, root: Path, receipt_digest: str | None, registry: RegistrySnapshot, evidence_root: Path | None = None) -> dict[str, Any]:
         del data, current_digest, root, receipt_digest, registry, evidence_root
@@ -277,10 +389,8 @@ class PublishNewVersionV2Hook:
             raise PhaseError("inspection.effect_receipts_mismatch")
         effect_receipt = receipts[0]
         roots = root_bindings or {}
-        current = _state(Path(roots[CURRENT_ROOT_BINDING]), effect["target"]["relative_locator"])
-        objects = Path(roots[OBJECTS_ROOT_BINDING])
-        old_object = _state(objects, effect["archive_target"]["relative_locator"])
-        new_object = _state(objects, effect["content_object_target"]["relative_locator"])
+        states = self._observe_result(effect, roots)
+        current, old_object, new_object = states["current"], states["old_object"], states["new_object"]
         if current != {"exists": True, "digest": effect["content_digest"], "length": effect["content_length"]}:
             raise PhaseError("inspection.target_mismatch", effect["target"]["relative_locator"])
         if old_object != {"exists": True, "digest": effect["archive_digest"], "length": effect["archive_length"]}:
@@ -302,11 +412,11 @@ class PublishNewVersionV2Hook:
         plan = parse_json_bytes(read_evidence_bytes(plan_path))
         if intent.get("effect_plan_digest") != profile_digest("effect-plan", plan):
             return "blocked"
-        return _classify(plan, root_bindings)
+        return _classify(plan, root_bindings, _observe_effect=self._observe_effect)
 
     def inspect_missing_receipt_result(self, plan: Mapping[str, Any], root_bindings: Mapping[str, Path], registry: RegistrySnapshot) -> str:
         del registry
-        return _classify(plan, root_bindings)
+        return _classify(plan, root_bindings, _observe_effect=self._observe_effect)
 
 
 def create_contract_hook() -> PublishNewVersionV2Hook:

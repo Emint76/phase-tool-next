@@ -1,0 +1,441 @@
+"""Fixed isolated native candidate startup and existing Core role forwarding.
+
+One accepted installation supplies exact runtime, contract, root and admission
+bytes. Request data cannot select a provider, registry or executable. External
+deployment acceptance remains required; this resource confers no qualification.
+Existing Core, worker, evidence, version and recovery semantics remain intact.
+"""
+import base64
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import zipfile
+
+
+def need(value):
+    if not value:raise RuntimeError('Native accepted startup unavailable')
+
+
+def fixed_startup_version(outer):
+    common={'native_fixed_startup_version','config_base64','config_digest','manifest_base64',
+        'manifest_digest','dependency_roots'}
+    need(type(outer) is dict)
+    version=outer.get('native_fixed_startup_version')
+    need((version=='1.1' and set(outer)==common|{'experimental_admission_base64'})
+        or (version in {'1.2','4.0'}and set(outer)==common)
+        or (version in {'2.0','3.0'} and set(outer)==common|{'owner_directory_fixture_base64'}))
+    return version
+
+
+def fixed_startup():
+    need(sys.flags.isolated and sys.flags.no_site and not sys.flags.optimize
+        and sys.dont_write_bytecode and sys.implementation.name=='cpython')
+    # This is installation-owned configuration, NEVER an operation argument.
+    # Its acceptance/immutability is an explicit external deployment prerequisite.
+    path=Path(__file__).absolute().parent/'native-phase.json'
+    need(path.is_file() and not path.is_symlink() and path.stat().st_size<=2*1024**2)
+    outer=json.loads(path.read_bytes())
+    version=fixed_startup_version(outer)
+    config_raw=base64.b64decode(outer['config_base64'],validate=True)
+    manifest_raw=base64.b64decode(outer['manifest_base64'],validate=True)
+    need('sha256:'+hashlib.sha256(config_raw).hexdigest()==outer['config_digest']
+        and 'sha256:'+hashlib.sha256(manifest_raw).hexdigest()==outer['manifest_digest'])
+    config=json.loads(config_raw)
+    wheel=Path(config['phase_wheel'])
+    need(wheel.is_absolute() and wheel.is_file() and not wheel.is_symlink()
+        and wheel.stat().st_size<=16*1024**2)
+    raw=wheel.read_bytes()
+    need('sha256:'+hashlib.sha256(raw).hexdigest()==config['phase_wheel_digest'])
+    # Before the FIRST Phase import: source-only regular package, no duplicate
+    # or binary/pyc/native members. Standard zipimport, never a custom importer.
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        infos=archive.infolist()
+        names=[row.filename for row in infos]
+        need(len(names)==len(set(names)) and 'phase_tool/__init__.py' in names)
+        for row in infos:
+            name=row.filename
+            need(not name.startswith('/') and '\\' not in name and '..' not in name.split('/')
+                and row.file_size<=2*1024**2)
+            if name.startswith('phase_tool/'):
+                need(not row.is_dir() and not name.endswith(('.pyc','.pyo','.pyd','.so')))
+    need(not any(name=='phase_tool' or name.startswith('phase_tool.') for name in sys.modules))
+    need(type(outer['dependency_roots']) is list and all(type(p) is str and Path(p).is_absolute()
+        for p in outer['dependency_roots']))
+    # -I -S supplied only accepted CPython defaults. Additional third-party
+    # roots come from this fixed installation; every actual imported module
+    # is subsequently checked against its installed artifact digest map.
+    sys.path[:]=[str(wheel),*outer['dependency_roots'],*sys.path]
+    from phase_tool.canonical import canonical_bytes,parse_json_bytes
+    from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
+    need(canonical_bytes(parse_json_bytes(config_raw,maximum_bytes=2*1024**2))==config_raw)
+    need(canonical_bytes(parse_json_bytes(manifest_raw,maximum_bytes=2*1024**2))==manifest_raw)
+    if version=='4.0':
+        from phase_tool.mutation.ntfs.owner_directory_launch import _owner_directory_launch_binding
+        need(config.get('native_launch_version')=='4.0')
+        _owner_directory_launch_binding(config,manifest_raw,outer['manifest_digest'])
+        admission=None
+    elif version=='1.2':
+        from phase_tool.installation import _require_qualified_native_file2_manifest
+        need(config.get('native_launch_version')=='1.0')
+        _require_qualified_native_file2_manifest(manifest_raw,outer['manifest_digest'])
+        admission=None
+    else:
+        field='owner_directory_fixture_base64' if version in {'2.0','3.0'} else 'experimental_admission_base64'
+        admission_raw=base64.b64decode(outer[field],validate=True)
+        need(len(admission_raw)<=32768 and base64.b64encode(admission_raw).decode('ascii')==outer[field])
+        from phase_tool.mutation.ntfs.owner_directory_fixture import is_fixture
+        need((version in {'2.0','3.0'})==(config.get('native_launch_version')in {'2.0','3.0'})==is_fixture(admission_raw))
+        if version in {'2.0','3.0'}:
+            need(config.get('native_launch_version')==version and json.loads(admission_raw).get('experimental_admission_version')==version)
+        admission=fixed_admission(config,json.loads(manifest_raw),admission_raw)
+    return outer,config_raw,manifest_raw,_NativeAcceptedLaunch,admission
+
+
+
+
+def fixed_admission(config,manifest,raw):
+    """Closed installation-only map; actual existing factories retain their pins."""
+    from phase_tool import installation
+    from phase_tool.mutation.ntfs.experimental_file1 import _ExperimentalFile1Admission
+    from phase_tool.mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
+    from phase_tool.mutation.ntfs.experimental_version1 import _ExperimentalVersion1Admission
+    from phase_tool.mutation.ntfs.experimental_version2 import _ExperimentalVersion2Admission
+    from phase_tool.mutation.ntfs.experimental_bundle1 import _ExperimentalBundle1Admission
+    from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+    from phase_tool.mutation.ntfs.experimental_history import (
+        _ExperimentalHistoryFile1Admission,_ExperimentalHistoryVersion1Admission)
+    rows=(
+        (_ExperimentalFile1Admission,installation._native_experimental_file1_registry),
+        (_ExperimentalFile2Admission,installation._native_experimental_file2_registry),
+        (_ExperimentalVersion1Admission,installation._native_experimental_version1_registry),
+        (_ExperimentalVersion2Admission,installation._native_experimental_version2_registry),
+        (_ExperimentalBundle1Admission,installation._native_experimental_bundle1_registry),
+        (_ExperimentalBundle2AdmissionV3,installation._native_experimental_bundle2_registry_v3))
+    if config.get('native_launch_version')=='1.2':
+        rows=((_ExperimentalHistoryFile1Admission,installation._native_experimental_history_registry),
+            (_ExperimentalHistoryVersion1Admission,installation._native_experimental_history_registry))
+    semantic=json.loads(raw).get('experimental_admission_version')=='3.0'
+    if semantic:
+        from phase_tool.mutation.ntfs.owner_semantic_fixture import semantic_owner_role,semantic_owner_registry
+        from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
+    matches=[row for row in rows if manifest.get('native_read_installation_version')==row[0]._manifest_version
+        and manifest.get('contract')==(semantic_owner_contract(semantic_owner_role(row[0]))if semantic else row[0]._contract)]
+    need(len(matches)==1)
+    kind,factory=matches[0];admission=kind(raw);document=admission.document()
+    need((config.get('native_launch_version')in {'2.0','3.0'})==(document.get('experimental_admission_version')in {'2.0','3.0'}))
+    if config.get('native_launch_version')in {'2.0','3.0'}:
+        need(config['native_launch_version']==document['experimental_admission_version'])
+    registry=semantic_owner_registry(kind)if semantic else factory();contract=manifest['contract']
+    if config.get('native_launch_version')in {'2.0','3.0'}:
+        from phase_tool.mutation.ntfs.owner_directory_fixture import check_manifest
+        from phase_tool.canonical import canonical_bytes
+        need(document.get('experimental_admission_version')==config['native_launch_version'])
+        check_manifest(kind,raw,manifest,'sha256:'+hashlib.sha256(canonical_bytes(manifest)).hexdigest())
+        need(registry.digest==manifest['registry_snapshot_digest']
+            and registry.contract_bindings().get(contract['id']+'@'+contract['version'])==contract)
+        return admission
+    need(document['contract']==contract and registry.digest==manifest['registry_snapshot_digest']
+        and registry.contract_bindings().get(contract['id']+'@'+contract['version'])==contract)
+    return admission
+
+def fixed_windows_mcp_sdk_bootstrap(outer,config_raw):
+    """Fixed installation SDK bootstrap, never site/.pth or request-selected code."""
+    import ctypes,importlib.machinery,importlib.util,stat
+    need(os.name=='nt'and sys.version_info[:3]==(3,12,10))
+    need('sha256:'+hashlib.sha256(config_raw).hexdigest()==outer['config_digest'])
+    config=json.loads(config_raw);own=Path(__file__).absolute()
+    need(Path(config['windows_launcher']).is_absolute()and Path(config['windows_launcher']).absolute()==own
+        and 'sha256:'+hashlib.sha256(own.read_bytes()).hexdigest()==config['artifact_graph']['launcher_digest'])
+    need(type(outer['dependency_roots'])is list and len(outer['dependency_roots'])==3
+        and all(type(p)is str and Path(p).is_absolute()for p in outer['dependency_roots']))
+    sdk=Path(outer['dependency_roots'][0])
+    roots=[str(sdk),str(sdk/'win32'),str(sdk/'win32/lib')]
+    need(outer['dependency_roots']==roots and all(p in sys.path for p in roots))
+    need(sys.meta_path==[importlib.machinery.BuiltinImporter,importlib.machinery.FrozenImporter,
+        importlib.machinery.PathFinder])
+    need('pywin32_system32'not in sys.modules and 'pywin32_bootstrap'not in sys.modules)
+    need('sha256:'+hashlib.sha256(config_raw).hexdigest()==outer['config_digest'])
+    config=json.loads(config_raw);digests=config['dependency_file_digests']
+    sdk_manifest=sdk.parent/'WINDOWS_SDK_MANIFEST_v1.json'
+    need(sdk_manifest.is_file()and not sdk_manifest.is_symlink()and sdk_manifest.stat().st_size<=2*1024**2)
+    manifest_raw=sdk_manifest.read_bytes()
+    need('sha256:'+hashlib.sha256(manifest_raw).hexdigest()==config['artifact_graph']['windows']['runtime_manifest_digest'])
+    manifest=json.loads(manifest_raw)
+    sdk_digests={str(sdk/name):row['sha256']for name,row in manifest['files'].items()}
+    extras=set(digests)-set(sdk_digests)
+    if extras:
+        scope=own.parent/'native-input-scope.json'
+        info=scope.lstat()
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'}and extras=={str(scope)}
+            and stat.S_ISREG(info.st_mode)and info.st_nlink==1 and info.st_size<=65536
+            and not getattr(info,'st_file_attributes',0)&0x400 and not scope.is_symlink())
+        scope_raw=scope.read_bytes()
+        need('sha256:'+hashlib.sha256(scope_raw).hexdigest()==digests[str(scope)])
+    need(manifest['root']==str(sdk)and manifest['platform']=='win_amd64'
+        and manifest['python_version']=='3.12.10'
+        and manifest['versions']['pywin32']=='312'
+        and sdk_digests=={key:value for key,value in digests.items()if key not in extras})
+    def pinned(relative):
+        path=sdk/relative
+        for part in (path,*path.parents):
+            info=part.lstat()
+            need(not stat.S_ISLNK(info.st_mode)and not getattr(info,'st_file_attributes',0)&0x400)
+            if part==sdk:break
+        info=path.lstat();need(stat.S_ISREG(info.st_mode)and info.st_nlink==1
+            and info.st_size==manifest['files'][relative]['bytes']<=16*1024**2)
+        need('sha256:'+hashlib.sha256(path.read_bytes()).hexdigest()==digests[str(path)])
+        return path
+    loader_path=pinned('win32/_win32sysloader.pyd')
+    dll=pinned('pywin32_system32/pywintypes312.dll')
+    spec=importlib.util.find_spec('_win32sysloader')
+    need(spec is not None and type(spec.loader)is importlib.machinery.ExtensionFileLoader
+        and Path(spec.origin).resolve()==loader_path.resolve())
+    import _win32sysloader
+    need(Path(_win32sysloader.__spec__.origin).resolve()==loader_path.resolve())
+    found=_win32sysloader.GetModuleFilename('pywintypes312.dll')
+    if found is not None:need(Path(found).resolve()==dll.resolve())
+    # Keep process-local DLL search registration/library references for the full role lifetime.
+    # No site processing, sys.modules namespace insertion or global PATH change.
+    cookie=os.add_dll_directory(str(dll.parent))
+    globals().setdefault('_MCP_SDK_DLL_OWNERS',[]).append(cookie)
+    library=ctypes.WinDLL(str(dll),winmode=0x00000100|0x00000200|0x00000800)
+    globals()['_MCP_SDK_DLL_OWNERS'].append(library)
+    found=_win32sysloader.GetModuleFilename('pywintypes312.dll')
+    need(type(found)is str and Path(found).resolve()==dll.resolve())
+    pinned('pywin32_system32/pywintypes312.dll')
+    need('pywin32_system32'not in sys.modules and 'pywin32_bootstrap'not in sys.modules)
+    return (cookie,library)
+
+
+def receive_initial():
+    from phase_tool.canonical import canonical_bytes,parse_json_bytes
+    import time
+    deadline_ns=None
+    if os.name=='nt':
+        from phase_tool.mutation.ntfs.entrypoint import _windows_stdio
+        transport=_windows_stdio()
+        deadline_ns=time.perf_counter_ns()+30_000_000_000
+        raw,_=transport.receive_frame(deadline_ns)
+    else:
+        from phase_tool.mutation.ntfs.entrypoint import _linux_stdio_identity
+        from phase_tool.mutation.ntfs.channel import LinuxNativeChannel
+        _linux_stdio_identity()  # Own fresh stdio before lending it.
+        transport=LinuxNativeChannel('0'*32)  # Framing-only, never an observe/execute request.
+        deadline=time.monotonic()+30
+        header=transport._read(9,deadline)
+        need(re.fullmatch(b'[0-9a-f]{8}\n',header) is not None)
+        length=int(header[:8],16);need(0<length<=2*1024**2)
+        raw=transport._read(length,deadline)
+        need(transport._read(1,deadline)==b'\n' and time.monotonic()<deadline)
+        transport.seal()  # No close, flag reset, GO or peer-exit inference.
+    value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+    need(type(value) is dict and canonical_bytes(value)==raw)
+    return value,transport,deadline_ns
+
+
+
+def _input_failure_diagnostic(phase,error):
+    # Fixed operational telemetry only. Never serialize error text, paths,
+    # inputs, or an inferred command result.
+    if phase not in ('stage','execute','inspect','delivery'):phase='delivery'
+    timeout=(isinstance(error,TimeoutError) or type(error).__name__=='TimeoutExpired'
+        or getattr(error,'code',None) in ('input_stage.deadline','input_stage.deadline_cap_required',
+            'ntfs.pipe_deadline_expired','ntfs.channel_deadline_expired'))
+    value={'phase':phase,'error_class':'timeout' if timeout else 'error'}
+    if phase=='execute' and getattr(error,'code',None)=='ntfs.pipe_frame_unknown':
+        from phase_tool.errors import PhaseError
+        cause=error.__cause__
+        if type(error)is PhaseError and type(cause)is PhaseError:
+            if cause.code=='ntfs.pipe_deadline_expired':
+                from phase_tool.mutation.ntfs.windows_pipe import _input_execute_pipe_deadline_reason
+                value.update(error_class='timeout',reason=_input_execute_pipe_deadline_reason(error))
+            elif cause.code=='ntfs.pipe_eof':
+                value['reason']='eof'
+    raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode('ascii')+b'\n'
+    try:os.write(2,raw)
+    except BaseException:pass
+
+
+def _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,config_raw,manifest_raw,admission):
+    phase='stage';owner=None
+    try:
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'})
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.canonical import canonical_bytes
+        from phase_tool.mutation.ntfs.inspection_mcp import (
+            _InspectionMCPCallOwner,_native_input_cli_request,_native_staged_file_cli_request)
+        request=initial.get('request') if type(initial)is dict else None
+        staged_file=type(request)is dict and request.get('operation')=='publish_file'
+        parser=_native_staged_file_cli_request if staged_file else _native_input_cli_request
+        arguments=parser(initial)
+        owner=_InspectionMCPCallOwner(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+        from phase_tool.mutation.ntfs.input_stage import _InputOperationDeadline
+        deadline=_InputOperationDeadline(_initial_deadline_ns=initial_deadline_ns)
+        publish=owner.publish_staged_file if staged_file else owner.publish_input
+        result=publish(**arguments,_operation_deadline=deadline)
+        phase='delivery'
+        frame={'protocol':'phase.native.input.publication','version':'1.0','run_id':initial['run_id'],
+            'installation_digest':outer['manifest_digest'],'result':result,'exit_code':result['exit_code']}
+        initial_transport.send_frame(canonical_bytes(frame),initial_deadline_ns)
+        initial_transport.seal();return result['exit_code']
+    except BaseException as error:
+        if phase!='delivery' and owner is not None:phase=getattr(owner,'_input_publication_phase',phase)
+        _input_failure_diagnostic(phase,error)
+        return 50
+
+
+def main():
+    # The fixed parent spawns ONLY these literal child roles. Role values never
+    # select a module/function/command/provider/registry from request data.
+    need(len(sys.argv)==2 and sys.argv[1] in {'parent','inspect-parent','inspect-mcp','execute-mcp','recovery-mcp','reconcile-mcp','publish-bundle','publish-input','input-mcp','worker','core','inspect','observe-recovery','original','prepare-input'})
+    role=sys.argv[1]
+    need((os.name=='nt') == (role in {'parent','inspect-parent','inspect-mcp','execute-mcp','recovery-mcp','reconcile-mcp','publish-bundle','publish-input','input-mcp','worker'}))
+    outer,config_raw,manifest_raw,launch_type,admission=fixed_startup()
+    from phase_tool.canonical import canonical_bytes
+    from phase_tool.mutation.ntfs import entrypoint
+    if role=='prepare-input':
+        from phase_tool.mutation.ntfs.input_stage import run_linux_input_stage_startup
+        return run_linux_input_stage_startup(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+    if role=='input-mcp':
+        need(outer['native_fixed_startup_version']in {'3.0','4.0'})
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.mutation.ntfs.inspection_mcp import run_native_input_mcp
+        return run_native_input_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+    if role=='reconcile-mcp':
+        from phase_tool.mutation.ntfs.recovery_frontdoor import require_reconciliation_startup
+        require_reconciliation_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'],admission)
+        fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.mutation.ntfs.recovery_frontdoor_mcp import run_native_reconciliation_mcp
+        return run_native_reconciliation_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+    if role=='recovery-mcp':
+        from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+        if outer['native_fixed_startup_version']=='4.0':
+            from phase_tool.mutation.ntfs.owner_directory_launch import _require_owner_directory_recovery_startup
+            _require_owner_directory_recovery_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'])
+        else:
+            need(type(admission)is _ExperimentalBundle2AdmissionV3)
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.mutation.ntfs.bundle_recovery_mcp import run_native_recovery_mcp
+        return run_native_recovery_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+    if role=='execute-mcp':
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.mutation.ntfs.inspection_mcp import run_native_prepared_mcp
+        return run_native_prepared_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+    if role=='inspect-mcp':
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.mutation.ntfs.inspection_mcp import run_native_inspection_mcp
+        return run_native_inspection_mcp(config_bytes=config_raw,
+            expected_config_digest=outer['config_digest'],manifest_bytes=manifest_raw,
+            expected_manifest_digest=outer['manifest_digest'],_experimental_admission_context=admission)
+    initial,initial_transport,initial_deadline_ns=receive_initial()
+    if role=='publish-input':
+        return _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,config_raw,manifest_raw,admission)
+    if role=='publish-bundle':
+        # The SAME finite owner supplies Core ACK and separate fresh inspector.
+        # This delivery frame is not a receipt, journal, retry or new authority.
+        mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        from phase_tool.mutation.ntfs.inspection_mcp import (_InspectionMCPCallOwner,
+            _native_bundle_cli_request)
+        arguments=_native_bundle_cli_request(initial)
+        owner=_InspectionMCPCallOwner(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+            manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+            _experimental_admission_context=admission)
+        result=owner.publish_bundle(**arguments)
+        frame={'protocol':'phase.native.publication','version':'1.0','run_id':initial['run_id'],
+            'installation_digest':outer['manifest_digest'],'result':result,'exit_code':result['exit_code']}
+        import time
+        initial_transport.send_frame(canonical_bytes(frame),time.perf_counter_ns()+30_000_000_000)
+        initial_transport.seal()
+        return result['exit_code']
+    if role in {'parent','inspect-parent'}:
+        need(set(initial)=={'run_id','request'})
+        import secrets
+        invocation={'run_id':initial['run_id'],'request':initial['request'],
+            'channel_id':secrets.token_hex(16),'operation_nonce':secrets.token_hex(16)}
+    elif role in {'core','inspect','observe-recovery'}:
+        invocation=initial
+    elif role=='original':
+        invocation={'run_id':initial['run_id'],'channel_id':initial['channel_id'],
+            'operation_nonce':initial['operation_nonce'],'request':initial}
+    else:
+        manifest=json.loads(manifest_raw)
+        versioned=((manifest['native_read_installation_version']=='1.2'
+            and manifest['contract']['id']=='publish_new_version.v1')or
+            (manifest['native_read_installation_version']=='1.5'
+            and manifest['contract']['id']=='publish_new_version.v2'))
+        file2=(manifest['native_read_installation_version']=='1.3'
+            and manifest['contract']['id']=='file_create.v2')
+        bundle=manifest['native_read_installation_version']in {'1.6','1.9'}
+        recovery=initial.get('native_worker_original_version')=='4.0'
+        if recovery:
+            from phase_tool.mutation.ntfs.experimental_bundle2_v3 import _ExperimentalBundle2AdmissionV3
+            if outer['native_fixed_startup_version']=='4.0':
+                from phase_tool.mutation.ntfs.owner_directory_launch import _require_owner_directory_recovery_startup
+                _require_owner_directory_recovery_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'])
+            else:
+                need(type(admission)is _ExperimentalBundle2AdmissionV3)
+        context=(initial['recovery_context'] if recovery else
+            initial['projection']['context'] if bundle or file2 else
+            initial['metadata']['context'] if versioned else initial['context'])
+        invocation={'run_id':context['run_id'],'channel_id':initial['channel_id'],
+            'operation_nonce':context['operation_nonce'],'request':initial}
+    launch=launch_type(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+        manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+        invocation_bytes=canonical_bytes(invocation),
+        _inspection_only=role in {'inspect-parent','inspect','observe-recovery'},_experimental_admission_context=admission)
+    launch.check_runtime()
+    if role=='parent':
+        need(outer['native_fixed_startup_version']=='2.0'
+            and initial['request'].get('operation')=='execute')
+        from phase_tool.mutation.ntfs.g01_creation_handle_test import _G01CreationHandleTest
+        from phase_tool.mutation.ntfs.input_stage import _InputOperationDeadline,_input_operation_scope
+        token=_G01CreationHandleTest(launch,_initial_deadline_ns=initial_deadline_ns)
+        deadline=_InputOperationDeadline(_initial_deadline_ns=token.deadline_ns)
+        with _input_operation_scope(deadline):
+            result=entrypoint.run_native_parent(launch,_g01_creation_handle_test=token)
+            initial_transport.send_frame(canonical_bytes(result),deadline.deadline_ns)
+            initial_transport.seal()
+            return result['exit_code']
+    if role=='inspect-parent':
+        result=entrypoint.run_native_parent(launch)
+        import time
+        initial_transport.send_frame(canonical_bytes(result),time.perf_counter_ns()+30_000_000_000)
+        initial_transport.seal()
+        return result['exit_code']
+    if role=='worker':return entrypoint.run_native_worker(launch,initial,initial_transport,_transfer_deadline_ns=initial_deadline_ns)
+    if role=='core':return entrypoint.run_native_core(launch)
+    if role in {'inspect','observe-recovery'}:return entrypoint.run_native_inspection(launch)
+    return entrypoint.run_native_original(launch)
+
+
+if __name__=='__main__':
+    try:
+        status=main()
+    except BaseException as error:
+        # No generic CLI failure payload can claim that no mutation occurred.
+        # Caller preserves its known run and inspects; this is NOT a receipt.
+        if sys.argv[1:]==['publish-input']:
+            _input_failure_diagnostic('stage',error)
+        else:
+            try:os.write(2,b'Native delivery unresolved; inspect the known run; no retry authorized.\n')
+            except BaseException:pass
+        status=50
+    # Worker entrypoint already closed its owned streams; other roles have
+    # delivery-only stdio. No destructor is treated as worker quiescence proof.
+    raise SystemExit(status)

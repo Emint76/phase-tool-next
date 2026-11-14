@@ -1,0 +1,158 @@
+"""Private fixed file2 experiment launcher, separate from ordinary startup.
+
+Install only in an owned isolated synthetic installation. Runtime/artifact
+checks establish consistency within that installation, not lifetime protection
+against a privileged replacement of its entire namespace. No production
+qualification, default MCP entrypoint or arbitrary profile override is granted.
+"""
+import base64
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import zipfile
+
+
+def need(value):
+    if not value:raise RuntimeError('Native accepted startup unavailable')
+
+
+def fixed_startup():
+    need(sys.flags.isolated and sys.flags.no_site and not sys.flags.optimize
+        and sys.dont_write_bytecode and sys.implementation.name=='cpython')
+    # This is installation-owned configuration, NEVER an operation argument.
+    # The owned experimental installation supplies the same checked static bytes.
+    path=Path(__file__).absolute().parent/'native-phase.json'
+    need(path.is_file() and not path.is_symlink() and path.stat().st_size<=2*1024**2)
+    outer=json.loads(path.read_bytes())
+    need(type(outer) is dict and set(outer)=={'native_fixed_startup_version','config_base64',
+        'config_digest','manifest_base64','manifest_digest','dependency_roots','experimental_admission_base64'}
+        and outer['native_fixed_startup_version']=='1.0')
+    config_raw=base64.b64decode(outer['config_base64'],validate=True)
+    manifest_raw=base64.b64decode(outer['manifest_base64'],validate=True)
+    need('sha256:'+hashlib.sha256(config_raw).hexdigest()==outer['config_digest']
+        and 'sha256:'+hashlib.sha256(manifest_raw).hexdigest()==outer['manifest_digest'])
+    config=json.loads(config_raw)
+    wheel=Path(config['phase_wheel'])
+    need(wheel.is_absolute() and wheel.is_file() and not wheel.is_symlink()
+        and wheel.stat().st_size<=16*1024**2)
+    raw=wheel.read_bytes()
+    need('sha256:'+hashlib.sha256(raw).hexdigest()==config['phase_wheel_digest'])
+    # Before the FIRST Phase import: source-only regular package, no duplicate
+    # or binary/pyc/native members. Standard zipimport, never a custom importer.
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        infos=archive.infolist()
+        names=[row.filename for row in infos]
+        need(len(names)==len(set(names)) and 'phase_tool/__init__.py' in names)
+        for row in infos:
+            name=row.filename
+            need(not name.startswith('/') and '\\' not in name and '..' not in name.split('/')
+                and row.file_size<=2*1024**2)
+            if name.startswith('phase_tool/'):
+                need(not row.is_dir() and not name.endswith(('.pyc','.pyo','.pyd','.so')))
+    need(not any(name=='phase_tool' or name.startswith('phase_tool.') for name in sys.modules))
+    need(type(outer['dependency_roots']) is list and all(type(p) is str and Path(p).is_absolute()
+        for p in outer['dependency_roots']))
+    # -I -S supplied only checked CPython defaults. Additional third-party
+    # roots come from this owned installation; every actual imported module
+    # is subsequently checked against its installed artifact digest map.
+    sys.path[:]=[str(wheel),*outer['dependency_roots'],*sys.path]
+    from phase_tool.canonical import canonical_bytes,parse_json_bytes
+    from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
+    need(canonical_bytes(parse_json_bytes(config_raw,maximum_bytes=2*1024**2))==config_raw)
+    need(canonical_bytes(parse_json_bytes(manifest_raw,maximum_bytes=2*1024**2))==manifest_raw)
+    return outer,config_raw,manifest_raw,_NativeAcceptedLaunch
+
+
+def receive_initial():
+    from phase_tool.canonical import canonical_bytes,parse_json_bytes
+    import time
+    deadline_ns=None
+    if os.name=='nt':
+        from phase_tool.mutation.ntfs.entrypoint import _windows_stdio
+        transport=_windows_stdio()
+        deadline_ns=time.perf_counter_ns()+30_000_000_000
+        raw,_=transport.receive_frame(deadline_ns)
+    else:
+        from phase_tool.mutation.ntfs.entrypoint import _linux_stdio_identity
+        from phase_tool.mutation.ntfs.channel import LinuxNativeChannel
+        _linux_stdio_identity()  # Own fresh stdio before lending it.
+        transport=LinuxNativeChannel('0'*32)  # Framing-only, never an observe/execute request.
+        deadline=time.monotonic()+30
+        header=transport._read(9,deadline)
+        need(re.fullmatch(b'[0-9a-f]{8}\n',header) is not None)
+        length=int(header[:8],16);need(0<length<=2*1024**2)
+        raw=transport._read(length,deadline)
+        need(transport._read(1,deadline)==b'\n' and time.monotonic()<deadline)
+        transport.seal()  # No close, flag reset, GO or peer-exit inference.
+    value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
+    need(type(value) is dict and canonical_bytes(value)==raw)
+    return value,transport,deadline_ns
+
+
+
+def main():
+    # The fixed parent spawns ONLY these literal child roles. Role values never
+    # select a module/function/command/provider/registry from request data.
+    need(len(sys.argv)==2 and sys.argv[1] in {'parent','inspect-parent','worker','core','inspect','original'})
+    role=sys.argv[1]
+    need((os.name=='nt') == (role in {'parent','inspect-parent','worker'}))
+    outer,config_raw,manifest_raw,launch_type=fixed_startup()
+    from phase_tool.canonical import canonical_bytes
+    from phase_tool.mutation.ntfs import entrypoint
+    initial,initial_transport,initial_deadline_ns=receive_initial()
+    if role in {'parent','inspect-parent'}:
+        need(set(initial)=={'run_id','request'})
+        import secrets
+        invocation={'run_id':initial['run_id'],'request':initial['request'],
+            'channel_id':secrets.token_hex(16),'operation_nonce':secrets.token_hex(16)}
+    elif role in {'core','inspect'}:
+        invocation=initial
+    elif role=='original':
+        invocation={'run_id':initial['run_id'],'channel_id':initial['channel_id'],
+            'operation_nonce':initial['operation_nonce'],'request':initial}
+    else:
+        manifest=json.loads(manifest_raw)
+        version1=(manifest['native_read_installation_version'] in {'1.2','1.4'}
+            and manifest['contract']['id']=='publish_new_version.v1')
+        file2=(manifest['native_read_installation_version'] in {'1.3','1.4'}
+            and manifest['contract']['id']=='file_create.v2')
+        context=(initial['projection']['context'] if file2 else
+            initial['metadata']['context'] if version1 else initial['context'])
+        invocation={'run_id':context['run_id'],'channel_id':initial['channel_id'],
+            'operation_nonce':context['operation_nonce'],'request':initial}
+    from phase_tool.mutation.ntfs.experimental_file2 import _ExperimentalFile2Admission
+    admission_raw=base64.b64decode(outer['experimental_admission_base64'],validate=True)
+    launch=launch_type(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+        manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+        invocation_bytes=canonical_bytes(invocation),
+        _inspection_only=role in {'inspect-parent','inspect'},
+        _experimental_admission_context=_ExperimentalFile2Admission(admission_raw))
+    launch.check_runtime()
+    if role in {'parent','inspect-parent'}:
+        result=entrypoint.run_native_parent(launch)
+        import time
+        initial_transport.send_frame(canonical_bytes(result),time.perf_counter_ns()+30_000_000_000)
+        initial_transport.seal()
+        return result['exit_code']
+    if role=='worker':return entrypoint.run_native_worker(launch,initial,initial_transport,_transfer_deadline_ns=initial_deadline_ns)
+    if role=='core':return entrypoint.run_native_core(launch)
+    if role=='inspect':return entrypoint.run_native_inspection(launch)
+    return entrypoint.run_native_original(launch)
+
+
+if __name__=='__main__':
+    try:
+        status=main()
+    except BaseException:
+        # No generic CLI failure payload can claim that no mutation occurred.
+        # Caller preserves its known run and inspects; this is NOT a receipt.
+        try:os.write(2,b'Native delivery unresolved; inspect the known run; no retry authorized.\n')
+        except BaseException:pass
+        status=50
+    # Worker entrypoint already closed its owned streams; other roles have
+    # delivery-only stdio. No destructor is treated as worker quiescence proof.
+    raise SystemExit(status)

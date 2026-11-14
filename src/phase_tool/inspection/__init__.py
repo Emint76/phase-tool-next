@@ -345,7 +345,7 @@ def _resolved_hook_roots(
     return resolved
 
 
-def _check_native_intent_binding(intent, contract, authority):
+def _check_native_intent_binding(intent, contract, authority, *, original_binding=None):
     """Static exact-installation linkage before any contract hook/target path."""
     if authority is None:
         if intent.get('phase_intent_version') == '1.2':
@@ -354,13 +354,58 @@ def _check_native_intent_binding(intent, contract, authority):
     authority.require_contract(contract)
     if intent.get('phase_intent_version') != '1.2':
         raise PhaseError('ntfs.original_native_intent_required')
-    expected = authority.read_binding._parser_bindings(intent)
+    binding = authority.read_binding if original_binding is None else original_binding
+    expected = binding._parser_bindings(intent)
     fields = {'installed_core_binding': intent['core'],
         'installed_native_binding': intent['native_binding'],
         'installed_root_grants': intent['idempotency']['root_identities'],
         'installed_implementation_binding': intent['implementation_binding']}
     if any(expected[key] != canonical_bytes(value) for key, value in fields.items()):
         raise PhaseError('ntfs.original_installation_binding_mismatch')
+
+
+def _owner_directory_file_original(installation, authority, run_root, receipt):
+    # Keep the Original's descriptor for evidence only. The current inspection
+    # authority owns namespace observation and channel sealing.
+    from ..installation import _NativeFileCreateInstallation
+    from ..mutation.ntfs.owner_directory import owner_directory_original_binding, require_owner_directory_binding
+    from ..mutation.ntfs.proof import _canonical as read_original_control
+    if (type(installation) is not _NativeFileCreateInstallation
+            or installation.authority is not authority
+            or installation.read_binding is not authority.read_binding
+            or authority._inspection_only is not True
+            or not any(is_owner_directory_authority(authority, role) for role in ('File1', 'File2'))
+            or receipt['terminal_status'] != 'succeeded_verified'
+            or receipt['execution_disposition'] != 'executed'
+            or receipt['evidence']['intent_digest'] is None):
+        return authority.read_binding
+    active = installation.read_binding
+    history = installation.history_bindings
+    if type(history) is tuple and len(history) == 6:
+        return active
+    intent, _ = read_original_control(run_root / 'intent.json')
+    validate_intent(intent, active.registry)
+    if (intent.get('phase_intent_version') != '1.2'
+            or intent['run_id'] != receipt['run_id']
+            or intent['contract'] != receipt['contract']
+            or intent['core'] != receipt['core']
+            or profile_digest('intent', intent) != receipt['evidence']['intent_digest']):
+        raise PhaseError('ntfs.original_intent_mismatch')
+    original_installation = intent['native_binding']['installation']
+    if original_installation['descriptor_digest'] == active.manifest_digest:
+        return active
+    original = owner_directory_original_binding(history, run_id=intent['run_id'],
+        contract=intent['contract'], core=intent['core'], installation=original_installation,
+        registry_snapshot_digest=intent['registry_snapshot_digest'])
+    # Also correlate to the active installation's configuration, not merely
+    # the first binding in the history tuple validated by the tuple selector.
+    current = active._owner_directory_context
+    require_owner_directory_binding(original, current.role)
+    selected = original._owner_directory_context
+    if (selected.catalog is not current.catalog or selected.configuration_bytes != current.configuration_bytes
+            or selected.configuration_digest != current.configuration_digest):
+        raise PhaseError('ntfs.original_history_binding_mismatch')
+    return original
 
 
 def _validate_capture_expectations(candidate_digest, frozen_input) -> None:
@@ -418,6 +463,7 @@ def inspect_run(
     root_bindings: Mapping[str, Path] | None = None,
     _visited_receipts: frozenset[str] = frozenset(),
     _native_authority: object | None = None,
+    _native_installation: object | None = None,
     _expected_candidate_digest: str | None = None,
     _expected_frozen_input: tuple[str, str] | None = None,
     _include_canonical_result: bool = False,
@@ -544,11 +590,14 @@ def inspect_run(
         raise PhaseError("inspection.prior_receipt_cycle", receipt_digest)
     validate_receipt(receipt, registry)
     native_proof = None
+    original_binding = None
     if _native_authority is not None:
         from ..mutation.ntfs.proof import verify_native_terminal_proof
         # Read-only verification only. This never fsyncs, retries target effects
         # or discharges the original barrier; successor confirmation is separate.
-        native_proof = verify_native_terminal_proof(_native_authority.read_binding, run_root, receipt)
+        original_binding = _owner_directory_file_original(
+            _native_installation, _native_authority, run_root, receipt)
+        native_proof = verify_native_terminal_proof(original_binding, run_root, receipt)
     else:
         implementation = receipt.get('implementation_binding')
         authority_binding = implementation.get('authority') if isinstance(implementation, Mapping) else None
@@ -588,7 +637,8 @@ def inspect_run(
             intent["contract"]["package_digest"],
             core_version=intent["core"]["version"],
         )
-        _check_native_intent_binding(intent, contract_for_plan, _native_authority)
+        _check_native_intent_binding(intent, contract_for_plan, _native_authority,
+            original_binding=original_binding)
         validate_plan_mechanism_authorization(plan, contract_for_plan, registry)
         intent_binding = intent.get("implementation_binding")
         receipt_binding = receipt.get("implementation_binding")
@@ -904,7 +954,8 @@ def inspect_run(
                     root_bindings=root_bindings,
                     _visited_receipts=_visited_receipts | {receipt_digest},
                     **capture_expectations,
-                    **({} if _native_authority is None else {"_native_authority": _native_authority}),
+                    **({} if _native_authority is None else {
+                        "_native_authority": _native_authority, "_native_installation": _native_installation}),
                 )
             if prior.get("terminal_status") != "succeeded_verified" or prior.get("target_verified") is not True or prior.get("contract") != receipt["contract"]:
                 raise PhaseError("inspection.prior_receipt_mismatch", prior_run_id)

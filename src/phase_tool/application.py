@@ -360,10 +360,12 @@ class PhaseApplication:
             if type(_include_canonical_result) is not bool or type(_include_bundle_manifest) is not bool:
                 raise PhaseError("inspection.invalid_result_projection")
             from .installation import _NativeFileCreateInstallation
-            native = (self.installation.authority
+            native_installation = (self.installation
                 if type(self.installation) is _NativeFileCreateInstallation else None)
+            native = None if native_installation is None else native_installation.authority
             inspected = inspect_run(evidence_root, run_id, self.registry,
                 root_bindings=root_bindings, _native_authority=native,
+                **({"_native_installation": native_installation} if native_installation is not None else {}),
                 **({} if _expected_candidate_digest is None and _expected_frozen_input is None else {
                     "_expected_candidate_digest": _expected_candidate_digest,
                     "_expected_frozen_input": _expected_frozen_input,

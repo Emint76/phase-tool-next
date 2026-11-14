@@ -13,14 +13,16 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from phase_tool import installation
-from phase_tool.canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
+from phase_tool import inspection, installation
+from phase_tool.canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes, profile_digest
 from phase_tool.errors import PhaseError
+from phase_tool.registry import BundledRegistry
 from phase_tool.mutation.ntfs import owner_directory as m
 from phase_tool.mutation.ntfs import owner_directory_installation as factory
 from tests.owner_directory_test_data import synthetic_catalog, owner_document, mutate_manifest, altered_profile_catalog
+from .test_native_intent_v12 import fixture as intent_fixture
 
 
 class OrdinaryOwnerDirectoryTests(unittest.TestCase):
@@ -209,6 +211,75 @@ class OrdinaryOwnerDirectoryTests(unittest.TestCase):
         self.assertNotEqual(history[-1].manifest_digest, history[0].manifest_digest)
         duplicate = deepcopy(doc); duplicate['predecessors'].append(deepcopy(prior)); self.reject_document(duplicate)
         too_many = deepcopy(doc); too_many['predecessors'] = [deepcopy(prior) for _ in range(33)]; self.reject_document(too_many)
+
+    def test_file_inspect_selects_receipt_bound_configured_issuer_only(self):
+        for index, role in enumerate(('File1', 'File2')):
+            with self.subTest(role=role):
+                self.assert_file_inspect_issuer(index, role)
+
+    def assert_file_inspect_issuer(self, index, expected_role):
+        def with_predecessor(digit):
+            doc = deepcopy(self.doc)
+            row = deepcopy(doc['manifests'][index])
+            manifest = parse_json_bytes(base64.b64decode(row['manifest_base64']))
+            manifest['composition']['artifact_graph_digest'] = 'sha256:' + digit * 64
+            manifest_bytes = canonical_bytes(manifest)
+            row.update(manifest_base64=base64.b64encode(manifest_bytes).decode(),
+                       manifest_digest=digest_bytes(manifest_bytes))
+            doc['predecessors'] = [row]
+            raw = canonical_bytes(doc)
+            active_row = doc['manifests'][index]
+            return factory._owner_directory_bindings_with_catalog(
+                configuration_bytes=raw, expected_configuration_digest=digest_bytes(raw),
+                manifest_bytes=base64.b64decode(active_row['manifest_base64']),
+                expected_manifest_digest=active_row['manifest_digest'], _catalog=self.catalog,
+            )
+
+        active, history = with_predecessor('e')
+        foreign_active, foreign_history = with_predecessor('f')
+        issuer = history[-1]
+        _, manifest = m.require_owner_directory_binding(issuer, expected_role)
+        intent = intent_fixture(BundledRegistry.load())
+        intent.update(contract=manifest['contract'], core=manifest['core'], registry_snapshot_digest=self.catalog.registry.digest)
+        intent['operation']['mechanism'] = manifest['mechanism']
+        intent['implementation_binding']['mechanism'] = manifest['mechanism']
+        intent['native_binding'].update(
+            installation={'id':manifest['installation_id'], 'descriptor_digest':issuer.manifest_digest},
+            evidence_identity=manifest['evidence_identity'], composition=manifest['composition'],
+        )
+        receipt = {
+            'run_id':intent['run_id'], 'contract':intent['contract'], 'core':intent['core'],
+            'terminal_status':'succeeded_verified', 'execution_disposition':'executed',
+            'evidence':{'intent_digest':profile_digest('intent', intent)},
+        }
+        bound = object.__new__(installation._NativeFileCreateInstallation)
+        run_root = Path('unused-modeled-original')
+        # Only the platform-specific authority shell and evidence read are modeled.
+        # The selector, fixed history validation and complete intent schema are real.
+        with (
+            patch.object(inspection, 'is_owner_directory_authority',
+                         side_effect=lambda authority, role: role == expected_role) as role_check,
+            patch('phase_tool.mutation.ntfs.proof._canonical', return_value=(intent, canonical_bytes(intent))) as read,
+        ):
+            bound.authority = Mock(read_binding=active, _inspection_only=True)
+            bound.read_binding, bound.history_bindings = active, history
+            self.assertIs(inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt), issuer)
+            self.assertEqual(role_check.call_args.args, (bound.authority, expected_role))
+            read.assert_called_once_with(run_root / 'intent.json')
+            bad_receipt = dict(receipt, evidence={'intent_digest':'sha256:'+'1'*64})
+            with self.assertRaisesRegex(PhaseError, 'ntfs.original_intent_mismatch'):
+                inspection._owner_directory_file_original(bound, bound.authority, run_root, bad_receipt)
+            bound.authority = Mock(read_binding=foreign_active, _inspection_only=True)
+            bound.read_binding, bound.history_bindings = foreign_active, foreign_history
+            with self.assertRaisesRegex(PhaseError, 'ntfs.original_history_binding_mismatch'):
+                inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt)
+            bound.history_bindings = history
+            with self.assertRaisesRegex(PhaseError, 'ntfs.original_history_binding_mismatch'):
+                inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt)
+            bound.authority._inspection_only = False
+            read.reset_mock()
+            self.assertIs(inspection._owner_directory_file_original(bound, bound.authority, run_root, receipt), foreign_active)
+            read.assert_not_called()
 
     def test_fresh_context_identity_is_metadata_not_registry_object_equality(self):
         context = self.active._owner_directory_context

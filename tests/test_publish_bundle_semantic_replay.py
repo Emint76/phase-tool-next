@@ -101,9 +101,42 @@ def test_application_file_pair_and_private_bundle_triple_fail_closed(tmp_path):
     assert len(triple)==3 and triple[1:] == (None,None)
     assert triple[0].payload['error']=='inspection.invalid_capture_expectation'
 
+def test_private_native_bundle_projection_requires_recursive_inspection(tmp_path):
+    with pytest.raises(PhaseError, match='inspection.invalid_result_projection'):
+        inspect_run(tmp_path/'missing','run',_include_canonical_result=True,
+            _include_bundle_manifest=True,_return_recursive_bundle_projection=True)
+
 
 def tree(path):
     return {p.relative_to(path).as_posix():(p.stat().st_ino,p.read_bytes())for p in path.rglob('*')if p.is_file()}
+
+
+@LINUX
+def test_bundle_reuse_refuses_a_different_valid_prior_receipt_after_lookup(tmp_path, monkeypatch):
+    from phase_tool import inspection
+
+    app,args,roots=case(tmp_path)
+    first=app.publish_bundle(**args).payload
+    assert first['status']=='verified'
+    for run_id in ('second','third'):
+        result=app.publish_bundle(**{**args,'run_id':run_id}).payload
+        assert result['status']=='verified' and result['execution_disposition']=='reused_existing'
+    bindings={'phase_result_root':roots['target']}
+    original=inspection.inspect_run(roots['evidence'],'first',app.registry,root_bindings=bindings)
+    alternate=inspection.inspect_run(roots['evidence'],'second',app.registry,root_bindings=bindings)
+    assert original['receipt_digest'] != alternate['receipt_digest']
+    stock_lookup=inspection._prior_receipt_run_id
+
+    def substituted(runs, run_id, digest):
+        identified=stock_lookup(runs,run_id,digest)
+        if run_id=='third':
+            assert identified=='first' and digest==original['receipt_digest']
+            return 'second'
+        return identified
+
+    monkeypatch.setattr(inspection,'_prior_receipt_run_id',substituted)
+    with pytest.raises(PhaseError, match='inspection.prior_receipt_mismatch'):
+        inspection.inspect_run(roots['evidence'],'third',app.registry,root_bindings=bindings)
 
 
 @LINUX

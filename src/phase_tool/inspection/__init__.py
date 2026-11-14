@@ -516,7 +516,8 @@ def inspect_run(
             if capture_expectations or _include_canonical_result:
                 raise PhaseError('inspection.recovered_projection_unsupported')
             from ..mutation.ntfs.bundle_recovery_entrypoint import inspect_recovered_native
-            return inspect_recovered_native(_native_authority,evidence_root=evidence_root,run_id=run_id)
+            return inspect_recovered_native(_native_authority,evidence_root=evidence_root,run_id=run_id,
+                _native_installation=_native_installation)
 
     try:
         root = Path(_platform_path(Path(evidence_root))).resolve(strict=True)

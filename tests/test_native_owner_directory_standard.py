@@ -238,6 +238,16 @@ class OrdinaryOwnerDirectoryTests(unittest.TestCase):
         active, history = with_predecessor('e')
         foreign_active, foreign_history = with_predecessor('f')
         issuer = history[-1]
+        if expected_role == 'Bundle2':
+            altered = deepcopy(self.doc)
+            row = deepcopy(altered['manifests'][index])
+            manifest = parse_json_bytes(base64.b64decode(row['manifest_base64']))
+            manifest['root_projections']['phase_result_root'] = '/foreign-projection'
+            raw = canonical_bytes(manifest)
+            row.update(manifest_base64=base64.b64encode(raw).decode(), manifest_digest=digest_bytes(raw))
+            altered['predecessors'] = [row]
+            with self.assertRaisesRegex(PhaseError, 'ntfs.owner_directory_history_domain_mismatch'):
+                m.owner_directory_configuration(canonical_bytes(altered), canonical_digest(altered))
         _, manifest = m.require_owner_directory_binding(issuer, expected_role)
         intent = intent_fixture(BundledRegistry.load())
         intent.update(contract=manifest['contract'], core=manifest['core'], registry_snapshot_digest=self.catalog.registry.digest)
@@ -266,6 +276,19 @@ class OrdinaryOwnerDirectoryTests(unittest.TestCase):
             self.assertIs(inspection._owner_directory_inspect_original(bound, bound.authority, run_root, receipt), issuer)
             self.assertEqual(role_check.call_args.args, (bound.authority, expected_role))
             read.assert_called_once_with(run_root / 'intent.json')
+            if expected_role == 'Bundle2':
+                from phase_tool.mutation.ntfs.bundle_recovery_entrypoint import _recovered_original_binding
+                self.assertIs(_recovered_original_binding(bound.authority, bound, intent, intent['run_id']), issuer)
+                fake = deepcopy(intent)
+                fake['native_binding']['installation']['descriptor_digest'] = 'sha256:' + '0'*64
+                with self.assertRaisesRegex(PhaseError, 'ntfs.original_history_binding_mismatch'):
+                    _recovered_original_binding(bound.authority, bound, fake, intent['run_id'])
+                bound.history_bindings = foreign_history
+                with self.assertRaisesRegex(PhaseError, 'ntfs.original_history_binding_mismatch'):
+                    _recovered_original_binding(bound.authority, bound, intent, intent['run_id'])
+                bound.history_bindings = history
+                with self.assertRaisesRegex(PhaseError, 'recovery.original_history_binding_mismatch'):
+                    _recovered_original_binding(bound.authority, object(), intent, intent['run_id'])
             bad_receipt = dict(receipt, evidence={'intent_digest':'sha256:'+'1'*64})
             with self.assertRaisesRegex(PhaseError, 'ntfs.original_intent_mismatch'):
                 inspection._owner_directory_inspect_original(bound, bound.authority, run_root, bad_receipt)

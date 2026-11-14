@@ -94,7 +94,35 @@ def run_recovery_core(launch):
     return response.exit_code
 
 
-def inspect_recovered_native(authority, *, evidence_root, run_id):
+def _recovered_original_binding(authority, installation, intent, run_id):
+    """Resolve only trusted evidence metadata for this read-only operation."""
+    from ...evidence import validate_intent
+    from ...installation import _NativeFileCreateInstallation, _native_history_binding_for_original
+    from .owner_directory import require_owner_directory_binding, validate_owner_directory_history
+
+    active = authority.read_binding
+    validate_intent(intent, active.registry)
+    _, manifest = require_owner_directory_binding(active, 'Bundle2')
+    _require(intent.get('phase_intent_version') == '1.2' and intent['run_id'] == run_id
+        and intent['contract'] == manifest['contract'] and intent['execution_requested'] is True,
+        'recovery.original_history_binding_mismatch')
+    issuer = intent['native_binding']['installation']
+    if issuer == {'id': manifest['installation_id'], 'descriptor_digest': active.manifest_digest}:
+        return active
+    _require(type(installation) is _NativeFileCreateInstallation and installation.authority is authority
+        and installation.read_binding is active and authority._inspection_only is True,
+        'recovery.original_history_binding_mismatch')
+    history = validate_owner_directory_history(active, installation.history_bindings)
+    selected = _native_history_binding_for_original(history, run_id=run_id, contract=intent['contract'],
+        core=intent['core'], installation=issuer, registry_snapshot_digest=intent['registry_snapshot_digest'])
+    _, original = require_owner_directory_binding(selected, 'Bundle2')
+    _require(original['root_grants'] == manifest['root_grants']
+        and original['evidence_identity'] == manifest['evidence_identity'],
+        'recovery.original_history_binding_mismatch')
+    return selected
+
+
+def inspect_recovered_native(authority, *, evidence_root, run_id, _native_installation=None):
     """Fresh physical bytes/owner/FID; saved recovery is immutable lineage only."""
     from .experimental_bundle2_authority_v3 import _ExperimentalBundle2AuthorityV3
     from .bundle_recovery_original import verify_original
@@ -104,8 +132,12 @@ def inspect_recovered_native(authority, *, evidence_root, run_id):
     binding = authority.read_binding
     root = binding.check_evidence_root()
     _require(Path(evidence_root) == root, 'recovery.native_request_mismatch')
+    from ...evidence import validate_run_id
     from .bundle_recovery_original import _record
+    validate_run_id(run_id)
     intent = _record(root / '.phase/runs' / run_id / 'intent.json')
+    if getattr(binding, '_owner_directory_context', None) is not None:
+        binding = _recovered_original_binding(authority, _native_installation, intent, run_id)
     original = verify_original(binding, run_id, intent['idempotency']['key'], profile_digest('intent', intent))
     proof, previous = verify_saved_recovery(binding, original)
     projected = _bundle_projection_value(original['projection'])

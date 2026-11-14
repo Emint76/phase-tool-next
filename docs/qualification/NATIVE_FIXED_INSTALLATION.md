@@ -26,7 +26,54 @@ The trusted operator uses the existing approved preparation procedure to materia
 
 The fixed configuration binds the exact wheel, launcher, accepted Python/Docker/image bytes, private dependency roots, existing container/root identities, contract, admission and prepared scope. Windows and Linux use identical launcher bytes. Relocating the private SDK requires an accepted inventory with its actual paths and the same accepted dependency bytes. Keep the old inventory and runtime available. No global PATH, site processing or dependency download is part of these callers.
 
-The common launcher selects only the existing fixed admission families: File1, File2, Version1, Version2, Bundle1, corrected Bundle2, and the two existing history contexts. The manifest and trusted configuration determine the family. The request cannot select it. Use a newly accepted wheel containing the current adapter and both resources; historical results retain their original wheel and reader bindings.
+The common launcher selects only the fixed File1, File2, Version1, Version2, Bundle1, corrected Bundle2 and historical bindings. The manifest and trusted configuration determine the family. Materialize both launcher resources from the same accepted wheel. Preserve historical wheels and their reader bindings.
+
+## Publish from an installed Windows input scope
+
+The staged input route is available in an accepted startup 3.0 or 4.0 installation with a bound Windows input scope. Startup 3.0 uses the existing experimental binding. The ordinary owner-directory startup 4.0 requires a qualified fixed catalogue and owner-approved grants. The candidate catalogue remains closed pending qualification.
+
+Use the same accepted Windows executable and caller, with the `publish-input` action:
+
+```powershell
+& "<PYTHON>" -I -S -B -u "<I>/bindings/<BINDING>/windows/cli.py" publish-input "<REQUEST_JSON>" "<O>/<NEW_CAPTURE>"
+```
+
+Example request for an installed File binding:
+
+```json
+{
+  "run_id": "publish-example-001",
+  "request": {
+    "operation": "publish_input",
+    "input_scope": "owner.inputs",
+    "source_locator": "incoming.bin",
+    "target_locator": "results.bin",
+    "request_id": "request-example-001",
+    "members": null,
+    "expected_current_digest": null
+  }
+}
+```
+
+Use the installed input scope ID. The source locator is relative to its bound Windows root. The target locator is relative to the installed result grant. Use slash-delimited relative locators such as `incoming/report.txt`. Choose a stable request ID for the operation and a run ID to identify its evidence. The installed manifest fixes the contract and grants.
+
+| Installed contract | Source and additional arguments |
+|---|---|
+| File v1 or File v2 | One file, with `members` and `expected_current_digest` set to null. |
+| Version v1 or Version v2 | One file, with `members` set to null and `expected_current_digest` set to the SHA-256 of the expected current file. Version v2 requires strict UTF-8 source bytes. |
+| Bundle v1 or Bundle v2 | One source directory with an explicit list of relative file locators in `members` and `expected_current_digest` set to null. |
+
+The File bindings also support `publish-file`. Use the same run, input scope, source, target and request identity. Set `operation` to `publish_file`, omit `members` and `expected_current_digest`, and supply `publication_version` (`"1.0"` or `"2.0"`), `expected_digest` for the source bytes, and `root_binding: "phase_result_root"`. The caller asserts this installed grant and digest before publication.
+
+For the standard MCP SDK, use the same launcher with final argument `input-mcp`. Call `phase_publish_input` with `run_id` and the request fields, omitting `operation`. `members` and `expected_current_digest` default to null. File bindings also expose `phase_publish_file` with the corresponding File arguments. In a fresh `inspect-mcp` session call `phase_inspect` with the known `run_id`, or use the CLI `inspect` command below with a fresh capture directory.
+
+### Interpret staged publication results
+
+For `publish-input` and `phase_publish_input`, a successful result is version 1.0 with exit 0, the execute `command_ack`, and an independently verified `independent_inspection` for the same run, receipt, intent and plan. For bundles, `source_digest` and `source_length` describe the canonical bundle manifest. File and Version results use the staged file byte digest and length.
+
+An ordinary startup 4.0 call may return result version 1.1 with `status: "committed_unverified"` and exit 30. Its `command_ack` is the original successful execute ACK with exit 0. The fresh read transport failed and the same reader's Windows process and streams closed within the operation budget. The result carries `independent_inspection: null`, `inspection_required: true` and `retry_authorized: false`. The staged File result exposes the same status and original receipt, intent and plan digests as top-level fields. Preserve the response and its run identity, then inspect it from a fresh compatible read-only caller. This response alone proves neither target readback nor Linux process closure.
+
+A typed exit 40 reports an indeterminate result. Exit 50 or an SDK delivery error requires preserving the operation identity and any capture before independent inspection. Follow the existing contract-specific reconciliation path only after that inspection. The read-only command accepts the original run identity without a new publication.
 
 ## Prepare authorized File v2 and Bundle v1 requests
 
@@ -107,6 +154,15 @@ phase_inspect(run_id="<KNOWN_ADMITTED_RUN>")
 ```
 
 `mode` is optional and defaults to `observe`; its only values are `observe` and `commit_prepared`. Recovery observe may write the existing Core's observation evidence. Use `inspect-mcp`/`phase_inspect` for read-only inspection. `commit_prepared` requests only the existing contract-supported prepared-publication action for the bound original run and intent. Preserve its outcome and inspect the same known run before any further action. This role provides no automatic Version2 rollback or general recovery capability outside the existing corrected Bundle2 contract.
+
+## Reconcile an ordinary publication
+
+The ordinary owner-directory installation uses `reconcile-mcp` and exposes tools according to its fixed role. Use a fresh read-only `inspect` before requesting reconciliation. Keep the original intent digest and installed binding.
+
+- File and Bundle roles expose `phase_recover_publication(run_id, request_id, expected_intent_digest, mode)`. Use `observe` for the supported observation route. Only Bundle v2 may use `commit_prepared` with a verified prepared Original and its matching intent.
+- Version roles expose `phase_continue_version(run_id, original_run_id, request_id, expected_intent_digest, candidate_path, input_paths, expected_inputs, maximum_candidate_bytes)`. Use a distinct continuation run ID. Supply the bound Original's intent digest and the approved Linux preparation paths. `expected_inputs` defaults to null and `maximum_candidate_bytes` defaults to 1048576. The installed contract validates the continuation and its lineage.
+
+The CLI actions are `recover-publication` and `continue-version`. Use the existing request envelope with `operation: "recover_publication"` and `native_bundle_recovery_request_version: "1.0"`, or `operation: "continue_version"` and `native_version_continuation_request_version: "1.0"`. For CLI recovery include `mode` and the request ID and expected intent digest. For CLI continuation include the original run ID and all request fields listed above. Keep the top-level `run_id` in either envelope. Inspect and retain the resulting evidence with the compatible reader.
 
 ## Inspect uncertainty and return the caller
 

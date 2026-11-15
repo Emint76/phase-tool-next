@@ -1045,6 +1045,9 @@ class PhaseCore:
                     store.blob_root,
                     frozen_at=timestamp,
                     maximum_structured_bytes=request.maximum_candidate_bytes,
+                    _native_expected_inputs=(
+                        request.expected_inputs if type(self.installation) is _NativeFileCreateInstallation else None
+                    ),
                 )
             # Bind the caller's captured identity to Core's actual frozen input,
             # not to the mutable pathname handed across the application seam.

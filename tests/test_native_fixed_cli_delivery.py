@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,10 @@ LAUNCHER=RESOURCE.with_name('native_phase_candidate_launcher_v1.py.in')
 TOY=r"""
 import json,pathlib,sys
 mode=json.loads((pathlib.Path(__file__).parent/'mode.json').read_text())
+if mode=='expired-ingress':
+    assert sys.stdin.buffer.read()==b''
+    sys.stderr.buffer.write(b'held diagnostic after request deadline\n')
+    raise SystemExit(50)
 head=sys.stdin.buffer.read(9);n=int(head[:8],16)
 request=json.loads(sys.stdin.buffer.read(n));assert sys.stdin.buffer.read(1)==b'\n'
 assert sys.stdin.buffer.read()==b''
@@ -100,7 +105,8 @@ if mode=='oversized-diagnostic':
 if request['request']['operation']=='inspect':
     assert request['request']=={'operation':'inspect'} and sys.argv[1:]==['inspect-parent']
 if request['request']['operation']=='publish_file':
-    assert sys.argv[1:]==['publish-input']
+    assert len(sys.argv)==3 and sys.argv[1]=='publish-input'
+    assert sys.argv[2].startswith('--input-deadline-ns=') and int(sys.argv[2].split('=')[1])>0
     action=request['request'];v=action['publication_version'][0]
     proof='sha256:'+'b'*64
     result={'publish_file_result_version':'1.0','success':True,'status':'verified',
@@ -154,6 +160,7 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
             'input_paths':{'payload':'/prepared/model-payload.bin'},'expected_inputs':None,
             'maximum_candidate_bytes':1048576}}),encoding='utf-8')
         self.children=[]
+        self.child_argv=[]
 
     def tearDown(self):
         # Only toy Python children created by this exact fixture. Never a native worker.
@@ -214,7 +221,7 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                     closed=False
                     def Close(self):self.closed=True
                 child._handle=PosixModelHandle()  # Model only; real Windows HANDLE is not replaced.
-            self.children.append(child);return child
+            self.child_argv.append(argv);self.children.append(child);return child
         stdout=io.TextIOWrapper(io.BytesIO(),encoding='utf-8')
         stderr=io.TextIOWrapper(io.BytesIO(),encoding='utf-8')
         proxy=types.SimpleNamespace(Popen=popen,PIPE=subprocess.PIPE,
@@ -230,6 +237,114 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(child.poll())
         self.assertTrue(all(stream.closed for stream in (child.stdin,child.stdout,child.stderr)))
         self.assertTrue(child._handle.closed)
+
+    def test_staged_entry_clock_covers_request_and_both_fixed_input_routes(self):
+        start=50_000_000_000
+        deadline=start+30_000_000_000
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:start,monotonic=time.monotonic,sleep=time.sleep)
+        with patch.object(self.cli,'time',clock):
+            self.assertEqual(self.call_model('positive')[0],0)
+            self.assertEqual(self.child_argv[-1][-1],'parent')
+            self.assertEqual(self.call_model('file-occupied',staged_file_role='File1')[0],10)
+            self.assertEqual(self.child_argv[-1][-2:],['publish-input',f'--input-deadline-ns={deadline}'])
+            self.assertEqual(self.call_model('negative',input_role='File1')[0],10)
+            self.assertEqual(self.child_argv[-1][-2:],['publish-input',f'--input-deadline-ns={deadline}'])
+        self.assert_outer_closed_before_fixture_cleanup()
+
+    def test_request_read_consumes_original_window_before_spawn(self):
+        start=50_000_000_000
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:start,monotonic=time.monotonic,sleep=time.sleep)
+        ordinary=self.cli.ordinary
+
+        def late_read(path,maximum):
+            raw=ordinary(path,maximum)
+            clock.perf_counter_ns=lambda:start+30_000_000_000
+            return raw
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'ordinary',late_read):
+            with self.assertRaisesRegex(TimeoutError,'native input request deadline'):
+                self.call_model('negative',input_role='File1')
+        self.assertFalse(self.children)
+
+    def test_stdin_wait_uses_remaining_input_budget(self):
+        deadline=80_000_000_000
+        now=deadline-1
+
+        def reach_deadline(_seconds):
+            nonlocal now
+            now=deadline
+
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:now,sleep=reach_deadline)
+        reads=[]
+
+        def unavailable(fd,maximum):
+            reads.append((fd,maximum))
+            raise BlockingIOError
+
+        ops=types.SimpleNamespace(set_blocking=lambda fd,blocking:None,read=unavailable)
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'os',ops):
+            with self.assertRaisesRegex(TimeoutError,'request stdin deadline'):
+                self.cli.stdin_request(deadline)
+        self.assertEqual(reads,[(0,65536)])
+
+    def test_late_child_frame_or_capture_completion_never_yields_public_result(self):
+        start=50_000_000_000
+        deadline=start+30_000_000_000
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:start,monotonic=time.monotonic,sleep=time.sleep)
+        exchange,exclusive=self.cli.exchange,self.cli.exclusive
+
+        def late_frame(process,frame,*,deadline_ns):
+            self.assertEqual(deadline_ns,deadline)
+            received=exchange(process,frame,deadline_ns=deadline_ns)
+            clock.perf_counter_ns=lambda:deadline
+            return received
+
+        def late_capture(path,raw):
+            exclusive(path,raw)
+            if path.name=='delivery.json':
+                clock.perf_counter_ns=lambda:deadline
+
+        with patch.object(self.cli,'time',clock):
+            with patch.object(self.cli,'exchange',late_frame):
+                code,out,err,capture=self.call_model('negative',input_role='File1')
+            self.assertEqual((code,out,err),(50,b'',b'{"error_class":"timeout","phase":"delivery"}\n'))
+            report=json.loads((capture/'delivery.json').read_bytes())
+            self.assertEqual(report['child_delivery'],'UNKNOWN')
+            self.assertEqual(report['error']['type'],'TimeoutError')
+            self.assertEqual(report['process_exit'],10)
+            self.assertTrue((capture/'stdout.bin').read_bytes())
+            self.assert_outer_closed_before_fixture_cleanup()
+            clock.perf_counter_ns=lambda:start
+            with patch.object(self.cli,'exclusive',late_capture):
+                code,out,err,capture=self.call_model('positive',staged_file_role='File1')
+            self.assertEqual((code,out,err),(50,b'',b'{"error_class":"timeout","phase":"delivery"}\n'))
+            report=json.loads((capture/'delivery.json').read_bytes())
+            self.assertEqual(report['child_delivery'],'COMPLETE_NATIVE_PUBLICATION_FRAME')
+            self.assertEqual(report['process_exit'],0)
+            self.assertTrue((capture/'stdout.bin').read_bytes())
+            self.assert_outer_closed_before_fixture_cleanup()
+
+    def test_expired_request_stops_ingress_but_drains_existing_child(self):
+        start=50_000_000_000
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:start,monotonic=time.monotonic,sleep=time.sleep)
+        exchange=self.cli.exchange
+
+        def expired(process,frame,*,deadline_ns):
+            self.assertEqual(deadline_ns,start+30_000_000_000)
+            clock.perf_counter_ns=lambda:deadline_ns
+            return exchange(process,frame,deadline_ns=deadline_ns)
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'exchange',expired):
+            code,out,err,capture=self.call_model('expired-ingress',input_role='File1')
+        self.assertEqual((code,out,err),(50,b'',b'{"error_class":"timeout","phase":"delivery"}\n'))
+        self.assertEqual((capture/'stderr.bin').read_bytes(),b'held diagnostic after request deadline\n')
+        report=json.loads((capture/'delivery.json').read_bytes())
+        self.assertEqual(report['capture']['bytes_sent'],0)
+        self.assertEqual(report['capture']['primary']['type'],'TimeoutError')
+        self.assertEqual(report['capture']['eof'],[True,True])
+        self.assertEqual(report['outer_owner_finalization'],'closed')
+        self.assertIs(report['retry_authorized'],False)
+        self.assert_outer_closed_before_fixture_cleanup()
 
     def test_partial_input_requires_original_ack_and_real_cli_exit_correlation(self):
         for role in ('File1','File2','Version1','Version2','Bundle1','Bundle2'):
@@ -471,6 +586,79 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
             self.assert_outer_closed_before_fixture_cleanup()
             self.assertEqual((code,out,err),(50,b'',b'{"error_class":"error","phase":"delivery"}\n'))
             self.assertIn(b'"reason":"foreign"',(capture/'stderr.bin').read_bytes())
+
+
+class NativeInputLauncherDeadlineTests(unittest.TestCase):
+    """Execute the shipped launcher dispatch and receive code with modeled boundaries."""
+
+    def setUp(self):
+        loader=importlib.machinery.SourceFileLoader('_phase_input_clock_launcher',str(LAUNCHER))
+        spec=importlib.util.spec_from_loader(loader.name,loader)
+        self.launcher=importlib.util.module_from_spec(spec)
+        loader.exec_module(self.launcher)
+        self.start=50_000_000_000
+        self.deadline=self.start+30_000_000_000
+        self.now=self.start
+        self.events=[]
+        self.request={'run_id':'model','request':{'operation':'publish_input'}}
+        self.canon=lambda value:json.dumps(value,sort_keys=True,separators=(',',':')).encode()
+        self.modules={name:types.ModuleType(name) for name in ('phase_tool','phase_tool.canonical',
+            'phase_tool.mutation','phase_tool.mutation.ntfs','phase_tool.mutation.ntfs.entrypoint')}
+        canonical=self.modules['phase_tool.canonical']
+        canonical.canonical_bytes=self.canon
+        canonical.parse_json_bytes=lambda raw,maximum_bytes:json.loads(raw)
+        ntfs=self.modules['phase_tool.mutation.ntfs']
+        ntfs.entrypoint=self.modules['phase_tool.mutation.ntfs.entrypoint']
+        ntfs.entrypoint._windows_stdio=lambda:self
+
+    def fixed_startup(self):
+        self.events.append('fixed-startup')
+        self.now+=4_000_000_000
+        return {},b'config',b'manifest',None,None
+
+    def receive_frame(self,deadline):
+        self.events.append(('receive',deadline))
+        return self.canon(self.request),None
+
+    def publish(self,request,transport,deadline,*_):
+        self.assertEqual(request,self.request)
+        self.assertIs(transport,self)
+        self.events.append(('publish',deadline))
+        return 10
+
+    def invoke(self,*args):
+        with patch.dict(sys.modules,self.modules),patch.object(sys,'argv',['launcher.py',*args]), \
+                patch.object(self.launcher,'os',types.SimpleNamespace(name='nt')), \
+                patch.object(time,'perf_counter_ns',lambda:self.now), \
+                patch.object(self.launcher,'fixed_startup',self.fixed_startup), \
+                patch.object(self.launcher,'_publish_input_cli',self.publish):
+            return self.launcher.main()
+
+    def test_private_cli_deadline_preserves_exact_value_through_startup_and_receive(self):
+        self.assertEqual(self.invoke('publish-input',f'--input-deadline-ns={self.deadline}'),10)
+        self.assertEqual(self.events,['fixed-startup',('receive',self.deadline),('publish',self.deadline)])
+
+    def test_legacy_direct_role_retains_existing_receive_clock(self):
+        self.assertEqual(self.invoke('publish-input'),10)
+        later=self.deadline+4_000_000_000
+        self.assertEqual(self.events,['fixed-startup',('receive',later),('publish',later)])
+
+    def test_expiry_during_startup_never_receives_or_calls_publish(self):
+        with self.assertRaisesRegex(TimeoutError,'native input request deadline'):
+            self.invoke('publish-input',f'--input-deadline-ns={self.now+3_000_000_000}')
+        self.assertEqual(self.events,['fixed-startup'])
+
+    def test_expiry_malformed_cap_and_other_roles_refuse_before_startup(self):
+        with self.assertRaisesRegex(TimeoutError,'native input request deadline'):
+            self.invoke('publish-input',f'--input-deadline-ns={self.now}')
+        for route in (('publish-input','--input-deadline-ns=+50000000001'),
+                      ('publish-input',f'--input-deadline-ns={self.deadline+1}'),
+                      ('publish-input','--input-deadline-ns=0001'),
+                      ('inspect-parent',f'--input-deadline-ns={self.deadline}'),
+                      ('worker',f'--input-deadline-ns={self.deadline}')):
+            with self.subTest(route=route),self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
+                self.invoke(*route)
+        self.assertFalse(self.events)
 
 
 if __name__=='__main__':unittest.main()

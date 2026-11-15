@@ -15,6 +15,7 @@ MAX_STDOUT=2*1024**2+10
 MAX_STDERR=512*1024
 MAX_DELIVERY=64*1024
 DELIVERY_DIAGNOSTIC_PREFIX=4*1024
+_INPUT_TIMEOUT_NS=30_000_000_000
 HERE=Path(__file__).absolute().parent
 _PENDING_DELIVERY_OWNERS=[]  # Process-local only; never a durable operation owner.
 
@@ -42,9 +43,15 @@ def ordinary(path,maximum):
 def exclusive(path,raw):
     with path.open('xb')as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
 
-def stdin_request():
-    os.set_blocking(0,False);raw=bytearray();deadline=time.monotonic()+30
-    while time.monotonic()<deadline:
+def _check_input_deadline(deadline_ns):
+    if deadline_ns is not None and time.perf_counter_ns()>=deadline_ns:
+        raise TimeoutError('native input request deadline')
+
+def stdin_request(deadline_ns=None):
+    os.set_blocking(0,False);raw=bytearray()
+    clock=time.monotonic if deadline_ns is None else time.perf_counter_ns
+    deadline=clock()+30 if deadline_ns is None else deadline_ns
+    while clock()<deadline:
         try:part=os.read(0,min(65536,MAX_REQUEST+1-len(raw)))
         except BlockingIOError:time.sleep(.005);continue
         if not part:return bytes(raw)
@@ -68,7 +75,7 @@ def bindings():
         and sha(ordinary(Path(sys.executable),32*1024**2))==runtime['python_executable_digest'],'exact accepted Python executable')
     return launcher,outer
 
-def exchange(process,frame):
+def exchange(process,frame,*,deadline_ns=None):
     """Bound only the outer launcher pipes; no kill, resend or worker inference."""
     output=[bytearray(),bytearray()];discarded=[0,0];eof=[False,False]
     streams=[process.stdout,process.stderr];caps=[MAX_STDOUT,MAX_STDERR]
@@ -88,7 +95,9 @@ def exchange(process,frame):
         for stream in (process.stdin,*streams):os.set_blocking(stream.fileno(),False)
         while time.monotonic()<deadline:
             if not closed:
-                try:offset+=os.write(process.stdin.fileno(),frame[offset:])
+                try:
+                    _check_input_deadline(deadline_ns)
+                    offset+=os.write(process.stdin.fileno(),frame[offset:])
                 except BlockingIOError:pass
                 except OSError as value:primary=error(value);close_input()
                 if not closed and offset==len(frame):close_input()
@@ -347,8 +356,12 @@ def bounded_delivery(report):
 
 def main():
     need(len(sys.argv)==4 and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
-    action,source,destination=sys.argv[1:];launcher,outer=bindings()
-    raw=stdin_request()if source=='-'else ordinary(Path(source),MAX_REQUEST)
+    action,source,destination=sys.argv[1:]
+    deadline_ns=time.perf_counter_ns()+_INPUT_TIMEOUT_NS if action in _INPUT_ACTIONS else None
+    launcher,outer=bindings()
+    _check_input_deadline(deadline_ns)
+    raw=stdin_request(deadline_ns)if source=='-'else ordinary(Path(source),MAX_REQUEST)
+    _check_input_deadline(deadline_ns)
     value=strict(raw);need(type(value)is dict and set(value)=={'run_id','request'}
         and type(value['run_id'])is str and type(value['request'])is dict,'existing request envelope required')
     request=value['request'];need(request.get('operation')==action.replace('-','_'),'command/action mismatch')
@@ -379,13 +392,17 @@ def main():
         'native_worker_quiescence_proven':False,'retry_authorized':False,'manifest_digest':outer['manifest_digest'],
         'scope':'operational outer delivery only; not receipt/evidence, worker proof or caller ACK'}
     try:
-        process=subprocess.Popen([sys.executable,'-I','-S','-B','-u',str(launcher),
-            child_role],cwd=str(HERE),
+        args=[sys.executable,'-I','-S','-B','-u',str(launcher),child_role]
+        if deadline_ns is not None:
+            args.append(f'--input-deadline-ns={deadline_ns}')
+        _check_input_deadline(deadline_ns)
+        process=subprocess.Popen(args,cwd=str(HERE),
             env={'SYSTEMROOT':os.environ['SYSTEMROOT'],'WINDIR':os.environ['WINDIR'],'PYTHONDONTWRITEBYTECODE':'1'},
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
             creationflags=subprocess.CREATE_NO_WINDOW)
         _PENDING_DELIVERY_OWNERS.append(process);report['pid']=process.pid
-        out,err,capture=exchange(process,frame);report['capture']=capture;report['process_exit']=process.poll()
+        out,err,capture=exchange(process,frame,deadline_ns=deadline_ns)
+        report['capture']=capture;report['process_exit']=process.poll()
         if all(capture['eof'])and type(process.poll())is int:
             errors=[]
             for stream in (process.stdin,process.stdout,process.stderr):
@@ -453,6 +470,7 @@ def main():
         need(type(native['exit_code'])is int and type(candidate.get('exit_code'))is int
             and 0<=native['exit_code']<=255 and native['exit_code']==candidate['exit_code']==report['process_exit'],
             'native command/exit correlation')
+        _check_input_deadline(deadline_ns)
         # The trusted owner validated the result before releasing its call gate.
         # This outer transport preserves nullable/negative/uncertain fields.
         result=candidate;report['child_delivery']=('COMPLETE_NATIVE_PUBLICATION_FRAME'if action in {'publish-bundle','publish-file'}
@@ -493,7 +511,14 @@ def main():
         sys.stderr.buffer.write(canon({'run_id':value['run_id'],'child_delivery':'UNKNOWN','retry_authorized':False,
             'captures':str(capture_dir),'message':'No synthetic command result. Inspect the known run through its fixed reader.'})+b'\n')
         sys.stderr.buffer.flush();return 50
-    sys.stdout.buffer.write(canon(result)+b'\n');sys.stdout.buffer.flush();return result['exit_code']
+    result_bytes=canon(result)+b'\n'
+    try:_check_input_deadline(deadline_ns)
+    except TimeoutError:
+        # Capture may finish after valid child delivery. Raw stays available
+        # for independent inspection while this caller reports timeout.
+        sys.stderr.buffer.write(input_failure_line(timeout=True))
+        sys.stderr.buffer.flush();return 50
+    sys.stdout.buffer.write(result_bytes);sys.stdout.buffer.flush();return result['exit_code']
 
 if __name__=='__main__':
     try:status=main()

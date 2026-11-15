@@ -146,6 +146,12 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     assert fixed_functions.keys().isdisjoint(ordinary_only)
     from hashlib import sha256
     reviewed_owner_delta = {'fixed_admission': {'ordinary': 'c2558cdb925497f1c9397a831c080baaf2a2d45b8a507e1ba6c31bb5db7791dd', 'historical_a05': 'b0ec48f145a99e1e5f2b77885212a799a2f3def65afd1e3cb6c5fde2a2742f49'}, 'fixed_windows_mcp_sdk_bootstrap': {'ordinary': 'f4761e8035b4a278afd90bcbd1d683b7fc7466ddfc1a129e9b0e579bd267a4bc', 'historical_a05': '9c160d04f16c3253f0b422606f9d2e57b55faa3d898bd6ecce33bf62de2e9d25'}, 'fixed_startup': {'ordinary': 'e100a1b4a9483ca3151f8d139fdf6ad6d8fd133039df67ea823f5b26ed85446d', 'historical_a05': 'a3a96a44d8ecc92ec55350fc4aed159ab838a2ac29f99005aec36d5f3592c53d'}, 'fixed_startup_version': {'ordinary': '1c3ac0f5f14fc3d012b1a058a2e200c4519592e6f5b0f855abe86df64fa96c0d', 'historical_a05': '0ab49cbb580624cd803b3d29a6729ca3a02f2be71b068bf688f8eed241bd2f7d'}}
+    # The ordinary staged CLI can pass its remaining deadline to the fixed
+    # Windows launcher. The historical launcher keeps its original reader.
+    reviewed_owner_delta['receive_initial'] = {
+        'ordinary': '2728e2984efe21a30718ef7df569a002a0d91c89da2c30c6e174435e0aac59d6',
+        'historical_a05': '8ddb6944526e319dcbdd6e272abd87dbbc428f86b7501d8f9f6b9adb0f6284ed',
+    }
     def stable_ast(node):
         normalized = deepcopy(node)
         for part in ast.walk(normalized):
@@ -155,7 +161,7 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     for name, expected in ordinary_only.items():
         assert sha256(stable_ast(normal_functions[name]).encode()).hexdigest() == expected, name
     main_digests = (
-        'bb4d3b397490915a39977f8700791995c9802aef806f5b83493f1bddf789ed49',
+        '8f8f5174f02719be878b09ddd13b47c507852031b9681601aa5adb645d3b2903',
         'e0046e7d09f2e123349cf0b37d51ab796c14a56e390f6246a1d562fcd4dc3268',
     )
     assert tuple(sha256(stable_ast(group['main']).encode()).hexdigest()

@@ -5,8 +5,9 @@ import time
 from ...canonical import canonical_bytes, parse_json_bytes
 from ...errors import PhaseError
 from .bundle2_channel import LinuxNativeBundle2Channel
-from .bundle_recovery_capture import CORE_TERMINAL_SECONDS, wire_record
+from .bundle_recovery_capture import CORE_TERMINAL_SECONDS, TERMINAL_GRACE_NS, wire_record
 from .channel import _COMMON, _RESPONSE
+from .exchange_deadline import linux_frame_deadline_ns
 from .native import _require
 from .uncertainty import _diagnostic
 
@@ -86,17 +87,26 @@ class LinuxNativeBundleRecoveryChannel(LinuxNativeBundle2Channel):
         message = validate_prepared_message(value['prepared'], projection=projection,
             channel_id=self.channel_id, expected_pid=expected_pid)
         self._terminal_read_boundary = True  # Complete PREPARED response, no partial reader state.
-        # One absolute reporting budget. It is never passed to checkpoint ACK,
-        # rewind, GO or any effect. Starvation at this boundary stays UNKNOWN.
-        terminal_deadline = time.perf_counter_ns()+max(0,int((deadline-time.monotonic())*1_000_000_000))+int(CORE_TERMINAL_SECONDS*1_000_000_000)
+        qualified = self._qualification_exchange_deadline_ns
+        reporting_ns = int(CORE_TERMINAL_SECONDS * 1_000_000_000)
+        if qualified is None:
+            terminal_deadline = time.perf_counter_ns() + max(0, int((deadline - time.monotonic()) * 1_000_000_000)) + reporting_ns
         primary = None
         try:
+            self._check_bulk_exchange()
             ack = self._checkpoint.persist(projection, message, channel_id=self.channel_id,
                                            expected_pid=expected_pid)
             self._send_frame(canonical_bytes(ack), deadline)
         except BaseException as error:
             primary = error
             self._failed = True
+        if qualified is not None:
+            # Translate a local monotonic duration to the terminal owner's
+            # perf-counter domain. Only a failed ACK enters reporting grace.
+            sampling_start = time.perf_counter_ns()
+            terminal_limit = qualified if primary is None else qualified + TERMINAL_GRACE_NS
+            wait_ns = max(0, linux_frame_deadline_ns(terminal_limit) - time.monotonic_ns())
+            terminal_deadline = sampling_start + wait_ns
         try:
             response = self._terminal_bound(common, terminal_deadline)
         except BaseException as secondary:
@@ -125,12 +135,18 @@ class LinuxNativeBundleRecoveryChannel(LinuxNativeBundle2Channel):
         answer = response['value']
         _require(response['error'] is None and type(answer) is dict, 'ntfs.channel_response_shape')
         self._terminal_value_bytes = canonical_bytes(answer)
+        if primary is None:
+            try:
+                self._check_bulk_exchange()
+            except PhaseError as error:
+                primary = error
         if primary is not None:
             # ACK exception may follow partial/complete delivery: the worker may
             # already have committed. Preserve the exact complete reply; do not
             # return PASS or authorize another effect over the failed exchange.
             remote = {'code':'ntfs.parent_execution_unresolved',
-                'message':'Core ACK delivery failed; exact terminal facts retained',
+                'message':('Core ACK delivery failed; exact terminal facts retained' if qualified is None
+                           else 'Core exchange failed; exact terminal facts retained'),
                 'details':{'capture_version':'1.1','parent_partial':answer,
                     'worker_completion_wire':wire_record(canonical_bytes(answer['completion'])),
                     'operation_primary':None,'operation_secondary':[],

@@ -15,6 +15,7 @@ from ...canonical import canonical_bytes, digest_bytes, parse_json_bytes
 from ...errors import PhaseError
 from .channel import NativeChannelError, _COMMON, _RESPONSE, _MAX_FRAME, _primary
 from .channel_v2 import LinuxNativeChannelV2
+from .exchange_deadline import linux_exchange_deadline_ns, linux_frame_deadline
 from .native import _require
 from .file2_stream import _File2SnapshotSource
 from .file2_execution import _file2_projection_value, _file2_header, validate_file2_worker_ready
@@ -30,6 +31,7 @@ class LinuxNativeChannelV4(LinuxNativeChannelV2):
         super().__init__(channel_id,_inspection_only=_inspection_only)
         self._binary_chunks=_binary_chunks
         self._terminal_value_bytes=None
+        self._qualification_exchange_deadline_ns=None
 
     def _request(self,kind,run_id,intent_digest,payload):
         _require(kind not in {'execute_file_create','execute_version1'},'ntfs.original_closed_role_required')
@@ -43,17 +45,43 @@ class LinuxNativeChannelV4(LinuxNativeChannelV2):
             and type(payload) is dict and not payload,'ntfs.invalid_intent_reference')
         return payload
 
+    def _bulk_exchange_deadline(self):
+        deadline_ns=linux_exchange_deadline_ns()
+        if deadline_ns is None:return time.monotonic()+30.0
+        self._qualification_exchange_deadline_ns=deadline_ns
+        self._check_bulk_exchange()
+        return deadline_ns/1_000_000_000
+
+    def _check_bulk_exchange(self):
+        deadline_ns=getattr(self,'_qualification_exchange_deadline_ns',None)
+        if deadline_ns is not None:
+            _require(linux_exchange_deadline_ns()==deadline_ns and time.monotonic_ns()<deadline_ns,
+                'ntfs.channel_deadline_expired')
+
+    def _bulk_frame_deadline(self,deadline):
+        deadline_ns=getattr(self,'_qualification_exchange_deadline_ns',None)
+        if deadline_ns is None:return deadline
+        self._check_bulk_exchange()
+        _require(deadline==deadline_ns/1_000_000_000,'ntfs.channel_deadline_expired')
+        return linux_frame_deadline(deadline)
+
     def _send_frame(self,raw,deadline):
         _require(type(raw) is bytes and 0<len(raw)<=_MAX_FRAME,'ntfs.channel_frame_limit')
+        deadline=self._bulk_frame_deadline(deadline)
         self._write(f'{len(raw):08x}\n'.encode('ascii')+raw+b'\n',deadline)
+        if getattr(self,'_qualification_exchange_deadline_ns',None) is not None:
+            _require(time.monotonic()<deadline,'ntfs.channel_deadline_expired')
 
     def _receive_bound(self,common,deadline):
+        deadline=self._bulk_frame_deadline(deadline)
         header=self._read(9,deadline)
         _require(re.fullmatch(b'[0-9a-f]{8}\n',header) is not None,'ntfs.channel_bad_header')
         length=int(header[:8],16)
         _require(0<length<=_MAX_FRAME,'ntfs.channel_frame_limit')
         raw=self._read(length,deadline)
         _require(self._read(1,deadline)==b'\n','ntfs.channel_bad_terminator')
+        if getattr(self,'_qualification_exchange_deadline_ns',None) is not None:
+            _require(time.monotonic()<deadline,'ntfs.channel_deadline_expired')
         value=parse_json_bytes(raw,maximum_bytes=_MAX_FRAME)
         _require(type(value) is dict and set(value)==_RESPONSE and canonical_bytes(value)==raw
             and type(value['sequence']) is int and type(value['ok']) is bool
@@ -100,7 +128,7 @@ class LinuxNativeChannelV4(LinuxNativeChannelV2):
                 'channel_id':self.channel_id,'sequence':self._sequence+1,
                 'kind':'execute_file2','run_id':run_id,'intent_digest':intent_digest}
             request_raw=canonical_bytes(common)
-            deadline=time.monotonic()+30.0  # One local window, NEVER reset for another frame.
+            deadline=self._bulk_exchange_deadline()
             self._sequence+=1
             self._possible_dispatch=True  # Sticky BEFORE any execute byte can leave.
             self._send_frame(request_raw,deadline)
@@ -136,7 +164,9 @@ class LinuxNativeChannelV4(LinuxNativeChannelV2):
                             'primary':None if primary is None else _primary(primary),
                             'finalization':_primary(error)}) from primary
         if primary is None:
-            try:self._usable()
+            try:
+                self._usable()
+                self._check_bulk_exchange()
             except BaseException as error:self._failed=True;primary=error
         if primary is not None:
             raise NativeChannelError('ntfs.channel_exchange_unknown',possible_dispatch=self._possible_dispatch,
@@ -192,7 +222,7 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
                 'channel_id':self.channel_id,'sequence':self._sequence+1,
                 'kind':'execute_bundle','run_id':run_id,'intent_digest':intent_digest}
             request_raw=canonical_bytes(common)
-            deadline=time.monotonic()+30.0  # One local window, NEVER reset for another frame.
+            deadline=self._bulk_exchange_deadline()
             self._sequence+=1
             self._possible_dispatch=True  # Sticky BEFORE any execute byte can leave.
             self._send_frame(request_raw,deadline)
@@ -228,7 +258,9 @@ class LinuxNativeBundleChannel(LinuxNativeChannelV4):
                             'primary':None if primary is None else _primary(primary),
                             'finalization':_primary(error)}) from primary
         if primary is None:
-            try:self._usable()
+            try:
+                self._usable()
+                self._check_bulk_exchange()
             except BaseException as error:self._failed=True;primary=error
         if primary is not None:
             raise NativeChannelError('ntfs.channel_exchange_unknown',possible_dispatch=self._possible_dispatch,

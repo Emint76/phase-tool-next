@@ -104,6 +104,37 @@ def _active_input_deadline_ns():
     return token.deadline_ns
 
 
+def _qualification_bulk_deadline_ns(launch, *, preparation=False):
+    """Only the active sealed ordinary staged File2/Bundle owner may bind bulk I/O."""
+    token = _OPERATION.get()
+    if token is None or token.qualification_cold_publication_seconds != 900:
+        return None
+    from .bootstrap import _NativeAcceptedLaunch
+    from .exchange_deadline import bulk_publication_role
+    from .owner_directory_launch import _qualification_cold_publication_seconds
+    _require(type(launch) is _NativeAcceptedLaunch, 'ntfs.accepted_launch_binding_required')
+    if launch._inspection_only or not (launch._file2 or launch._bundle):
+        return None
+    role = bulk_publication_role(launch.manifest)
+    if role is None:
+        return None
+    request = launch.invocation['request']
+    if preparation:
+        _require(set(request) == {'operation','native_input_stage_request_version','header'}
+            and request['operation'] == 'stage_input' and request['native_input_stage_request_version'] == '1.0'
+            and type(request['header']) is dict and request['header'].get('role') == role,
+            'input_stage.fixed_role_request')
+    else:
+        if request.get('operation') != 'execute' or 'native_staged_publication_request_version' not in request:
+            return None
+        _require_staged_publication_request(request, role=role)
+    _require(_qualification_cold_publication_seconds(launch._config) == 900,
+        'input_stage.deadline_cap_required')
+    token.check()
+    _left(token.deadline_ns)
+    return token.deadline_ns
+
+
 def _cap_input_deadline(fallback_ns):
     deadline=_active_input_deadline_ns()
     if deadline is None:return fallback_ns
@@ -452,6 +483,7 @@ def run_linux_input_stage_startup(*,config_bytes,expected_config_digest,manifest
     """One literal preparation role, same wheel/container, no Core invocation."""
     from .entrypoint import _linux_stdio_identity
     from .bootstrap import _NativeAcceptedLaunch
+    from .exchange_deadline import receive_linux_invocation
     from ...evidence import _InputStageFrames,_OwnedInputStageSink
     from ...installation import _native_read_binding_for_launch,_linux_filesystem_type,_require_native_no_descendant_mounts
     from ...installation import qualify_host_authority_roots
@@ -461,6 +493,15 @@ def run_linux_input_stage_startup(*,config_bytes,expected_config_digest,manifest
     frames=_InputStageFrames(deadline);sink=None;primary=None;result=None
     try:
         invocation=_control(frames.receive_frame(_CONTROL))
+        invocation, owned_deadline = receive_linux_invocation(invocation,
+            role=None if _c01_timeout_stage else 'prepare-input',
+            startup={'config_bytes':config_bytes,'expected_config_digest':expected_config_digest,
+                'manifest_bytes':manifest_bytes,'expected_manifest_digest':expected_manifest_digest,
+                '_experimental_admission_context':_experimental_admission_context},
+            send_frame=frames.send_frame,receive_frame=frames.receive_frame)
+        if owned_deadline is not None:
+            deadline = owned_deadline
+            frames._bind_qualification_exchange_deadline(owned_deadline)
         launch=_NativeAcceptedLaunch(config_bytes=config_bytes,expected_config_digest=expected_config_digest,
             manifest_bytes=manifest_bytes,expected_manifest_digest=expected_manifest_digest,
             invocation_bytes=canonical_bytes(invocation),_inspection_only=False,
@@ -622,9 +663,15 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
             invocation['request']={'operation':'stage_input','native_input_stage_request_version':'1.0','header':_control(sender.header)}
             launch=_NativeAcceptedLaunch(**owner._startup,invocation_bytes=canonical_bytes(invocation),_inspection_only=False)
             owner._held_launch=launch
+            owned_deadline = _qualification_bulk_deadline_ns(launch, preparation=True)
             _left(deadline_ns);process=launch.spawn_input_stage()
             witness=WindowsProcessWitness(process);pipe=launch._pipe(process)
-            pipe.send_frame(launch._invocation_bytes,_windows_input_frame_deadline_ns(deadline_ns))
+            if owned_deadline is None:
+                pipe.send_frame(launch._invocation_bytes,_windows_input_frame_deadline_ns(deadline_ns))
+            else:
+                from .exchange_deadline import send_linux_invocation
+                _require(owned_deadline == deadline_ns, 'input_stage.deadline_cap_required')
+                send_linux_invocation(pipe,launch._invocation_bytes,role='prepare-input',deadline_ns=owned_deadline)
             # Reuse the exact bytes from the single pinned Version2 read.
             frames=(raw for raw in buffered)if role=='Version2'else sender.frames()
             with closing(frames)as frames:

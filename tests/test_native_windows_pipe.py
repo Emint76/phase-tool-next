@@ -16,6 +16,7 @@ def fake_boundary(monkeypatch):
     frames=WindowsPipeFrames.__new__(WindowsPipeFrames)
     frames._initialization_attempted=True
     frames._failed=frames._sealed=False
+    frames._qualification_exchange_deadline_ns=None
     frames._owner=os.getpid(),threading.get_ident()
     frames._gate=threading.Lock()
     frames._identities=((190,290),(191,291))
@@ -24,6 +25,47 @@ def fake_boundary(monkeypatch):
 
 
 def primary(error):return error.value.details['primary']['code']
+
+
+def test_qualified_exchange_keeps_absolute_cutoff_and_existing_frame_limit(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr(time, 'perf_counter_ns', lambda: clock[0])
+    frames = fake_boundary(monkeypatch)
+    cutoff = 90_000_000_000
+    frames._bind_qualification_exchange_deadline(cutoff)
+    with pytest.raises(PhaseError, match='ntfs.pipe_exchange_deadline_binding'):
+        frames._bind_qualification_exchange_deadline(cutoff)
+    observed = []
+
+    def capture_wire(data, deadline, progress):
+        observed.append(deadline)
+        progress['wire_bytes'] = len(data)
+
+    monkeypatch.setattr(frames, '_write', capture_wire)
+    frames.send_frame(b'first', cutoff)
+    clock[0] = 40_000_000_000
+    frames.send_frame(b'second', cutoff)
+    clock[0] = 88_000_000_000
+    frames.send_frame(b'third', cutoff)
+    assert observed == [30_000_000_000, 70_000_000_000, cutoff]
+    clock[0] = cutoff
+    with pytest.raises(PhaseError) as error:
+        frames.send_frame(b'late', cutoff)
+    assert primary(error) == 'ntfs.pipe_deadline_expired'
+    assert len(observed) == 3 and frames._failed
+
+
+def test_unbound_or_mismatched_exchange_cannot_get_a_long_frame(monkeypatch):
+    monkeypatch.setattr(time, 'perf_counter_ns', lambda: 0)
+    unbound = fake_boundary(monkeypatch)
+    with pytest.raises(PhaseError) as original:
+        unbound.send_frame(b'legacy', 90_000_000_000)
+    assert primary(original) == 'ntfs.pipe_invalid_deadline'
+    bound = fake_boundary(monkeypatch)
+    bound._bind_qualification_exchange_deadline(60_000_000_000)
+    with pytest.raises(PhaseError) as farther:
+        bound.send_frame(b'changed', 60_000_000_001)
+    assert primary(farther) == 'ntfs.pipe_exchange_deadline_binding'
 
 
 def test_partial_write_keeps_exact_offset(monkeypatch):

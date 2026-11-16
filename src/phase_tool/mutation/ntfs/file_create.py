@@ -213,6 +213,7 @@ def _execute_bound_file_create(grant,effect,content,*,run_id,timestamp,_file2_so
     # role checks; operation input cannot select this private source or a bound.
     locator=safe_relative_locator(effect['target']['relative_locator'])
     file2=_file2_source is not None
+    qualification_exchange=file2 and getattr(_file2_source,'_qualification_exchange',False)
     length=_file2_source.content_length if file2 else len(content)
     maximum=2*1024**3 if file2 else _CONTENT_LIMIT
     io,trace = NativeMutationIO(),_MutationTrace()
@@ -229,6 +230,7 @@ def _execute_bound_file_create(grant,effect,content,*,run_id,timestamp,_file2_so
                 lock.assert_held()
                 scope.assert_bound()
                 try:
+                    if qualification_exchange:_file2_source._check()
                     with io.create_exclusive(scope.parent,scope.name,directory=False,
                                              expected_parent=scope.parent_identity) as handle:
                         trace.collect(io)
@@ -251,6 +253,7 @@ def _execute_bound_file_create(grant,effect,content,*,run_id,timestamp,_file2_so
                                 while offset<len(chunk):
                                     lock.assert_held();scope.assert_bound()
                                     try:
+                                        if qualification_exchange:_file2_source._check()
                                         count=io.write_chunk(handle,chunk[offset:],offset=written,expected=identity)
                                         offset+=count;written+=count
                                     finally:
@@ -258,10 +261,12 @@ def _execute_bound_file_create(grant,effect,content,*,run_id,timestamp,_file2_so
                             _file2_source.finish_remaining()  # Exact replay END/hash/length before flush/readback.
 
                         try:
+                            if qualification_exchange:_file2_source._check()
                             io.flush_file(handle,identity)
                         finally:
                             trace.collect(io)
                         try:
+                            if qualification_exchange:_file2_source._check()
                             io.flush_namespace(scope.parent,scope.parent_identity)
                         finally:
                             trace.collect(io)

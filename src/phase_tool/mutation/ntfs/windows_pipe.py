@@ -87,6 +87,7 @@ class WindowsPipeFrames:
         self._sealed = False
         self._eof_attempted = False
         self._last_frame_failure = None
+        self._qualification_exchange_deadline_ns = None
         self._owner = os.getpid(), threading.get_ident()
         self._gate = threading.Lock()
         self._streams = reader, writer  # Strong refs; lifetime remains owner's duty.
@@ -132,6 +133,24 @@ class WindowsPipeFrames:
     def _usable(self) -> None:
         _require(self._owner == (os.getpid(), threading.get_ident()), 'ntfs.pipe_owner_changed')
         _require(not self._failed and not self._sealed, 'ntfs.pipe_unavailable')
+
+    def _bind_qualification_exchange_deadline(self, deadline_ns: int) -> None:
+        """One absolute QPC cutoff supplied by the accepted staged owner."""
+        self._usable()
+        _require(self._qualification_exchange_deadline_ns is None
+            and type(deadline_ns) is int
+            and 0 < deadline_ns - time.perf_counter_ns() <= 900_000_000_000,
+            'ntfs.pipe_exchange_deadline_binding')
+        self._qualification_exchange_deadline_ns = deadline_ns
+
+    def _owned_frame_deadline(self, deadline_ns: int) -> int:
+        bound = getattr(self, '_qualification_exchange_deadline_ns', None)
+        if bound is None:
+            return deadline_ns
+        _require(type(deadline_ns) is int and deadline_ns <= bound,
+            'ntfs.pipe_exchange_deadline_binding')
+        from .input_stage import _windows_input_frame_deadline_ns
+        return _windows_input_frame_deadline_ns(deadline_ns)
 
     def _identity(self, side: int) -> int:
         self._usable()
@@ -209,6 +228,7 @@ class WindowsPipeFrames:
             _require(acquired, 'ntfs.pipe_reentrant')
             _require(type(maximum_bytes) is int and 1 <= maximum_bytes <= MAX_FRAME,
                      'ntfs.pipe_frame_limit')
+            deadline_ns = self._owned_frame_deadline(deadline_ns)
             _require(type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 30_000_000_000,
                      'ntfs.pipe_invalid_deadline')
             self._identity(0)
@@ -278,6 +298,7 @@ class WindowsPipeFrames:
             self._eof_attempted = True
             acquired = self._gate.acquire(blocking=False)
             _require(acquired,'ntfs.pipe_reentrant')
+            deadline_ns = self._owned_frame_deadline(deadline_ns)
             _require(type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 30_000_000_000,
                 'ntfs.pipe_invalid_deadline')
             while True:

@@ -1746,6 +1746,7 @@ class _OwnedInputStageSink:
             fd=self.io.open_root(self.root)
             self.rootfd=self._owned(fd,None,None,True)
             if self._identity(self.io.fstat(fd))!=self.expected:raise PhaseError('input_stage.preparation_identity')
+            self._time()
             self.io.mkdir(self.rootfd,self.name)
             self.stagefd=self._owned(self.io.directory(self.rootfd,self.name),self.rootfd,self.name,True)
             self.directories['']=self.stagefd
@@ -1824,7 +1825,7 @@ class _OwnedInputStageSink:
     def _directory(self,relative):
         if relative in self.directories:return self.directories[relative]
         parts=relative.split('/');parent_relative='/'.join(parts[:-1]);parent=self._directory(parent_relative)
-        self._time();self._check(self._record(parent));self.io.mkdir(parent,parts[-1])
+        self._check(self._record(parent));self._time();self.io.mkdir(parent,parts[-1])
         fd=self._owned(self.io.directory(parent,parts[-1]),parent,parts[-1],True)
         self.directories[relative]=fd;return fd
 
@@ -1841,7 +1842,8 @@ class _OwnedInputStageSink:
         # already passed the closed bundle/file grammar before sink creation.
         relative='payload/'+path;parent_relative='/'.join(relative.split('/')[:-1])
         parent=self._directory(parent_relative);leaf=value.name
-        self._check(self._record(parent));fd=self._owned(self.io.file(parent,leaf),parent,leaf,False)
+        self._check(self._record(parent));self._time()
+        fd=self._owned(self.io.file(parent,leaf),parent,leaf,False)
         self.current={'fd':fd,'index':index,'path':path,'length':length,'offset':0,'hash':hashlib.sha256()}
 
     def write(self,raw):
@@ -1850,7 +1852,7 @@ class _OwnedInputStageSink:
             or current['offset']+len(raw)>current['length']):raise PhaseError('input_stage.write_bound')
         offset=0
         while offset<len(raw):
-            self._time();self._check(self._record(current['fd']))
+            self._check(self._record(current['fd']));self._time()
             count=self.io.write(current['fd'],raw[offset:])
             if type(count)is not int or not 0<count<=len(raw)-offset:raise PhaseError('input_stage.write_no_progress')
             offset+=count;self._time()
@@ -1870,7 +1872,7 @@ class _OwnedInputStageSink:
         if current is None or current['offset']!=current['length']:raise PhaseError('input_stage.member_incomplete')
         actual={'path':current['path'],'length':current['offset'],'digest':'sha256:'+current['hash'].hexdigest()}
         if actual!=expected:raise PhaseError('input_stage.member_digest')
-        record=self._record(current['fd']);self._check(record);self.io.flush(current['fd']);self._time()
+        record=self._record(current['fd']);self._check(record);self._time();self.io.flush(current['fd']);self._time()
         if self.io.rewind(current['fd'])!=0:raise PhaseError('input_stage.readback_seek')
         observed=hashlib.sha256();length=0
         while True:
@@ -1904,16 +1906,17 @@ class _OwnedInputStageSink:
         # close, process exit, authoritative completion or Phase acceptance.
         marker=canonical_bytes(dict(result,telemetry_stage='PRE_RETURN_PREPARATION_DATA',final_acceptance=None))
         if len(marker)>4*1024**2:raise PhaseError('input_stage.marker_bound')
+        self._time()
         fd=self._owned(self.io.file(self.stagefd,'input-stage.json'),self.stagefd,'input-stage.json',False)
         offset=0
         while offset<len(marker):
-            self._time();self._check(self._record(fd));count=self.io.write(fd,marker[offset:offset+65536])
+            self._check(self._record(fd));self._time();count=self.io.write(fd,marker[offset:offset+65536])
             if type(count)is not int or count<=0 or count>min(65536,len(marker)-offset):raise PhaseError('input_stage.marker_write')
             offset+=count
-        self.io.flush(fd);self._close_one(self._record(fd))
+        self._time();self.io.flush(fd);self._close_one(self._record(fd))
         for fd in reversed(list(self.directories.values())):
-            self._time();self._check(self._record(fd));self.io.flush(fd)
-        self.io.flush(self.rootfd);self._time();self._close_all();self._time()
+            self._check(self._record(fd));self._time();self.io.flush(fd)
+        self._time();self.io.flush(self.rootfd);self._time();self._close_all();self._time()
         self._check_closed_names();self._time()
         # The sender already retains its exact header. Do not duplicate that
         # full inventory in a <=2MiB ACK alongside 1024 long member paths.
@@ -1947,8 +1950,18 @@ class _InputStageFrames:
     def __init__(self,deadline_ns):
         import time,threading
         self.owner=(os.getpid(),threading.get_ident());self.deadline=deadline_ns
+        self._qualification_exchange=False
         self.failed=False;self.sealed=False;self.busy=False;self.identities=tuple(self._pipe(fd)for fd in(0,1))
         self._time()
+
+    def _bind_qualification_exchange_deadline(self,deadline_ns):
+        import time
+        self._time()
+        if (self._qualification_exchange or self.busy or self.failed or self.sealed
+                or type(deadline_ns)is not int or not 0<deadline_ns-time.monotonic_ns()<=900_000_000_000):
+            raise PhaseError('input_stage.deadline')
+        self.deadline=deadline_ns
+        self._qualification_exchange=True
 
     @staticmethod
     def _pipe(fd):
@@ -1959,31 +1972,38 @@ class _InputStageFrames:
             or not flags&os.O_NONBLOCK):raise PhaseError('input_stage.owned_stdio_required')
         return info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode)
 
-    def _time(self):
+    def _time(self,deadline=None):
         import time,threading
-        if self.owner!=(os.getpid(),threading.get_ident())or type(self.deadline)is not int or time.monotonic_ns()>=self.deadline:
+        if (self.owner!=(os.getpid(),threading.get_ident()) or type(self.deadline)is not int
+                or time.monotonic_ns()>=(self.deadline if deadline is None else min(self.deadline,deadline))):
             raise PhaseError('input_stage.deadline')
 
-    def _fd(self,fd):
-        self._time()
+    def _frame_deadline(self):
+        if not self._qualification_exchange:return self.deadline
+        import time
+        return min(self.deadline,time.monotonic_ns()+30_000_000_000)
+
+    def _fd(self,fd,deadline):
+        self._time(deadline)
         if self.failed or self.sealed or self._pipe(fd)!=self.identities[fd]:raise PhaseError('input_stage.stdio_changed')
+        if self._qualification_exchange:self._time(deadline)
         return fd
 
-    def _ready(self,fd,writing):
+    def _ready(self,fd,writing,deadline):
         import select,time
-        poll=select.poll();poll.register(self._fd(fd),select.POLLOUT if writing else select.POLLIN)
+        poll=select.poll();poll.register(self._fd(fd,deadline),select.POLLOUT if writing else select.POLLIN)
         while True:
-            self._time();left=self.deadline-time.monotonic_ns()
+            self._time(deadline);left=deadline-time.monotonic_ns()
             if poll.poll(min(100,max(1,left//1_000_000))):return
 
-    def _read(self,count):
+    def _read(self,count,deadline):
         out=bytearray()
         while len(out)<count:
-            self._ready(0,False)
-            try:part=os.read(self._fd(0),min(65536,count-len(out)))
+            self._ready(0,False,deadline)
+            try:part=os.read(self._fd(0,deadline),min(65536,count-len(out)))
             except BlockingIOError:continue
             if not part:raise PhaseError('input_stage.truncated_stream')
-            out.extend(part);self._time()
+            out.extend(part);self._time(deadline)
         return bytes(out)
 
     def receive_frame(self,maximum_bytes):
@@ -1991,13 +2011,14 @@ class _InputStageFrames:
         self.busy=True
         try:
             if type(maximum_bytes)is not int or not 0<maximum_bytes<=2*1024**2:raise PhaseError('input_stage.frame_bound')
-            header=self._read(9)
+            deadline=self._frame_deadline()
+            header=self._read(9,deadline)
             if re.fullmatch(b'[0-9a-f]{8}\n',header)is None:raise PhaseError('input_stage.frame_header')
             length=int(header[:8],16)
             if not 0<length<=maximum_bytes:raise PhaseError('input_stage.frame_bound')
-            raw=self._read(length)
-            if self._read(1)!=b'\n':raise PhaseError('input_stage.frame_terminator')
-            self._time();return raw
+            raw=self._read(length,deadline)
+            if self._read(1,deadline)!=b'\n':raise PhaseError('input_stage.frame_terminator')
+            self._time(deadline);return raw
         except BaseException:
             self.failed=True;raise
         finally:self.busy=False
@@ -2007,13 +2028,14 @@ class _InputStageFrames:
         self.busy=True
         try:
             if type(raw)is not bytes or not 0<len(raw)<=2*1024**2:raise PhaseError('input_stage.frame_bound')
+            deadline=self._frame_deadline()
             data=f'{len(raw):08x}\n'.encode()+raw+b'\n';offset=0
             while offset<len(data):
-                self._ready(1,True)
-                try:count=os.write(self._fd(1),data[offset:offset+65536])
+                self._ready(1,True,deadline)
+                try:count=os.write(self._fd(1,deadline),data[offset:offset+65536])
                 except BlockingIOError:continue
                 if count<=0:raise PhaseError('input_stage.frame_no_progress')
-                offset+=count;self._time()
+                offset+=count;self._time(deadline)
         except BaseException:
             self.failed=True;raise
         finally:self.busy=False

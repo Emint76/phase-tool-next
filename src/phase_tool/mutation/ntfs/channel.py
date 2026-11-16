@@ -118,13 +118,21 @@ class LinuxNativeChannel:
             if poll.poll(min(100, max(1, int(left * 1000)))):
                 return
 
+    def _checked_io_argument(self, argument, deadline: float):
+        # The syscall evaluates this after the exact descriptor check.
+        bound = getattr(self, '_qualification_exchange_deadline_ns', None)
+        if bound is not None:
+            _require(time.monotonic_ns() < bound and time.monotonic() < deadline,
+                     'ntfs.channel_deadline_expired')
+        return argument
+
     def _write(self, data: bytes, deadline: float) -> None:
         offset = 0
         while offset < len(data):
             self._ready(self._identity(1), True, deadline)
             try:
                 # Recheck after polling, immediately before the actual syscall.
-                count = os.write(self._identity(1), data[offset:offset + 65536])
+                count = os.write(self._identity(1), self._checked_io_argument(data[offset:offset + 65536], deadline))
             except BlockingIOError:
                 continue
             _require(count > 0, 'ntfs.channel_write_no_progress')
@@ -136,7 +144,7 @@ class LinuxNativeChannel:
         while len(value) < count:
             self._ready(self._identity(0), False, deadline)
             try:
-                data = os.read(self._identity(0), min(65536, count - len(value)))
+                data = os.read(self._identity(0), self._checked_io_argument(min(65536, count - len(value)), deadline))
             except BlockingIOError:
                 continue
             _require(bool(data), 'ntfs.channel_eof_unknown')

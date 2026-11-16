@@ -216,7 +216,7 @@ def fixed_windows_mcp_sdk_bootstrap(outer,config_raw):
     return (cookie,library)
 
 
-def receive_initial(_input_deadline_ns=None):
+def receive_initial(_input_deadline_ns=None, *, _linux_role=None, _linux_startup=None):
     from phase_tool.canonical import canonical_bytes,parse_json_bytes
     import time
     deadline_ns=None
@@ -234,16 +234,57 @@ def receive_initial(_input_deadline_ns=None):
         _linux_stdio_identity()  # Own fresh stdio before lending it.
         transport=LinuxNativeChannel('0'*32)  # Framing-only, never an observe/execute request.
         deadline=time.monotonic()+30
-        header=transport._read(9,deadline)
-        need(re.fullmatch(b'[0-9a-f]{8}\n',header) is not None)
-        length=int(header[:8],16);need(0<length<=2*1024**2)
-        raw=transport._read(length,deadline)
-        need(transport._read(1,deadline)==b'\n' and time.monotonic()<deadline)
-        transport.seal()  # No close, flag reset, GO or peer-exit inference.
+        def only_frame(maximum):
+            header=transport._read(9,deadline)
+            need(re.fullmatch(b'[0-9a-f]{8}\n',header) is not None)
+            length=int(header[:8],16);need(0<length<=maximum)
+            raw=transport._read(length,deadline)
+            need(transport._read(1,deadline)==b'\n' and time.monotonic()<deadline)
+            return raw
+        def ready_frame(body):
+            transport._write(f'{len(body):08x}\n'.encode('ascii')+body+b'\n',deadline)
+            need(time.monotonic()<deadline)
+        raw=only_frame(2*1024**2)
     value=parse_json_bytes(raw,maximum_bytes=2*1024**2)
     need(type(value) is dict and canonical_bytes(value)==raw)
+    if os.name!='nt':
+        from phase_tool.mutation.ntfs.exchange_deadline import receive_linux_invocation
+        try:
+            value,deadline_ns=receive_linux_invocation(value,role=_linux_role,startup=_linux_startup,
+                send_frame=ready_frame,receive_frame=only_frame)
+        finally:
+            transport.seal()  # No close, flag reset, GO or peer-exit inference.
     return value,transport,deadline_ns
 
+
+def _worker_exchange_original(initial,outer,config_raw,manifest_raw,admission):
+    """Accept a same-host cutoff only on an installed bulk Worker Original."""
+    field='_qualification_exchange_deadline_ns'
+    if field not in initial:
+        return initial,None
+    import time
+    deadline=initial[field]
+    need(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=900_000_000_000
+        and set(initial)=={'native_worker_original_version','channel_id','projection',field})
+    manifest=json.loads(manifest_raw)
+    installation=manifest['native_read_installation_version'],manifest['contract']['id']
+    versions={
+        ('1.3','file_create.v2'):('2.0','1.2'),
+        ('1.6','bundle_create.v1'):('3.0','1.4'),
+        ('1.9','bundle_create.v2'):('3.0','1.5'),
+    }.get(installation)
+    projection=initial['projection']
+    need(type(projection) is dict and type(projection.get('context')) is dict
+        and versions==(initial['native_worker_original_version'],projection['context'].get('worker_version'))
+        and projection['context'].get('installation_digest')==outer['manifest_digest'])
+    if versions[0]=='3.0':
+        need(projection.get('contract')==manifest['contract'])
+    from phase_tool.mutation.ntfs.owner_directory_launch import _accepted_cold_publication_seconds
+    need(_accepted_cold_publication_seconds(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
+        manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
+        _experimental_admission_context=admission)==900)
+    need(time.perf_counter_ns()<deadline)
+    return {name:value for name,value in initial.items() if name!=field},deadline
 
 
 def _input_failure_diagnostic(phase,error):
@@ -378,8 +419,17 @@ def main():
         return run_native_inspection_mcp(config_bytes=config_raw,
             expected_config_digest=outer['config_digest'],manifest_bytes=manifest_raw,
             expected_manifest_digest=outer['manifest_digest'],_experimental_admission_context=admission)
-    initial,initial_transport,initial_deadline_ns=(receive_initial() if input_deadline_ns is None
-        else receive_initial(input_deadline_ns))
+    if role=='core':
+        initial,initial_transport,initial_deadline_ns=receive_initial(_linux_role='core',_linux_startup={
+            'config_bytes':config_raw,'expected_config_digest':outer['config_digest'],
+            'manifest_bytes':manifest_raw,'expected_manifest_digest':outer['manifest_digest'],
+            '_experimental_admission_context':admission})
+    else:
+        initial,initial_transport,initial_deadline_ns=(receive_initial() if input_deadline_ns is None
+            else receive_initial(input_deadline_ns))
+    worker_exchange_deadline_ns=None
+    if role=='worker':
+        initial,worker_exchange_deadline_ns=_worker_exchange_original(initial,outer,config_raw,manifest_raw,admission)
     if role=='publish-input':
         return _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,config_raw,manifest_raw,admission)
     if role=='publish-bundle':
@@ -442,8 +492,15 @@ def main():
         initial_transport.send_frame(canonical_bytes(result),time.perf_counter_ns()+30_000_000_000)
         initial_transport.seal()
         return result['exit_code']
-    if role=='worker':return entrypoint.run_native_worker(launch,initial,initial_transport,_transfer_deadline_ns=initial_deadline_ns)
-    if role=='core':return entrypoint.run_native_core(launch)
+    if role=='worker':
+        if worker_exchange_deadline_ns is not None:
+            return entrypoint.run_native_worker(launch,initial,initial_transport,
+                _transfer_deadline_ns=worker_exchange_deadline_ns,_qualification_exchange_deadline=True)
+        return entrypoint.run_native_worker(launch,initial,initial_transport,_transfer_deadline_ns=initial_deadline_ns)
+    if role=='core':
+        from phase_tool.mutation.ntfs.exchange_deadline import linux_exchange_scope
+        with linux_exchange_scope(initial_deadline_ns):
+            return entrypoint.run_native_core(launch)
     if role in {'inspect','observe-recovery'}:return entrypoint.run_native_inspection(launch)
     return entrypoint.run_native_original(launch)
 

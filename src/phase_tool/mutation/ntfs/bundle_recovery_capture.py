@@ -76,7 +76,10 @@ def run_bundle_worker_capture(pipe, projection, channel_id, *, _transfer_deadlin
         raw = canonical_bytes(completion)
         _require(len(raw) <= 512*1024, 'ntfs.worker_completion_limit')
         from .bundle_recovery_terminal import windows_terminal
-        windows_terminal(pipe, sending=True, raw=raw, deadline_ns=terminal_deadline_ns())
+        reporting_deadline = terminal_deadline_ns()
+        if getattr(pipe, '_qualification_exchange_deadline_ns', None) is not None:
+            reporting_deadline = min(reporting_deadline, _transfer_deadline_ns + TERMINAL_GRACE_NS)
+        windows_terminal(pipe, sending=True, raw=raw, deadline_ns=reporting_deadline)
     except BaseException as error:
         transport_error = error
     finally:
@@ -113,6 +116,9 @@ def execute_original_with_capture(parent, intent_digest, *, common):
              and grant == parent._launch.root_grant, 'ntfs.parent_original_binding_mismatch')
     if getattr(parent,'_dynamic_a05_test',None) is not None:
         parent._after_original_read(parsed,intent_digest)
+    owned_deadline = getattr(parent, '_qualification_exchange_deadline_ns', None)
+    if owned_deadline is not None:
+        _require(time.perf_counter_ns() < owned_deadline, 'input_stage.deadline')
     parent._spawn_attempted = True
     parent._worker = parent._launch.spawn_worker()
     parent._worker_count = 1
@@ -122,20 +128,27 @@ def execute_original_with_capture(parent, intent_digest, *, common):
     terminal_failure = None
     closure_errors = []
     drain_attempted = terminal_read_attempted = False
-    terminal_budget = None
+    terminal_budget = None if owned_deadline is None else owned_deadline + TERMINAL_GRACE_NS
     try:
         witness = WindowsProcessWitness(parent._worker)
         pipe = parent._launch.worker_pipe(parent._worker)
+        if owned_deadline is not None:
+            pipe._bind_qualification_exchange_deadline(owned_deadline)
         if getattr(parent,'_g01_creation_handle_test',None) is not None:
             parent._after_worker_job_bound(parent._worker,parsed,parent._file2_exchange_deadline)
         parent._launch.send_worker_original(pipe, parsed,
             _handshake_deadline_ns=parent._file2_exchange_deadline)
         early = parent._transfer_bundle(pipe, parsed, parent._file2_exchange_deadline, common)
-        terminal_budget = max(time.perf_counter_ns(),parent._file2_exchange_deadline)+int(CORE_TERMINAL_SECONDS*1_000_000_000)
+        if owned_deadline is None:
+            terminal_budget = max(time.perf_counter_ns(),parent._file2_exchange_deadline)+int(CORE_TERMINAL_SECONDS*1_000_000_000)
         if early is None:
             from .bundle_recovery_terminal import windows_terminal
             terminal_read_attempted = True
-            raw, _ = windows_terminal(pipe, sending=False, deadline_ns=completion_wait_deadline(parent._file2_exchange_deadline))
+            if owned_deadline is None:
+                read_deadline = completion_wait_deadline(parent._file2_exchange_deadline)
+            else:
+                read_deadline = min(terminal_budget, time.perf_counter_ns() + 30_000_000_000)
+            raw, _ = windows_terminal(pipe, sending=False, deadline_ns=read_deadline)
         else:
             raw = early
         parent._completion_wire = raw
@@ -158,7 +171,8 @@ def execute_original_with_capture(parent, intent_digest, *, common):
                 # reporting remains here; the parent's earlier effect clock must
                 # not cut off the existing bounded reporting allocation.
                 raw, _ = windows_terminal(pipe, sending=False,
-                    deadline_ns=terminal_budget)
+                    deadline_ns=(terminal_budget if owned_deadline is None
+                        else min(terminal_budget, time.perf_counter_ns() + 30_000_000_000)))
                 parent._completion_wire = raw
                 completion = validate_bundle_worker_completion(raw, context=context, grant_data=grant,
                     effect=effect, expected_pid=parent._worker.pid)
@@ -195,11 +209,15 @@ def execute_original_with_capture(parent, intent_digest, *, common):
         'post_observation': None, 'ingress_state': 'consumed'}
     if operation_primary is None and not closure_errors:
         try:
+            if owned_deadline is not None:
+                _require(time.perf_counter_ns() < owned_deadline, 'input_stage.deadline')
             _require(completion is not None and parent._worker_finalized, 'ntfs.worker_finalization_unknown')
             partial['post_observation'] = validate_bundle_observation(
                 observe_bundle(_grant(grant), effect['target']['relative_locator']),
                 grant, effect['target']['relative_locator'])
             parent._launch.check_runtime()
+            if owned_deadline is not None:
+                _require(time.perf_counter_ns() < owned_deadline, 'input_stage.deadline')
         except BaseException as error:
             operation_primary = error
     parent._partial_bytes = canonical_bytes(partial)
@@ -216,5 +234,6 @@ def execute_original_with_capture(parent, intent_digest, *, common):
                 if isinstance(operation_primary,PhaseError) and operation_primary.code=='ntfs.terminal_frame_unknown' else None),
             'terminal_drain_attempted': drain_attempted,
             'possible_dispatch': parent._go_attempted, 'retry_authorized': False}) from operation_primary
-    parent._terminal_reply_deadline = min(terminal_deadline_ns(), terminal_budget)
+    parent._terminal_reply_deadline = min(terminal_deadline_ns(),
+        terminal_budget if owned_deadline is None else owned_deadline)
     return partial

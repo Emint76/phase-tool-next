@@ -4,7 +4,8 @@ metadata/READY/ACK matches never authenticate that boundary. No journal/queue,
 receipt writer, effect retry, process search, respawn, terminate or history owner.
 """
 from __future__ import annotations
-from .input_stage import _active_input_deadline_ns,_cap_input_deadline,_input_observation_timeout_ms
+from .input_stage import (_active_input_deadline_ns, _cap_input_deadline, _input_observation_timeout_ms,
+    _qualification_bulk_deadline_ns)
 
 import os
 import base64
@@ -142,6 +143,7 @@ class _NativeWindowsParent:
         self._file2=launch._file2
         self._bundle=getattr(launch,'_bundle',False)
         self._file2_exchange_deadline=None
+        self._qualification_exchange_deadline_ns = None
         generation=launch.manifest['native_read_installation_version']
         self._channel_version=(('1.3' if self._file2 else '1.2') if generation=='1.4' else
             {'1.1':'1.1','1.2':'1.2','1.3':'1.3','1.5':'1.4','1.6':'1.5','1.7':'1.6','1.8':'1.6','1.9':'1.7'}[generation])
@@ -224,7 +226,14 @@ class _NativeWindowsParent:
                 and type(value['intent_digest']) is str
                 and _DIGEST.fullmatch(value['intent_digest']) is not None,
                 'ntfs.parent_request_binding_mismatch')
-            if self._file2 or self._bundle:self._file2_exchange_deadline=_deadline()
+            if self._file2 or self._bundle:
+                bound = getattr(self._pipe, '_qualification_exchange_deadline_ns', None)
+                if bound is not None:
+                    _require(bound == _qualification_bulk_deadline_ns(self._launch) and all(test is None for test in
+                        (self._prepared_ack_test, self._dynamic_a05_test, self._g01_creation_handle_test)),
+                        'ntfs.pipe_exchange_deadline_binding')
+                self._qualification_exchange_deadline_ns = bound
+                self._file2_exchange_deadline = _deadline() if bound is None else bound
             answer=self._execute(value['intent_digest'],_common={k:value[k] for k in _COMMON})
         elif kind=='recover_bundle':
             _require(set(value)==_COMMON|{'prepared','recovery_context'},'ntfs.parent_request_shape')
@@ -278,6 +287,8 @@ class _NativeWindowsParent:
         # Consume before Popen, READY parsing or any possible GO. Failed spawn
         # is terminal too; no second worker, fallback or replacement process.
         handshake_deadline=self._file2_exchange_deadline if self._file2 or self._bundle else _deadline() if self._version1 or self._version2 else None
+        if getattr(self, '_qualification_exchange_deadline_ns', None) is not None:
+            _require(time.perf_counter_ns() < handshake_deadline, 'input_stage.deadline')
         self._spawn_attempted=True
         self._worker=self._launch.spawn_worker()
         self._worker_count=1
@@ -288,6 +299,8 @@ class _NativeWindowsParent:
         try:
             witness=WindowsProcessWitness(self._worker)
             pipe=self._launch.worker_pipe(self._worker)
+            if getattr(self, '_qualification_exchange_deadline_ns', None) is not None:
+                pipe._bind_qualification_exchange_deadline(handshake_deadline)
             self._after_worker_job_bound(self._worker,parsed,handshake_deadline)
             if self._version1 or self._version2 or self._file2 or self._bundle:
                 self._launch.send_worker_original(pipe,parsed,_handshake_deadline_ns=handshake_deadline)

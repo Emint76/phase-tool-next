@@ -726,17 +726,24 @@ class _NativeAcceptedLaunch:
     def send_worker_original(self,pipe,parsed,*,_handshake_deadline_ns=None):
         from .windows_pipe import WindowsPipeFrames
         _require(type(pipe) is WindowsPipeFrames,'ntfs.original_parsed_data_required')
+        bound = getattr(pipe, '_qualification_exchange_deadline_ns', None)
+        qualification = {}
+        if bound is not None:
+            from .input_stage import _qualification_bulk_deadline_ns
+            _require(bound == _handshake_deadline_ns == _qualification_bulk_deadline_ns(self),
+                'ntfs.pipe_exchange_deadline_binding')
+            qualification['_qualification_exchange_deadline_ns'] = bound
         if self._bundle:
             from .bundle_execution import _bundle_projection_value
             _require(type(_handshake_deadline_ns) is int,'ntfs.bundle_owned_deadline_required')
             pipe.send_frame(canonical_bytes({'native_worker_original_version':'3.0',
-                'channel_id':self.channel_id,'projection':_bundle_projection_value(parsed)}),_handshake_deadline_ns)
+                'channel_id':self.channel_id,'projection':_bundle_projection_value(parsed)} | qualification),_handshake_deadline_ns)
             return
         if self._file2:
             from .file2_execution import _file2_projection_value
             _require(type(_handshake_deadline_ns) is int,'ntfs.file2_owned_deadline_required')
             pipe.send_frame(canonical_bytes({'native_worker_original_version':'2.0',
-                'channel_id':self.channel_id,'projection':_file2_projection_value(parsed)}),_handshake_deadline_ns)
+                'channel_id':self.channel_id,'projection':_file2_projection_value(parsed)} | qualification),_handshake_deadline_ns)
             return
         if self._version1 or self._version2:
             from .original_transfer import original_version1_frames,original_version2_frames

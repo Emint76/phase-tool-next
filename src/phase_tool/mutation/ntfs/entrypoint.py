@@ -48,15 +48,20 @@ def _close_worker_stdio(primary):
         raise primary
 
 
-def run_native_worker(launch,original,initial_pipe,*,_transfer_deadline_ns=None):
+def run_native_worker(launch,original,initial_pipe,*,_transfer_deadline_ns=None,
+        _qualification_exchange_deadline=False):
     """Only accepted Popen parent provides this owned stdin; no public service."""
     from .worker import run_file_create_worker
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
+    _require(type(_qualification_exchange_deadline) is bool and
+        (not _qualification_exchange_deadline or launch._file2 or getattr(launch,'_bundle',False)),
+        'ntfs.qualification_worker_exchange_scope')
     launch.check_runtime()
+    exchange={'_qualification_exchange_deadline':True} if _qualification_exchange_deadline else {}
     if getattr(launch,'_bundle',False):
-        return _run_bundle_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
+        return _run_bundle_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns,**exchange)
     if launch._file2:
-        return _run_file2_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns)
+        return _run_file2_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns,**exchange)
     if launch._version2:
         return _run_version1_worker_transfer(launch,original,initial_pipe,_transfer_deadline_ns,_version2=True)
     if launch._version1:
@@ -105,11 +110,17 @@ def _deliver_linux_frame(value,identities,*,_deadline=None):
     A partial/failed send is unknown delivery; never ordinary no-effect failure.
     """
     from .channel import LinuxNativeChannel
+    from .exchange_deadline import linux_exchange_deadline_ns,linux_frame_deadline
     raw=canonical_bytes(value)
     _require(0<len(raw)<=2*1024**2,'ntfs.channel_frame_limit')
     wire=f'{len(raw):08x}\n'.encode('ascii')+raw+b'\n'
     offset=0
-    deadline=time.monotonic()+30 if _deadline is None else _deadline
+    qualified=linux_exchange_deadline_ns()
+    if qualified is None:
+        deadline=time.monotonic()+30 if _deadline is None else _deadline
+    else:
+        _require(_deadline is None and time.monotonic_ns()<qualified,'ntfs.channel_deadline_expired')
+        deadline=linux_frame_deadline(qualified/1_000_000_000)
     _require(type(deadline) is float and 0 < deadline-time.monotonic() <= 30,
         'ntfs.channel_deadline_expired')
     while offset<len(wire):
@@ -118,15 +129,27 @@ def _deliver_linux_frame(value,identities,*,_deadline=None):
         LinuxNativeChannel._ready(1,True,deadline)
         _require(tuple(LinuxNativeChannel._pipe(fd) for fd in (0,1))==identities,
             'ntfs.channel_descriptor_changed')
+        if qualified is not None:
+            _require(time.monotonic_ns()<qualified and time.monotonic()<deadline,
+                'ntfs.channel_deadline_expired')
         try:count=os.write(1,wire[offset:offset+65536])
         except BlockingIOError:continue
         _require(count>0,'ntfs.channel_write_no_progress')
         offset+=count
         _require(time.monotonic()<deadline,'ntfs.channel_deadline_expired')
+    if qualified is not None:
+        _require(time.monotonic_ns()<qualified,'ntfs.channel_deadline_expired')
 
 
 def run_native_core(launch):
+    from .exchange_deadline import linux_exchange_deadline_ns
     _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
+    qualified=linux_exchange_deadline_ns()
+    if qualified is not None:
+        _require(launch.invocation['request'].get('operation')=='execute'
+            and 'native_staged_publication_request_version' in launch.invocation['request'],
+            'ntfs.qualification_linux_exchange_scope')
+        _require(time.monotonic_ns()<qualified,'ntfs.channel_deadline_expired')
     if launch.invocation['request'].get('operation')=='continue_version':
         from .recovery_frontdoor import run_version_continuation_core
         return run_version_continuation_core(launch)
@@ -172,6 +195,8 @@ def run_native_core(launch):
         from .input_stage import _scope_for_launch,_require_staged_publication_request
         scope,role,scope_digest=_scope_for_launch(launch)
         _require_staged_publication_request(request,role=role)
+        if qualified is not None:
+            _require(role in {'File2','Bundle1','Bundle2'},'ntfs.qualification_linux_exchange_scope')
     _require(prepared_request or publication_request or version1_publication_request or bundle_publication_request or staged_request,
         'ntfs.fixed_native_request_required')
     # Resolve fixed packaged generation before any native role/channel. Profile
@@ -194,11 +219,15 @@ def run_native_core(launch):
         manifest=launch.manifest
         if staged_request:
             from .preparation import _prepare_staged_publication
+            if qualified is not None:
+                _require(time.monotonic_ns()<qualified,'ntfs.channel_deadline_expired')
             try:
                 candidate_path,inputs,expected,candidate_bytes=_prepare_staged_publication(app,launch,request)
             except (PhaseError,OSError,ValueError)as error:
                 response=app._failure('execute',error)
             else:
+                if qualified is not None:
+                    _require(time.monotonic_ns()<qualified,'ntfs.channel_deadline_expired')
                 response=app.run('execute',contract_binding=manifest['contract']['id']+'@'+manifest['contract']['version'],
                     contract_digest=manifest['contract']['package_digest'],candidate_path=candidate_path,
                     evidence_root=Path(manifest['evidence_root']),run_id=launch.run_id,input_paths=inputs,
@@ -484,6 +513,7 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
                       _c05_transport=None, _report_closed_staged_inspection_loss=False):
     from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
+    from .input_stage import _qualification_bulk_deadline_ns
     deadline = None
     if _report_closed_staged_inspection_loss is not False:
         from .input_stage import _active_input_deadline_ns
@@ -517,6 +547,8 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
             'ntfs.fixed_c05_transport_required')
         _c05_transport.check_launch(launch)
     launch.check_runtime()
+    bulk_deadline = (_qualification_bulk_deadline_ns(launch) if all(hook is None for hook in
+        (_prepared_ack_test, _dynamic_a05_test, _g01_creation_handle_test, _c05_transport)) else None)
     process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())
     witness=pipe=None
     response=fact=closing=None
@@ -524,7 +556,12 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
     try:
         witness=WindowsProcessWitness(process)
         pipe=launch._pipe(process)
-        pipe.send_frame(launch._invocation_bytes,_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
+        if bulk_deadline is None:
+            pipe.send_frame(launch._invocation_bytes,_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
+        else:
+            from .exchange_deadline import send_linux_invocation
+            send_linux_invocation(pipe, launch._invocation_bytes, role='core', deadline_ns=bulk_deadline)
+            pipe._bind_qualification_exchange_deadline(bulk_deadline)
         if _g01_creation_handle_test is not None:
             owner=_NativeWindowsParent(launch,pipe,_g01_creation_handle_test=_g01_creation_handle_test)
         elif _dynamic_a05_test is not None:
@@ -570,6 +607,8 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
     # or original closure proof is derived from it; server ingress is consumed.
     if _c05_transport is not None:
         _c05_transport.observe(launch,process,witness,fact,closing,response)
+    if bulk_deadline is not None:
+        _require(time.perf_counter_ns() < bulk_deadline, 'input_stage.deadline')
     return response
 
 def _run_version1_worker_transfer(launch,original,pipe,deadline,*,_version2=False):
@@ -604,11 +643,23 @@ def _run_version1_worker_transfer(launch,original,pipe,deadline,*,_version2=Fals
     return 0
 
 
-def _run_file2_worker_transfer(launch,original,pipe,deadline):
+def _bind_worker_qualification_exchange(launch,pipe,deadline):
+    """Lend the Original's cutoff to this Worker transport after role validation."""
+    from .bootstrap import _NativeAcceptedLaunch
+    from .owner_directory_launch import _qualification_cold_publication_seconds
+    from .windows_pipe import WindowsPipeFrames
+    _require(type(launch) is _NativeAcceptedLaunch and type(pipe) is WindowsPipeFrames
+        and _qualification_cold_publication_seconds(launch._config)==900,
+        'ntfs.qualification_worker_exchange_scope')
+    pipe._bind_qualification_exchange_deadline(deadline)
+
+
+def _run_file2_worker_transfer(launch,original,pipe,deadline,*,_qualification_exchange_deadline=False):
     """Metadata initial frame; fixed worker verifies first-pass bytes before native I/O."""
     from .file2_execution import _file2_projection_from_value,run_file2_worker
     from .file2_stream import _file2_binary_chunks_for_contract
-    _require(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=30_000_000_000,
+    maximum=(900 if _qualification_exchange_deadline else 30)*1_000_000_000
+    _require(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=maximum,
         'ntfs.file2_owned_deadline_required')
     _require(type(original) is dict and set(original)=={'native_worker_original_version','channel_id','projection'}
         and original['native_worker_original_version']=='2.0'
@@ -621,6 +672,8 @@ def _run_file2_worker_transfer(launch,original,pipe,deadline):
     primary=None
     try:
         launch.check_runtime()
+        if _qualification_exchange_deadline:
+            _bind_worker_qualification_exchange(launch,pipe,deadline)
         run_file2_worker(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline,
             _binary_chunks=_file2_binary_chunks_for_contract(launch.manifest['contract']))
         launch.check_runtime()
@@ -629,20 +682,22 @@ def _run_file2_worker_transfer(launch,original,pipe,deadline):
     return 0
 
 
-def _run_bundle_worker_transfer(launch,original,pipe,deadline):
+def _run_bundle_worker_transfer(launch,original,pipe,deadline,*,_qualification_exchange_deadline=False):
     """Metadata initial frame; fixed worker verifies first-pass bytes before native I/O."""
     from .bundle_execution import _bundle_projection_from_value,run_bundle_worker
     from .bundle_stream import _bundle_binary_chunks_for_original
     from .bootstrap import _is_bundle_recovery_launch
     recovery_launch=_is_bundle_recovery_launch(launch)
     if recovery_launch and type(original) is dict and original.get('native_worker_original_version')=='4.0':
+        _require(not _qualification_exchange_deadline,'ntfs.qualification_worker_exchange_scope')
         from .bundle_recovery_worker import run_recovery_worker
         primary=None
         try:run_recovery_worker(launch,original,pipe,deadline)
         except BaseException as error:primary=error
         _close_worker_stdio(primary)
         return 0
-    _require(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=30_000_000_000,
+    maximum=(900 if _qualification_exchange_deadline else 30)*1_000_000_000
+    _require(type(deadline) is int and 0<deadline-time.perf_counter_ns()<=maximum,
         'ntfs.bundle_owned_deadline_required')
     _require(type(original) is dict and set(original)=={'native_worker_original_version','channel_id','projection'}
         and original['native_worker_original_version']=='3.0'
@@ -656,6 +711,8 @@ def _run_bundle_worker_transfer(launch,original,pipe,deadline):
     try:
         launch.check_runtime()
         binary_chunks=_bundle_binary_chunks_for_original(launch.manifest,parsed.contract_bytes)
+        if _qualification_exchange_deadline:
+            _bind_worker_qualification_exchange(launch,pipe,deadline)
         if recovery_launch:
             from .bundle_recovery_capture import run_bundle_worker_capture
             run_bundle_worker_capture(pipe,parsed,launch.channel_id,_transfer_deadline_ns=deadline,

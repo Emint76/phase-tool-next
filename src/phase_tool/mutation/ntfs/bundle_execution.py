@@ -102,12 +102,16 @@ class _BundleWorkerInput:
     """One borrowed worker pipe, exact ordered occurrences, no spool or owner."""
     def __init__(self,pipe,projection,channel_id,deadline_ns,*,_binary_chunks=False):
         _require(os.name=='nt' and type(pipe) is WindowsPipeFrames,'ntfs.windows_worker_pipe_required')
-        _require(type(deadline_ns) is int and 0<deadline_ns-time.perf_counter_ns()<=30_000_000_000,
+        bound=getattr(pipe,'_qualification_exchange_deadline_ns',None)
+        maximum=(30 if bound is None else 900)*1_000_000_000
+        _require(type(deadline_ns) is int and (bound is None or deadline_ns==bound)
+            and 0<deadline_ns-time.perf_counter_ns()<=maximum,
             'ntfs.worker_go_deadline')
         value=_bundle_projection_value(projection);context=value['context']
         compact={k:context[k]for k in ('run_id','intent_digest','installation_digest','operation_nonce')}
         self._owner=os.getpid(),threading.get_ident()
         self._pipe,self._deadline=pipe,deadline_ns
+        self._qualification_exchange=bound is not None
         self.projection,self.channel_id=projection,channel_id
         self._context=context;self._manifest=parse_manifest(projection.manifest_bytes)
         self._receiver=_BundleTwoPassReceiver(context_bytes=canonical_bytes(compact),

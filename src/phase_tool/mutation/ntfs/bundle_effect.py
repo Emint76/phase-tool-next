@@ -63,6 +63,7 @@ def execute_bundle_create(grant, effect, source, *, run_id, timestamp):
     stage_id=None;stage_locator=None;rename=None;namespace_flushed=[]
     observed_before=False
     def invoke(method,*args,**kwargs):
+        if source._qualification_exchange:source._check()
         return _bundle_mutation_call(io,trace,errors,method,*args,**kwargs)
     def write_file(directory,name,data):
         nonlocal written

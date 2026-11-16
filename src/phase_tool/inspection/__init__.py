@@ -29,6 +29,13 @@ _MATERIALIZED_TARGET_LIMITS = {
 }
 
 
+class _ObservedNativeIdentityMismatch(PhaseError):
+    """A validated current NTFS identity differs from the retained original."""
+
+    def __init__(self) -> None:
+        super().__init__("inspection.native_identity_mismatch")
+
+
 def _read_canonical(path: Path) -> tuple[Any, str]:
     try:
         data = read_evidence_bytes(path)
@@ -879,9 +886,12 @@ def inspect_run(
                     if targets is None:
                         if receipt['execution_disposition'] != 'reused_existing':
                             raise PhaseError('inspection.native_identity_mismatch')
-                    elif (targets['current'] is None or canonical_bytes(observation['native']['native_identity'])
-                            != canonical_bytes(targets['current'])):
-                        raise PhaseError('inspection.native_identity_mismatch')
+                    else:
+                        current_identity = observation['native']['native_identity']
+                        if targets['current'] is None or current_identity is None:
+                            raise PhaseError('inspection.native_identity_mismatch')
+                        if canonical_bytes(current_identity) != canonical_bytes(targets['current']):
+                            raise _ObservedNativeIdentityMismatch()
                 else:
                     expected_identity=(bundle_native_origin['native_identity']
                         if native_bundle and bundle_prior is not None else native_proof['target_identity'])
@@ -896,15 +906,22 @@ def inspect_run(
                             # below must verify the original leaf's identity.
                             if receipt['execution_disposition'] != 'reused_existing':
                                 raise PhaseError('inspection.native_identity_mismatch')
-                        elif canonical_bytes(observation['native']['native_identity']) != canonical_bytes(original_identity):
-                            raise PhaseError('inspection.native_identity_mismatch')
+                        else:
+                            current_identity = observation['native']['native_identity']
+                            if current_identity is None:
+                                raise PhaseError('inspection.native_identity_mismatch')
+                            if canonical_bytes(current_identity) != canonical_bytes(original_identity):
+                                raise _ObservedNativeIdentityMismatch()
                 if contract.document['identity']['id'] in {'bundle_create.v1','bundle_create.v2'}:
                     # Closed advisory sample first; local equality still binds
                     # the real Full128+volume to the worker-proven original.
                     # Do not poison the channel merely to classify a different
                     # well-formed current object. Real observer failures remain unknown.
-                    if (expected_identity is None or observation['native'].get('native_identity')!=expected_identity):
+                    current_identity = observation['native'].get('native_identity')
+                    if expected_identity is None or current_identity is None:
                         raise PhaseError('inspection.native_identity_mismatch')
+                    if current_identity != expected_identity:
+                        raise _ObservedNativeIdentityMismatch()
                     parsed_bundle=_verify_native_bundle_projection(contract,receipt,run_id,_native_authority,
                         observation,canonical_result['locator'],_original_projection=bundle_original_projection,
                         _original_binding=original_binding)
@@ -959,6 +976,8 @@ def inspect_run(
                         authority.assert_namespace_binding()
                 finally:
                     authority.close()
+        except _ObservedNativeIdentityMismatch:
+            raise
         except (OSError, PhaseError) as exc:
             raise PhaseError("inspection.target_mismatch", canonical_result["locator"]) from exc
         if appended is not None:

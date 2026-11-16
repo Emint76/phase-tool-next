@@ -743,6 +743,36 @@ class DeadlineModels(unittest.TestCase):
             for bad in(True,clock.now,clock.now+30_000_000_001):
                 with self.assertRaises(PhaseError):g['_InputOperationDeadline'](_initial_deadline_ns=bad)
         finally:g['os'],g['time']=old_os,old_time
+
+    def test_qualification_frames_and_zero_wait_respect_the_original_absolute_cutoff(self):
+        start=1_000_000_000
+        clock=types.SimpleNamespace(now=start)
+        old_os,old_time=g['os'],g['time']
+        g['os']=types.SimpleNamespace(name='nt',getpid=os.getpid)
+        g['time']=types.SimpleNamespace(perf_counter_ns=lambda:clock.now)
+        try:
+            cutoff=start+900_000_000_000
+            token=g['_InputOperationDeadline'](_initial_deadline_ns=cutoff,
+                _qualification_cold_publication_seconds=900)
+            with g['_input_operation_scope'](token):
+                for elapsed in (0,31,600,899):
+                    clock.now=start+elapsed*1_000_000_000
+                    self.assertEqual(g['_active_input_deadline_ns'](),cutoff)
+                    self.assertEqual(g['_windows_input_frame_deadline_ns'](cutoff),
+                        min(cutoff,clock.now+30_000_000_000))
+                clock.now=cutoff
+                self.assertEqual(g['_input_observation_timeout_ms'](60000),0)
+                with self.assertRaisesRegex(PhaseError,'input_stage.deadline'):
+                    g['_left'](cutoff)
+            for mode in (None,True,901,'900'):
+                with self.subTest(mode=mode),self.assertRaises(PhaseError):
+                    g['_InputOperationDeadline'](_initial_deadline_ns=clock.now+900_000_000_000,
+                        _qualification_cold_publication_seconds=mode)
+            with self.assertRaises(PhaseError):
+                g['_InputOperationDeadline'](_initial_deadline_ns=clock.now+900_000_000_001,
+                    _qualification_cold_publication_seconds=900)
+        finally:g['os'],g['time']=old_os,old_time
+
     def test_expired_or_final_close_never_claims_ready(self):
         fs=MemoryFS();sink=SinkModels().sink(fs);sink.begin_member(0,'payload',1);sink.write(b'a')
         row=dict(path='payload',length=1,digest=digest_bytes(b'a'));sink.finish_member(row)

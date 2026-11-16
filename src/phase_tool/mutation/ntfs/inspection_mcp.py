@@ -7,6 +7,7 @@ Accepted startup/lifetime and profile qualification remain mandatory.
 """
 from __future__ import annotations
 import threading
+import time
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
@@ -316,6 +317,7 @@ class _InspectionMCPCallOwner:
         from .input_stage import (_InputOperationDeadline,_input_operation_scope,_left,
             _stage_request,run_windows_input_stage,_staged_publication_request,_ClosedInputFileRefusal,
             _ClosedInputBundleRefusal,_ClosedFileAssertionRefusal,_FileInputAssertions,_ClosedVersion2InputRefusal)
+        started_ns=time.perf_counter_ns()
         validate_run_id(run_id);_stage_request(input_scope,source_locator)
         _require(self._gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         primary=None;result=None;inspection_failure=None
@@ -324,7 +326,17 @@ class _InspectionMCPCallOwner:
             _require(not self._unavailable,'ntfs.inspection_mcp_unavailable')
             _require(_operation_deadline is None or type(_operation_deadline)is _InputOperationDeadline,
                 'input_stage.deadline_owner_required')
-            token=_InputOperationDeadline()if _operation_deadline is None else _operation_deadline
+            seconds=None
+            if _c05_transport is None and _staged_a05 is None:
+                from .owner_directory_launch import _accepted_cold_publication_seconds
+                seconds=_accepted_cold_publication_seconds(**self._startup)
+            if _operation_deadline is None:
+                cutoff=None if seconds is None else started_ns+seconds*1_000_000_000
+                token=_InputOperationDeadline(_initial_deadline_ns=cutoff,
+                    _qualification_cold_publication_seconds=seconds)
+            else:
+                token=_operation_deadline
+                _require(token.qualification_cold_publication_seconds==seconds,'input_stage.deadline_cap_required')
             with _input_operation_scope(token):
                 if _c05_transport is not None:
                     from .c05_windows_transport import _C05WindowsTransport
@@ -452,6 +464,7 @@ class _InspectionMCPCallOwner:
                 self._input_publication_phase='delivery'
                 _left(token.deadline_ns)
                 _require(len(canonical_bytes(result))<=2*1024**2,'input_stage.delivery_bound')
+                if seconds is not None:_left(token.deadline_ns)
         except BaseException as error:
             self._unavailable=True;primary=error
         finally:
@@ -846,10 +859,18 @@ class _InputScopeSession:
     calls retain their actual finite owner and poison later tool dispatch.
     Six statically configured endpoints expose the six installed contracts.
     """
-    def __init__(self,**startup):
+    def __init__(self,*,_input_deadline_ns=None,**startup):
         self.startup=dict(startup);self.gate=threading.Lock();self.unknown=False;self.held=[]
         self._staged_a05=None
         self._c05_transport=None
+        self._input_deadline_ns=_input_deadline_ns
+        if _input_deadline_ns is not None:
+            from .input_stage import _left
+            from .owner_directory_launch import _accepted_cold_publication_seconds
+            _left(_input_deadline_ns)
+            _require(_input_deadline_ns<=time.perf_counter_ns()+900_000_000_000
+                and _accepted_cold_publication_seconds(**startup)==900,'input_stage.deadline_cap_required')
+            _left(_input_deadline_ns)
     def _invoke(self,method,arguments):
         _require(self.gate.acquire(blocking=False),'ntfs.inspection_mcp_call_active')
         owner=None
@@ -865,18 +886,28 @@ class _InputScopeSession:
             if capture is not None:
                 _require(selection is None and method in {'publish_staged_file','inspect'},
                     'ntfs.fixed_c05_transport_required')
+            cutoff=None;options={}
+            if method in {'publish_input','publish_staged_file'} and self._input_deadline_ns is not None:
+                from .input_stage import _InputOperationDeadline,_left
+                cutoff=self._input_deadline_ns
+                _require(cutoff!=0 and selection is None and capture is None,'input_stage.deadline_consumed')
+                self._input_deadline_ns=0  # Consume before owner creation and effects.
+                _left(cutoff)
+                options['_operation_deadline']=_InputOperationDeadline(_initial_deadline_ns=cutoff,
+                    _qualification_cold_publication_seconds=900)
             owner=_InspectionMCPCallOwner(**self.startup);self.held.append(owner)
             if method=='publish_input':
                 if selection is None:
-                    result=owner.publish_input(**arguments)
+                    result=owner.publish_input(**arguments,**options)
                 else:
                     result=owner.publish_input(**arguments,_staged_a05=selection)
             elif method=='publish_staged_file':
-                result=(owner.publish_staged_file(**arguments) if capture is None else
+                result=(owner.publish_staged_file(**arguments,**options) if capture is None else
                     owner.publish_staged_file(**arguments,_c05_transport=capture))
             else:
                 _require(method=='inspect','ntfs.fixed_native_request_required')
                 result=owner.inspect(**arguments)
+            if cutoff is not None:_left(cutoff)
             if owner._unavailable:
                 self.unknown=True
                 # A returned, validated execute uncertainty describes the

@@ -92,6 +92,11 @@ def fixed_startup():
         if version in {'2.0','3.0'}:
             need(config.get('native_launch_version')==version and json.loads(admission_raw).get('experimental_admission_version')==version)
         admission=fixed_admission(config,json.loads(manifest_raw),admission_raw)
+        if 'qualification_cold_publication_seconds' in config:
+            from phase_tool.mutation.ntfs.owner_directory_launch import _require_semantic_cold_publication_fixture
+            from phase_tool.mutation.ntfs.bootstrap import _accepted_launch_history
+            _require_semantic_cold_publication_fixture(config,admission)
+            _accepted_launch_history(config,manifest_raw,outer['manifest_digest'])
     return outer,config_raw,manifest_raw,_NativeAcceptedLaunch,admission
 
 
@@ -220,8 +225,9 @@ def receive_initial(_input_deadline_ns=None):
         if _input_deadline_ns is not None and time.perf_counter_ns()>=_input_deadline_ns:
             raise TimeoutError('native input request deadline')
         transport=_windows_stdio()
-        deadline_ns=time.perf_counter_ns()+30_000_000_000 if _input_deadline_ns is None else _input_deadline_ns
-        raw,_=transport.receive_frame(deadline_ns)
+        local_deadline_ns=time.perf_counter_ns()+30_000_000_000
+        deadline_ns=local_deadline_ns if _input_deadline_ns is None else _input_deadline_ns
+        raw,_=transport.receive_frame(min(local_deadline_ns,deadline_ns))
     else:
         from phase_tool.mutation.ntfs.entrypoint import _linux_stdio_identity
         from phase_tool.mutation.ntfs.channel import LinuxNativeChannel
@@ -277,14 +283,17 @@ def _publish_input_cli(initial,initial_transport,initial_deadline_ns,outer,confi
         owner=_InspectionMCPCallOwner(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
             manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
             _experimental_admission_context=admission)
-        from phase_tool.mutation.ntfs.input_stage import _InputOperationDeadline
-        deadline=_InputOperationDeadline(_initial_deadline_ns=initial_deadline_ns)
+        from phase_tool.mutation.ntfs.input_stage import _InputOperationDeadline,_windows_input_frame_deadline_ns
+        from phase_tool.mutation.ntfs.owner_directory_launch import _qualification_cold_publication_seconds
+        seconds=_qualification_cold_publication_seconds(json.loads(config_raw))
+        deadline=_InputOperationDeadline(_initial_deadline_ns=initial_deadline_ns,
+            _qualification_cold_publication_seconds=seconds)
         publish=owner.publish_staged_file if staged_file else owner.publish_input
         result=publish(**arguments,_operation_deadline=deadline)
         phase='delivery'
         frame={'protocol':'phase.native.input.publication','version':'1.0','run_id':initial['run_id'],
             'installation_digest':outer['manifest_digest'],'result':result,'exit_code':result['exit_code']}
-        initial_transport.send_frame(canonical_bytes(frame),initial_deadline_ns)
+        initial_transport.send_frame(canonical_bytes(frame),_windows_input_frame_deadline_ns(initial_deadline_ns))
         initial_transport.seal();return result['exit_code']
     except BaseException as error:
         if phase!='delivery' and owner is not None:phase=getattr(owner,'_input_publication_phase',phase)
@@ -300,16 +309,24 @@ def main():
     need((os.name=='nt') == (role in {'parent','inspect-parent','inspect-mcp','execute-mcp','recovery-mcp','reconcile-mcp','publish-bundle','publish-input','input-mcp','worker'}))
     input_deadline_ns=None
     if len(sys.argv)==3:
-        # Private, same-QPC handoff from the fixed outer CLI. An older
-        # launcher refuses this extra argument before touching a request.
+        # Private, same-QPC handoff from the fixed CLI or qualification owner.
         import time
         match=re.fullmatch(r'--input-deadline-ns=([1-9][0-9]{0,18})',sys.argv[2])
-        need(role=='publish-input' and match is not None)
-        input_deadline_ns=int(match[1]);now=time.perf_counter_ns()
-        if now>=input_deadline_ns:
+        need(role in {'publish-input','input-mcp'} and match is not None)
+        input_deadline_ns=int(match[1]);started_ns=time.perf_counter_ns()
+        if started_ns>=input_deadline_ns:
             raise TimeoutError('native input request deadline')
-        need(input_deadline_ns<=now+30_000_000_000)
+        need(input_deadline_ns<=started_ns+900_000_000_000)
     outer,config_raw,manifest_raw,launch_type,admission=fixed_startup()
+    if input_deadline_ns is not None:
+        from phase_tool.mutation.ntfs.owner_directory_launch import _qualification_cold_publication_seconds
+        seconds=_qualification_cold_publication_seconds(json.loads(config_raw))
+        version=outer['native_fixed_startup_version']
+        need(seconds is None or (version=='4.0' and admission is None) or (version=='3.0' and admission is not None))
+        need(role!='input-mcp' or seconds==900)
+        need(input_deadline_ns<=started_ns+(30 if seconds is None else seconds)*1_000_000_000)
+        if time.perf_counter_ns()>=input_deadline_ns:
+            raise TimeoutError('native input request deadline')
     from phase_tool.canonical import canonical_bytes
     from phase_tool.mutation.ntfs import entrypoint
     if role=='prepare-input':
@@ -320,10 +337,15 @@ def main():
     if role=='input-mcp':
         need(outer['native_fixed_startup_version']in {'3.0','4.0'})
         mcp_sdk_owners=fixed_windows_mcp_sdk_bootstrap(outer,config_raw)
+        options={}
+        if input_deadline_ns is not None:
+            if time.perf_counter_ns()>=input_deadline_ns:
+                raise TimeoutError('native input request deadline')
+            options['_input_deadline_ns']=input_deadline_ns
         from phase_tool.mutation.ntfs.inspection_mcp import run_native_input_mcp
         return run_native_input_mcp(config_bytes=config_raw,expected_config_digest=outer['config_digest'],
             manifest_bytes=manifest_raw,expected_manifest_digest=outer['manifest_digest'],
-            _experimental_admission_context=admission)
+            _experimental_admission_context=admission,**options)
     if role=='reconcile-mcp':
         from phase_tool.mutation.ntfs.recovery_frontdoor import require_reconciliation_startup
         require_reconciliation_startup(json.loads(config_raw),manifest_raw,outer['manifest_digest'],admission)

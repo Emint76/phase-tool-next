@@ -16,6 +16,7 @@ from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.ntfs import input_stage,inspection_mcp
+from phase_tool.mutation.ntfs import owner_directory_launch
 from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 from phase_tool.mutation.ntfs.owner_semantic_registries import _native_owner_semantic_file2_registry
 from phase_tool.mutation.ntfs.uncertainty import _NativeLifecycleUnresolved
@@ -110,6 +111,54 @@ class NativeInputPublicationACKTests(unittest.TestCase):
         self.assertEqual(calls[1]['request'],{'operation':'inspect'})
         self.assertNotEqual(calls[0]['channel_id'],calls[1]['channel_id'])
         self.assertEqual([call.kwargs['_inspection_only']for call in launch.call_args_list],[False,True])
+
+    def test_qualification_mcp_accepts_late_valid_and_refuses_after_whole_cutoff(self):
+        start=50_000_000_000
+        cutoff=start+900_000_000_000
+        for elapsed in (181,900):
+            with self.subTest(elapsed=elapsed):
+                owner=self.owner()
+                config=canonical_bytes({'native_launch_version':'4.0',
+                    'qualification_cold_publication_seconds':900})
+                owner._startup.update(config_bytes=config,expected_config_digest=digest_bytes(config))
+                clock=SimpleNamespace(now=start)
+                clock.perf_counter_ns=lambda:clock.now
+                ack,inspected=self.result(),self.result('inspect')
+                prepared={'source_locator':'phase-native-input-'+HEADER[7:39]+'/payload/payload',
+                    'header_digest':HEADER,'expected_digest':digest_bytes(b'payload'),'expected_length':7}
+
+                def stage(*args,**kwargs):
+                    self.assertEqual(args[5],cutoff)
+                    clock.now=start+181_000_000_000
+                    return prepared,'File1',{},None
+
+                def response(launch):
+                    self.assertEqual(input_stage._active_input_deadline_ns(),cutoff)
+                    if clock.now>start+181_000_000_000:
+                        self.fail('additional call after cutoff')
+                    if not calls:
+                        calls.append('execute')
+                        return {'result':ack,'exit_code':0}
+                    calls.append('inspect')
+                    clock.now=start+elapsed*1_000_000_000
+                    return {'result':inspected,'exit_code':0}
+
+                calls=[]
+                with (patch.object(owner_directory_launch,'_owner_directory_launch_binding')as binding,
+                      patch.object(input_stage,'run_windows_input_stage',side_effect=stage),
+                      patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=[object(),object()]),
+                      patch.object(inspection_mcp,'run_native_parent',side_effect=response),
+                      patch.object(inspection_mcp,'time',clock),patch.object(input_stage,'time',clock)):
+                    if elapsed==900:
+                        with self.assertRaisesRegex(PhaseError,'input_stage.deadline'):
+                            owner.publish_input(RUN,'owner.inputs','incoming.bin','target.bin','request-a')
+                        self.assertTrue(owner._unavailable)
+                        self.assertEqual(owner._publication_ack,ack)
+                    else:
+                        result=owner.publish_input(RUN,'owner.inputs','incoming.bin','target.bin','request-a')
+                        self.assertEqual(result['independent_inspection'],inspected)
+                binding.assert_called_once()
+                self.assertEqual(calls,['execute','inspect'])
 
     def test_genuine_v10_reused_existing_still_requires_fresh_inspect(self):
         ack=self.result(execution_disposition='reused_existing',mutation_attempted=False)

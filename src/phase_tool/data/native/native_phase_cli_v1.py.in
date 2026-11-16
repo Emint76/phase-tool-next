@@ -75,11 +75,26 @@ def bindings():
         and sha(ordinary(Path(sys.executable),32*1024**2))==runtime['python_executable_digest'],'exact accepted Python executable')
     return launcher,outer
 
-def exchange(process,frame,*,deadline_ns=None):
+def _qualification_cold_publication_seconds(outer):
+    # Stdlib-only. The verified sibling launcher also checks the full typed
+    # configuration and admitted catalogue before any operation.
+    version=outer.get('native_fixed_startup_version')
+    if version not in {'3.0','4.0'}:return None
+    config=strict(base64.b64decode(outer['config_base64'],validate=True))
+    if 'qualification_cold_publication_seconds' not in config:return None
+    seconds=config['qualification_cold_publication_seconds']
+    need(config.get('native_launch_version')==version and type(seconds)is int and seconds==900,
+        'fixed qualification publication timeout')
+    return seconds
+
+
+def exchange(process,frame,*,deadline_ns=None,_qualification_cold_publication=False):
     """Bound only the outer launcher pipes; no kill, resend or worker inference."""
     output=[bytearray(),bytearray()];discarded=[0,0];eof=[False,False]
     streams=[process.stdout,process.stderr];caps=[MAX_STDOUT,MAX_STDERR]
-    primary=None;secondary=[];offset=0;closed=False;close_failed=False;deadline=time.monotonic()+180
+    primary=None;secondary=[];offset=0;closed=False;close_failed=False
+    clock=time.perf_counter_ns if _qualification_cold_publication else time.monotonic
+    deadline=deadline_ns if _qualification_cold_publication else clock()+180
     def error(value):return {'type':type(value).__name__,'message':str(value),
         'errno':getattr(value,'errno',None),'winerror':getattr(value,'winerror',None)}
     def close_input():
@@ -93,7 +108,7 @@ def exchange(process,frame,*,deadline_ns=None):
             else:secondary.append(error(value))
     try:
         for stream in (process.stdin,*streams):os.set_blocking(stream.fileno(),False)
-        while time.monotonic()<deadline:
+        while clock()<deadline:
             if not closed:
                 try:
                     _check_input_deadline(deadline_ns)
@@ -355,12 +370,26 @@ def bounded_delivery(report):
 
 
 def main():
-    need(len(sys.argv)==4 and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
-    action,source,destination=sys.argv[1:]
-    deadline_ns=time.perf_counter_ns()+_INPUT_TIMEOUT_NS if action in _INPUT_ACTIONS else None
+    need(len(sys.argv)in {4,5} and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
+    action,source,destination=sys.argv[1:4]
+    started_ns=time.perf_counter_ns() if action in _INPUT_ACTIONS else None
+    prebound_deadline_ns=None
+    if len(sys.argv)==5:
+        match=re.fullmatch(r'--input-deadline-ns=([1-9][0-9]{0,18})',sys.argv[4])
+        need(started_ns is not None and match is not None,'fixed qualification publication deadline argument')
+        prebound_deadline_ns=int(match[1])
+        _check_input_deadline(prebound_deadline_ns)
+        need(prebound_deadline_ns<=started_ns+900_000_000_000,'fixed qualification publication deadline cap')
     launcher,outer=bindings()
+    seconds=_qualification_cold_publication_seconds(outer) if started_ns is not None else None
+    if prebound_deadline_ns is not None:
+        need(seconds==900,'fixed qualification publication timeout')
+        deadline_ns=prebound_deadline_ns
+    else:
+        deadline_ns=None if started_ns is None else started_ns+(_INPUT_TIMEOUT_NS if seconds is None else seconds*1_000_000_000)
     _check_input_deadline(deadline_ns)
-    raw=stdin_request(deadline_ns)if source=='-'else ordinary(Path(source),MAX_REQUEST)
+    request_deadline_ns=deadline_ns if seconds is None else min(deadline_ns,time.perf_counter_ns()+_INPUT_TIMEOUT_NS)
+    raw=stdin_request(request_deadline_ns)if source=='-'else ordinary(Path(source),MAX_REQUEST)
     _check_input_deadline(deadline_ns)
     value=strict(raw);need(type(value)is dict and set(value)=={'run_id','request'}
         and type(value['run_id'])is str and type(value['request'])is dict,'existing request envelope required')
@@ -401,7 +430,8 @@ def main():
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
             creationflags=subprocess.CREATE_NO_WINDOW)
         _PENDING_DELIVERY_OWNERS.append(process);report['pid']=process.pid
-        out,err,capture=exchange(process,frame,deadline_ns=deadline_ns)
+        options={'_qualification_cold_publication':True} if seconds is not None else {}
+        out,err,capture=exchange(process,frame,deadline_ns=deadline_ns,**options)
         report['capture']=capture;report['process_exit']=process.poll()
         if all(capture['eof'])and type(process.poll())is int:
             errors=[]

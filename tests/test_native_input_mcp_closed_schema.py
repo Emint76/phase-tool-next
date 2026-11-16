@@ -6,7 +6,7 @@ launch, worker, Native call or Phase execution is created by these tests.
 import asyncio,hashlib,os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock,patch
 
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -14,7 +14,7 @@ from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
 from phase_tool.command_result import validate_command_result
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import bundle_recovery_mcp,input_stage,inspection_mcp
+from phase_tool.mutation.ntfs import bundle_recovery_mcp,input_stage,inspection_mcp,owner_directory_launch
 from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 from .owner_directory_test_data import synthetic_catalog
 
@@ -41,11 +41,12 @@ def vector(role):
     return arguments,payload,content
 
 class NativeInputMCPClosedSchemaTests(unittest.TestCase):
-    def server(self,role='File1'):
+    def server(self,role='File1',*,cutoff=None):
         manifest=canonical_bytes({'contract':semantic_owner_contract(role)})
+        options={}if cutoff is None else {'_input_deadline_ns':cutoff}
         with patch.object(inspection_mcp.FastMCP,'run',autospec=True)as run:
             inspection_mcp.run_native_input_mcp(config_bytes=b'',expected_config_digest=None,
-                manifest_bytes=manifest,expected_manifest_digest=digest_bytes(manifest))
+                manifest_bytes=manifest,expected_manifest_digest=digest_bytes(manifest),**options)
         run.assert_called_once();return run.call_args.args[0]
 
     def test_all_six_fixed_input_servers_have_exact_closed_tools(self):
@@ -71,6 +72,58 @@ class NativeInputMCPClosedSchemaTests(unittest.TestCase):
             with self.subTest(role=role),patch.object(inspection_mcp._InputScopeSession,'_invoke',return_value={'role':role})as invoke:
                 actual=asyncio.run(tool.run(arguments))
                 self.assertEqual(actual,{'role':role});invoke.assert_called_once_with('publish_input',arguments)
+
+    def test_prebound_sdk_clock_is_consumed_once_by_a_real_registered_handler(self):
+        args,_,_=vector('File1')
+        clock=SimpleNamespace(now=50_000_000_000)
+        clock.perf_counter_ns=lambda:clock.now
+        cutoff=clock.now+60_000_000_000
+        owner=SimpleNamespace(_unavailable=False,publish_input=Mock(return_value={'published':True}),
+            inspect=Mock(return_value={'inspection':'independent'}))
+        with (patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),
+              patch.object(input_stage,'time',clock),patch.object(inspection_mcp,'time',clock),
+              patch.object(owner_directory_launch,'_accepted_cold_publication_seconds',return_value=900),
+              patch.object(inspection_mcp,'_InspectionMCPCallOwner',return_value=owner)as factory):
+            server=self.server(cutoff=cutoff)
+            tools=server._tool_manager._tools
+            self.assertNotIn('_input_deadline_ns',tools['phase_publish_input'].parameters['properties'])
+            with self.assertRaises(Exception):
+                asyncio.run(tools['phase_publish_input'].run(dict(args,_input_deadline_ns=cutoff)))
+            factory.assert_not_called()
+            clock.now=cutoff-10_000_000_000
+            self.assertEqual(asyncio.run(tools['phase_publish_input'].run(args)),{'published':True})
+            provided=owner.publish_input.call_args.kwargs
+            token=provided['_operation_deadline']
+            self.assertEqual(token.deadline_ns,cutoff)
+            self.assertEqual(token.qualification_cold_publication_seconds,900)
+            self.assertEqual({key:value for key,value in provided.items() if key!='_operation_deadline'},args)
+            self.assertNotIn('_input_deadline_ns',factory.call_args.kwargs)
+            # A separate inspect still uses its normal read-only owner.
+            self.assertEqual(asyncio.run(tools['phase_inspect'].run({'run_id':args['run_id']})),
+                {'inspection':'independent'})
+            owner.inspect.assert_called_once_with(run_id=args['run_id'])
+            with self.assertRaisesRegex(ToolError,'input_stage.deadline_consumed'):
+                asyncio.run(tools['phase_publish_input'].run(args))
+            self.assertEqual(factory.call_count,2)
+            owner.publish_input.assert_called_once()
+
+    def test_prebound_sdk_refuses_expired_handler_or_missing_policy_before_owner_creation(self):
+        args,_,_=vector('File1')
+        clock=SimpleNamespace(now=50_000_000_000)
+        clock.perf_counter_ns=lambda:clock.now
+        cutoff=clock.now+30_000_000_000
+        with (patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),
+              patch.object(input_stage,'time',clock),patch.object(inspection_mcp,'time',clock),
+              patch.object(owner_directory_launch,'_accepted_cold_publication_seconds',return_value=None)as policy,
+              patch.object(inspection_mcp,'_InspectionMCPCallOwner')as factory):
+            with self.assertRaisesRegex(PhaseError,'input_stage.deadline_cap_required'):
+                self.server(cutoff=cutoff)
+            policy.return_value=900
+            tools=self.server(cutoff=cutoff)._tool_manager._tools
+            clock.now=cutoff
+            with self.assertRaisesRegex(ToolError,'input_stage.deadline'):
+                asyncio.run(tools['phase_publish_input'].run(args))
+            factory.assert_not_called()
 
     def test_extra_selectors_fail_real_SDK_validation_before_owner_on_both_tools(self):
         for role in ROLES:

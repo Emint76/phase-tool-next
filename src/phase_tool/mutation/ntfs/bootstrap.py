@@ -179,6 +179,10 @@ def _accepted_launch_history(config, manifest_bytes, manifest_digest, *, _launch
     if version=='1.0':
         _require(set(config)==fields,'ntfs.accepted_launch_shape')
         return None,None
+    if version=='3.0':
+        from .owner_directory_launch import _COLD_PUBLICATION_FIELD, _qualification_cold_publication_seconds
+        if _qualification_cold_publication_seconds(config) is not None:
+            fields.add(_COLD_PUBLICATION_FIELD)
     _require(version in {'1.1','1.2','1.3','2.0','3.0'} and set(config)==fields|{
         'history_manifest_set_base64','history_manifest_set_digest'}
         and type(config['history_manifest_set_base64']) is str,
@@ -300,6 +304,9 @@ class _NativeAcceptedLaunch:
         from .owner_directory_fixture import is_fixture
         if config.get('native_launch_version') in {'2.0','3.0'}:
             _require(type(_experimental_admission_context) in _mixed_history_contexts() and is_fixture(_experimental_admission_context.raw) and _experimental_admission_context.document()['experimental_admission_version']==config['native_launch_version'], 'ntfs.owner_fixture_startup_required')
+            from .owner_directory_launch import _COLD_PUBLICATION_FIELD, _require_semantic_cold_publication_fixture
+            if _COLD_PUBLICATION_FIELD in config:
+                _require_semantic_cold_publication_fixture(config, _experimental_admission_context)
         elif type(_experimental_admission_context) in _mixed_history_contexts():
             _require(not is_fixture(_experimental_admission_context.raw), 'ntfs.owner_fixture_startup_required')
         if _experimental_admission_context is not None:

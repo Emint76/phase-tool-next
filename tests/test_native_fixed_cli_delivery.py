@@ -175,7 +175,8 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.assertTrue(self.root.name.startswith('phase-cli-delivery-model-'))
         self.temp.cleanup()
 
-    def call_model(self,mode,*,input_role=None,staged_file_role=None,inspect_binding=None):
+    def call_model(self,mode,*,input_role=None,staged_file_role=None,inspect_binding=None,qualification=None,
+            prebound_deadline_ns=None):
         (self.binding/'mode.json').write_text(json.dumps(mode))
         capture=self.output/('fresh'if input_role is None else input_role+'-'+mode)
         outer={'manifest_digest':'sha256:'+'b'*64}
@@ -185,7 +186,12 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
             contract={'File1':'file_create.v1','File2':'file_create.v2','Bundle1':'bundle_create.v1',
                 'Bundle2':'bundle_create.v2','Version1':'publish_new_version.v1',
                 'Version2':'publish_new_version.v2'}[input_role]
-            if mode.startswith('partial-'):outer['native_fixed_startup_version']='4.0'
+            if mode.startswith('partial-') or qualification is not None:
+                version=qualification or '4.0'
+                config={'native_launch_version':version}
+                if qualification is not None:config['qualification_cold_publication_seconds']=900
+                outer.update(native_fixed_startup_version=version,
+                    config_base64=base64.b64encode(self.cli.canon(config)).decode())
             outer['manifest_base64']=base64.b64encode(json.dumps({'contract':{'id':contract}}).encode()).decode()
             members=None
             if input_role.startswith('Bundle'):
@@ -226,7 +232,9 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         stderr=io.TextIOWrapper(io.BytesIO(),encoding='utf-8')
         proxy=types.SimpleNamespace(Popen=popen,PIPE=subprocess.PIPE,
             CREATE_NO_WINDOW=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        with patch.object(self.cli,'HERE',self.binding),patch.object(self.cli,'bindings',return_value=(self.launcher,outer)),patch.object(self.cli,'subprocess',proxy),patch.object(sys,'argv',['cli.py',action,str(self.request),str(capture)]),patch.dict(os.environ,{'SYSTEMROOT':os.environ.get('SYSTEMROOT','/'),'WINDIR':os.environ.get('WINDIR','/')}),contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
+        argv=['cli.py',action,str(self.request),str(capture)]
+        if prebound_deadline_ns is not None:argv.append(f'--input-deadline-ns={prebound_deadline_ns}')
+        with patch.object(self.cli,'HERE',self.binding),patch.object(self.cli,'bindings',return_value=(self.launcher,outer)),patch.object(self.cli,'subprocess',proxy),patch.object(sys,'argv',argv),patch.dict(os.environ,{'SYSTEMROOT':os.environ.get('SYSTEMROOT','/'),'WINDIR':os.environ.get('WINDIR','/')}),contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
             status=self.cli.main()
         stdout.flush();stderr.flush();out=stdout.buffer.getvalue();err=stderr.buffer.getvalue()
         stdout.close();stderr.close()
@@ -265,6 +273,79 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError,'native input request deadline'):
                 self.call_model('negative',input_role='File1')
         self.assertFalse(self.children)
+
+    def test_qualification_cli_caps_late_ingress_and_never_renews_at_spawn(self):
+        start=50_000_000_000
+        cutoff=start+900_000_000_000
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:start,monotonic=time.monotonic,sleep=time.sleep)
+        ordinary,exchange=self.cli.ordinary,self.cli.exchange
+
+        def later_read(path,maximum):
+            raw=ordinary(path,maximum)
+            clock.perf_counter_ns=lambda:start+181_000_000_000
+            return raw
+
+        def at_cutoff(process,frame,*,deadline_ns,_qualification_cold_publication):
+            self.assertTrue(_qualification_cold_publication)
+            self.assertEqual(deadline_ns,cutoff)
+            received=exchange(process,frame,deadline_ns=deadline_ns,
+                _qualification_cold_publication=True)
+            clock.perf_counter_ns=lambda:cutoff
+            return received
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'ordinary',later_read), \
+                patch.object(self.cli,'exchange',at_cutoff):
+            code,out,err,capture=self.call_model('negative',input_role='File1',qualification='4.0')
+        self.assertEqual((code,out,err),(50,b'',b'{"error_class":"timeout","phase":"delivery"}\n'))
+        self.assertEqual(self.child_argv[-1][-2:],['publish-input',f'--input-deadline-ns={cutoff}'])
+        self.assertEqual(json.loads((capture/'delivery.json').read_bytes())['child_delivery'],'UNKNOWN')
+        self.assert_outer_closed_before_fixture_cleanup()
+
+    def test_qualified_cli_preserves_exact_caller_absolute_deadline(self):
+        start=50_000_000_000
+        cutoff=start+18_000_000_000
+        clock=types.SimpleNamespace(perf_counter_ns=lambda:start,monotonic=time.monotonic,sleep=time.sleep)
+        ordinary=self.cli.ordinary
+
+        def later_read(path,maximum):
+            raw=ordinary(path,maximum)
+            clock.perf_counter_ns=lambda:cutoff-1
+            return raw
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'ordinary',later_read):
+            self.assertEqual(self.call_model('negative',input_role='File1',qualification='3.0',
+                prebound_deadline_ns=cutoff)[0],10)
+            with self.assertRaisesRegex(RuntimeError,'fixed qualification publication timeout'):
+                self.call_model('negative',input_role='File1',prebound_deadline_ns=cutoff)
+        self.assertEqual(len(self.children),1)
+        self.assertEqual(self.child_argv[0][-2:],['publish-input',f'--input-deadline-ns={cutoff}'])
+        self.assert_outer_closed_before_fixture_cleanup()
+
+    def test_qualified_cli_expiry_in_fixed_binding_read_refuses_before_request(self):
+        start=50_000_000_000
+        cutoff=start+2_000_000_000
+        clock=types.SimpleNamespace(now=start)
+        clock.perf_counter_ns=lambda:clock.now
+        config={'native_launch_version':'4.0','qualification_cold_publication_seconds':900}
+        outer={'native_fixed_startup_version':'4.0',
+            'config_base64':base64.b64encode(self.cli.canon(config)).decode()}
+        def fixed_bindings():
+            clock.now=cutoff
+            return self.launcher,outer
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'bindings',side_effect=fixed_bindings) as binding, \
+                patch.object(self.cli,'stdin_request') as request:
+            for action in ('inspect','execute'):
+                argv=['cli.py',action,'-',str(self.output/'unused'),f'--input-deadline-ns={cutoff}']
+                with patch.object(sys,'argv',argv),self.assertRaisesRegex(RuntimeError,'fixed qualification publication deadline argument'):
+                    self.cli.main()
+            binding.assert_not_called()
+            argv=['cli.py','publish-input','-',str(self.output/'unused'),f'--input-deadline-ns={cutoff}']
+            with patch.object(sys,'argv',argv),self.assertRaisesRegex(TimeoutError,'native input request deadline'):
+                self.cli.main()
+        binding.assert_called_once()
+        request.assert_not_called()
+        self.assertFalse((self.output/'unused').exists())
 
     def test_stdin_wait_uses_remaining_input_budget(self):
         deadline=80_000_000_000
@@ -603,18 +684,27 @@ class NativeInputLauncherDeadlineTests(unittest.TestCase):
         self.request={'run_id':'model','request':{'operation':'publish_input'}}
         self.canon=lambda value:json.dumps(value,sort_keys=True,separators=(',',':')).encode()
         self.modules={name:types.ModuleType(name) for name in ('phase_tool','phase_tool.canonical',
-            'phase_tool.mutation','phase_tool.mutation.ntfs','phase_tool.mutation.ntfs.entrypoint')}
+            'phase_tool.mutation','phase_tool.mutation.ntfs','phase_tool.mutation.ntfs.entrypoint',
+            'phase_tool.mutation.ntfs.owner_directory_launch','phase_tool.mutation.ntfs.inspection_mcp')}
+        self.config={}
+        self.ordinary=False
+        self.sdk_elapsed=0
+        launch_scope=self.modules['phase_tool.mutation.ntfs.owner_directory_launch']
+        launch_scope._qualification_cold_publication_seconds=lambda config:config.get('qualification_cold_publication_seconds')
         canonical=self.modules['phase_tool.canonical']
         canonical.canonical_bytes=self.canon
         canonical.parse_json_bytes=lambda raw,maximum_bytes:json.loads(raw)
         ntfs=self.modules['phase_tool.mutation.ntfs']
         ntfs.entrypoint=self.modules['phase_tool.mutation.ntfs.entrypoint']
         ntfs.entrypoint._windows_stdio=lambda:self
+        self.modules['phase_tool.mutation.ntfs.inspection_mcp'].run_native_input_mcp=self.run_mcp
 
     def fixed_startup(self):
         self.events.append('fixed-startup')
         self.now+=4_000_000_000
-        return {},b'config',b'manifest',None,None
+        outer={'native_fixed_startup_version':'4.0' if self.ordinary else '3.0',
+            'config_digest':'config','manifest_digest':'manifest'}
+        return outer,self.canon(self.config),b'manifest',None,None
 
     def receive_frame(self,deadline):
         self.events.append(('receive',deadline))
@@ -626,11 +716,20 @@ class NativeInputLauncherDeadlineTests(unittest.TestCase):
         self.events.append(('publish',deadline))
         return 10
 
+    def sdk_bootstrap(self,*_):
+        self.events.append('sdk-bootstrap')
+        self.now+=self.sdk_elapsed
+
+    def run_mcp(self,**startup):
+        self.events.append(('input-mcp',startup.get('_input_deadline_ns')))
+        return 20
+
     def invoke(self,*args):
         with patch.dict(sys.modules,self.modules),patch.object(sys,'argv',['launcher.py',*args]), \
                 patch.object(self.launcher,'os',types.SimpleNamespace(name='nt')), \
                 patch.object(time,'perf_counter_ns',lambda:self.now), \
                 patch.object(self.launcher,'fixed_startup',self.fixed_startup), \
+                patch.object(self.launcher,'fixed_windows_mcp_sdk_bootstrap',self.sdk_bootstrap), \
                 patch.object(self.launcher,'_publish_input_cli',self.publish):
             return self.launcher.main()
 
@@ -652,13 +751,50 @@ class NativeInputLauncherDeadlineTests(unittest.TestCase):
         with self.assertRaisesRegex(TimeoutError,'native input request deadline'):
             self.invoke('publish-input',f'--input-deadline-ns={self.now}')
         for route in (('publish-input','--input-deadline-ns=+50000000001'),
-                      ('publish-input',f'--input-deadline-ns={self.deadline+1}'),
+                      ('publish-input',f'--input-deadline-ns={self.now+900_000_000_001}'),
                       ('publish-input','--input-deadline-ns=0001'),
                       ('inspect-parent',f'--input-deadline-ns={self.deadline}'),
                       ('worker',f'--input-deadline-ns={self.deadline}')):
             with self.subTest(route=route),self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
                 self.invoke(*route)
         self.assertFalse(self.events)
+
+    def test_legacy_valid_long_syntax_refuses_before_request(self):
+        with self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
+            self.invoke('publish-input',f'--input-deadline-ns={self.deadline+1}')
+        self.assertEqual(self.events,['fixed-startup'])
+
+    def test_qualification_whole_cutoff_and_local_initial_frame_window_are_distinct(self):
+        self.config={'qualification_cold_publication_seconds':900}
+        self.ordinary=True
+        cutoff=self.now+900_000_000_000
+        self.assertEqual(self.invoke('publish-input',f'--input-deadline-ns={cutoff}'),10)
+        self.assertEqual(self.events,['fixed-startup',('receive',self.deadline+4_000_000_000),
+            ('publish',cutoff)])
+
+    def test_qualified_semantic_launcher_requires_its_existing_admission(self):
+        self.config={'qualification_cold_publication_seconds':900}
+        cutoff=self.now+900_000_000_000
+        with self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
+            self.invoke('publish-input',f'--input-deadline-ns={cutoff}')
+        self.assertEqual(self.events,['fixed-startup'])
+
+    def test_prebound_mcp_requires_qualified_startup_and_never_refreshes_after_sdk(self):
+        cutoff=self.start+20_000_000_000
+        arg=f'--input-deadline-ns={cutoff}'
+        with self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
+            self.invoke('input-mcp',arg)
+        self.assertEqual(self.events,['fixed-startup'])
+        self.now=self.start;self.events.clear()
+        self.ordinary=True;self.config={'qualification_cold_publication_seconds':900}
+        self.sdk_elapsed=12_000_000_000
+        self.assertEqual(self.invoke('input-mcp',arg),20)
+        self.assertEqual(self.events,['fixed-startup','sdk-bootstrap',('input-mcp',cutoff)])
+        self.now=self.start;self.events.clear()
+        self.sdk_elapsed=16_000_000_000
+        with self.assertRaisesRegex(TimeoutError,'native input request deadline'):
+            self.invoke('input-mcp',arg)
+        self.assertEqual(self.events,['fixed-startup','sdk-bootstrap'])
 
 
 if __name__=='__main__':unittest.main()

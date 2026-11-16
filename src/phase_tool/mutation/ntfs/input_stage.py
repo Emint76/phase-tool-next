@@ -67,13 +67,18 @@ def _file_input_target_grant(assertions,launch,role):
 
 
 class _InputOperationDeadline:
-    __slots__=('owner','deadline_ns','entered','finished')
-    def __init__(self,*,_initial_deadline_ns=None):
+    __slots__=('owner','deadline_ns','qualification_cold_publication_seconds','entered','finished')
+    def __init__(self,*,_initial_deadline_ns=None,_qualification_cold_publication_seconds=None):
         _require(os.name=='nt','input_stage.windows_owner_required')
+        seconds=_qualification_cold_publication_seconds
+        _require(seconds is None or type(seconds)is int and seconds==900,'input_stage.deadline_cap_required')
+        maximum=(30 if seconds is None else seconds)*1_000_000_000
         now=time.perf_counter_ns()
         _require(_initial_deadline_ns is None or(type(_initial_deadline_ns)is int
-            and now<_initial_deadline_ns<=now+30_000_000_000),'input_stage.deadline_cap_required')
-        self.owner=(os.getpid(),threading.get_ident());self.deadline_ns=now+30_000_000_000 if _initial_deadline_ns is None else _initial_deadline_ns
+            and now<_initial_deadline_ns<=now+maximum),'input_stage.deadline_cap_required')
+        self.owner=(os.getpid(),threading.get_ident())
+        self.deadline_ns=now+maximum if _initial_deadline_ns is None else _initial_deadline_ns
+        self.qualification_cold_publication_seconds=seconds
         self.entered=False;self.finished=False
     def check(self):
         _require(self.owner==(os.getpid(),threading.get_ident())and self.entered and not self.finished,
@@ -112,6 +117,11 @@ def _input_observation_timeout_ms(fallback_ms):
     if token is None:return fallback_ms
     token.check()
     return min(fallback_ms,max(0,(token.deadline_ns-time.perf_counter_ns())//1_000_000))
+
+
+def _windows_input_frame_deadline_ns(operation_deadline_ns):
+    """One local frame or EOF under the original Windows operation cutoff."""
+    return min(operation_deadline_ns,time.perf_counter_ns()+30_000_000_000)
 
 
 def _left(deadline_ns):
@@ -614,16 +624,16 @@ def run_windows_input_stage(owner,run_id,input_scope,source_locator,members,dead
             owner._held_launch=launch
             _left(deadline_ns);process=launch.spawn_input_stage()
             witness=WindowsProcessWitness(process);pipe=launch._pipe(process)
-            pipe.send_frame(launch._invocation_bytes,deadline_ns)
+            pipe.send_frame(launch._invocation_bytes,_windows_input_frame_deadline_ns(deadline_ns))
             # Reuse the exact bytes from the single pinned Version2 read.
             frames=(raw for raw in buffered)if role=='Version2'else sender.frames()
             with closing(frames)as frames:
                 for raw in frames:
-                    _left(deadline_ns);pipe.send_frame(raw,deadline_ns)
+                    _left(deadline_ns);pipe.send_frame(raw,_windows_input_frame_deadline_ns(deadline_ns))
             closed=True
-            raw,_=pipe.receive_frame(deadline_ns,maximum_bytes=_CONTROL)
+            raw,_=pipe.receive_frame(_windows_input_frame_deadline_ns(deadline_ns),maximum_bytes=_CONTROL)
             result=_validate_prepared_input(_control(raw),launch=launch,scope_digest=scope_digest,header=sender.header,footer=sender.footer)
-            pipe._expect_eof(deadline_ns)
+            pipe._expect_eof(_windows_input_frame_deadline_ns(deadline_ns))
             stderr=bytearray()
             while True:
                 _left(deadline_ns)

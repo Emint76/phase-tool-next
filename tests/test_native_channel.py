@@ -27,7 +27,7 @@ from phase_tool.mutation.ntfs.channel import LinuxNativeChannel,NativeChannelErr
 root=Path(os.environ['PHASE_NATIVE_CHANNEL_SOURCE_ROOT']).resolve(strict=True)
 loaded={}
 for name,module,sha in (
- ('channel',channel_source,'7a294a29fb5c586d193f3253c4ac0bb066f5b55b910978fdd04a76bf54c6acec'),
+ ('channel',channel_source,'d2216740a13cccc5361da23d93cfd45ac15f4d5c99fb0edbcf404ce00fb43ecf'),
  ('native',native_source,'6b3dcefceb62be114fd0957aa07a5a686b691db6a4bc370b654ce1262a9b94a8')):
  p=Path(module.__file__).resolve(strict=True)
  if p!=root/'phase_tool/mutation/ntfs'/(name+'.py') or hashlib.sha256(p.read_bytes()).hexdigest()!=sha:
@@ -91,7 +91,7 @@ class NativeChannelTests(unittest.TestCase):
         self.source_root = Path(phase_tool.__file__).resolve(strict=True).parent.parent
         self.loaded = {name: {'path': str(self.source_root/'phase_tool/mutation/ntfs'/(name+'.py')), 'sha256': sha}
             for name, sha in (
-                ('channel', '7a294a29fb5c586d193f3253c4ac0bb066f5b55b910978fdd04a76bf54c6acec'),
+                ('channel', 'd2216740a13cccc5361da23d93cfd45ac15f4d5c99fb0edbcf404ce00fb43ecf'),
                 ('native', '6b3dcefceb62be114fd0957aa07a5a686b691db6a4bc370b654ce1262a9b94a8'))}
 
     def tearDown(self):

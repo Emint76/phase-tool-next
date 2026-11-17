@@ -143,6 +143,8 @@ class BundleFailureOwnershipTests(unittest.TestCase):
         grant=SimpleNamespace(as_dict=lambda:value['grant'])
         io, boundaries = self.effect_boundaries(metadata_failure=True)
         class Source:
+            _qualification_exchange = False
+
             def __init__(self):self.projection=project;self._go_attempted=True;self.complete=False;self.drained=0
             def _check(self):pass
             def finish_remaining(self):self.drained+=1;self.complete=True

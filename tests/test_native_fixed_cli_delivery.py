@@ -217,6 +217,10 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                 request={'operation':'inspect','root_binding':inspect_binding}
             self.request.write_text(json.dumps({'run_id':'model-cli-run','request':request}),encoding='utf-8')
             capture=self.output/(action+'-'+version+'-'+mode)
+        if qualification is not None and action in {'execute','inspect'}:
+            config={'native_launch_version':qualification,'qualification_cold_publication_seconds':900}
+            outer.update(native_fixed_startup_version=qualification,
+                config_base64=base64.b64encode(self.cli.canon(config)).decode())
         real_popen=subprocess.Popen
         def popen(argv,**kwargs):
             # Dependency injection models the OUTER pipe only. Native bindings are never loaded.
@@ -239,6 +243,57 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         stdout.flush();stderr.flush();out=stdout.buffer.getvalue();err=stderr.buffer.getvalue()
         stdout.close();stderr.close()
         return status,out,err,capture
+
+    def test_qualified_ordinary_execute_and_inspect_share_entry_capture_clock(self):
+        start=50_000_000_000
+        cutoff=start+900_000_000_000
+        clock=types.SimpleNamespace(now=start,monotonic=time.monotonic,sleep=time.sleep)
+        clock.perf_counter_ns=lambda:clock.now
+        ordinary,exchange=self.cli.ordinary,self.cli.exchange
+
+        def later_read(path,maximum):
+            raw=ordinary(path,maximum)
+            clock.now=start+181_000_000_000
+            return raw
+
+        def checked_exchange(process,frame,*,deadline_ns,_qualification_cold_publication):
+            self.assertTrue(_qualification_cold_publication)
+            self.assertEqual((clock.now,deadline_ns),(start+181_000_000_000,cutoff))
+            return exchange(process,frame,deadline_ns=deadline_ns,_qualification_cold_publication=True)
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'ordinary',later_read), \
+                patch.object(self.cli,'exchange',checked_exchange):
+            for role,binding,qualification in [('parent',None,'3.0'),('inspect-parent','phase_result_root','4.0')]:
+                with self.subTest(role=role):
+                    clock.now=start
+                    code,out,err,capture=self.call_model('negative',inspect_binding=binding,qualification=qualification)
+                    self.assertEqual(code,10)
+                    self.assertEqual(err,b'modeled-child-diagnostic\n')
+                    self.assertEqual(json.loads(out)['command'],'execute' if binding is None else 'inspect')
+                    self.assertEqual(self.child_argv[-1][-1],role)
+                    self.assertTrue((capture/'delivery.json').is_file())
+                    self.assert_outer_closed_before_fixture_cleanup()
+
+    def test_qualified_execute_late_capture_preserves_raw_and_unknown(self):
+        start=50_000_000_000
+        cutoff=start+900_000_000_000
+        clock=types.SimpleNamespace(now=start,monotonic=time.monotonic,sleep=time.sleep)
+        clock.perf_counter_ns=lambda:clock.now
+        exclusive=self.cli.exclusive
+
+        def late_capture(path,raw):
+            exclusive(path,raw)
+            if path.name=='delivery.json':
+                clock.now=cutoff
+
+        with patch.object(self.cli,'time',clock),patch.object(self.cli,'exclusive',late_capture):
+            code,out,err,capture=self.call_model('positive',qualification='3.0')
+        self.assertEqual((code,out),(50,b''))
+        refusal=json.loads(err.splitlines()[-1])
+        self.assertEqual(refusal['child_delivery'],'UNKNOWN')
+        self.assertFalse(refusal['retry_authorized'])
+        self.assertEqual(json.loads((capture/'stdout.bin').read_bytes()[9:-1])['run_id'],'model-cli-run')
+        self.assert_outer_closed_before_fixture_cleanup()
 
     def assert_outer_closed_before_fixture_cleanup(self):
         child=self.children[-1]

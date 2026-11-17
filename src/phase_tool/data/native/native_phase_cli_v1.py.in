@@ -138,6 +138,7 @@ def exchange(process,frame,*,deadline_ns=None,_qualification_cold_publication=Fa
         'initial_complete':offset==len(frame),'bytes_sent':offset,'stdin_close_failed':close_failed}
 
 _INPUT_ACTIONS={'publish-input','publish-file'}
+_QUALIFICATION_CAPTURE_ACTIONS=_INPUT_ACTIONS|{'inspect','execute'}
 
 
 def reconciliation_role(action,value,outer):
@@ -372,11 +373,11 @@ def bounded_delivery(report):
 def main():
     need(len(sys.argv)in {4,5} and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
     action,source,destination=sys.argv[1:4]
-    started_ns=time.perf_counter_ns() if action in _INPUT_ACTIONS else None
+    started_ns=time.perf_counter_ns() if action in _QUALIFICATION_CAPTURE_ACTIONS else None
     prebound_deadline_ns=None
     if len(sys.argv)==5:
         match=re.fullmatch(r'--input-deadline-ns=([1-9][0-9]{0,18})',sys.argv[4])
-        need(started_ns is not None and match is not None,'fixed qualification publication deadline argument')
+        need(action in _INPUT_ACTIONS and match is not None,'fixed qualification publication deadline argument')
         prebound_deadline_ns=int(match[1])
         _check_input_deadline(prebound_deadline_ns)
         need(prebound_deadline_ns<=started_ns+900_000_000_000,'fixed qualification publication deadline cap')
@@ -385,8 +386,12 @@ def main():
     if prebound_deadline_ns is not None:
         need(seconds==900,'fixed qualification publication timeout')
         deadline_ns=prebound_deadline_ns
+    elif seconds is not None:
+        deadline_ns=started_ns+seconds*1_000_000_000
+    elif action in _INPUT_ACTIONS:
+        deadline_ns=started_ns+_INPUT_TIMEOUT_NS
     else:
-        deadline_ns=None if started_ns is None else started_ns+(_INPUT_TIMEOUT_NS if seconds is None else seconds*1_000_000_000)
+        deadline_ns=None
     _check_input_deadline(deadline_ns)
     request_deadline_ns=deadline_ns if seconds is None else min(deadline_ns,time.perf_counter_ns()+_INPUT_TIMEOUT_NS)
     raw=stdin_request(request_deadline_ns)if source=='-'else ordinary(Path(source),MAX_REQUEST)
@@ -422,7 +427,9 @@ def main():
         'scope':'operational outer delivery only; not receipt/evidence, worker proof or caller ACK'}
     try:
         args=[sys.executable,'-I','-S','-B','-u',str(launcher),child_role]
-        if deadline_ns is not None:
+        # The request/role protocol remains the original unary inspect
+        # or prepared execute. Only staged input accepts a private token.
+        if action in _INPUT_ACTIONS and deadline_ns is not None:
             args.append(f'--input-deadline-ns={deadline_ns}')
         _check_input_deadline(deadline_ns)
         process=subprocess.Popen(args,cwd=str(HERE),
@@ -546,7 +553,10 @@ def main():
     except TimeoutError:
         # Capture may finish after valid child delivery. Raw stays available
         # for independent inspection while this caller reports timeout.
-        sys.stderr.buffer.write(input_failure_line(timeout=True))
+        note=(input_failure_line(timeout=True) if action in _INPUT_ACTIONS else
+            canon({'run_id':value['run_id'],'child_delivery':'UNKNOWN','retry_authorized':False,
+                'captures':str(capture_dir),'message':'Outer delivery deadline; inspect the known run.'})+b'\n')
+        sys.stderr.buffer.write(note)
         sys.stderr.buffer.flush();return 50
     sys.stdout.buffer.write(result_bytes);sys.stdout.buffer.flush();return result['exit_code']
 

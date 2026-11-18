@@ -1,0 +1,1127 @@
+{
+  "case_count": 55,
+  "cases": [
+    {
+      "case": "A01",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Открыть root, каждый parent и leaf; сопоставить path stat и fstat, host File ID/volume metadata",
+      "original_oracle": "Descriptor указывает на ожидаемый объект; сравнение Linux/Windows identities ведётся через таблицу соответствий, а не равенство разных числовых форматов",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "A02",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "После pin переименовать каждый parent по очереди и заменить его именем другой собственной directory",
+      "original_oracle": "Изменение остаётся на pinned parent; assertion отклоняет rebinding. Нет verified результата для подставленного пути",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "A03",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Заменить root между admission и authority open; отдельно root→symlink",
+      "original_oracle": "Broker отклоняет несоответствие intent identity до leaf mutation; exact error и отсутствие нового leaf",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "A04",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Заменить leaf во время observe/readback",
+      "original_oracle": "Чтение связано с открытым объектом; подмена обнаруживается, не выдаётся ложный named-target verification",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "A05",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Symlink из Linux и Windows, junction и доступные reparse points; leaf и каждый parent; цель — собственный outside-sentinel",
+      "original_oracle": "Нет traversal и нет записи sentinel. Проверить O_NOFOLLOW/O_DIRECTORY фактическими syscall results, а не только lexical validation",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "A06",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Traversal, absolute locator, backslash, ADS/colon, reserved DOS names, trailing dot/space, case aliases, Unicode/normalization, имена с пробелами",
+      "original_oracle": "Точный path policy 1.1.0 отклоняет недопустимые locators. ASCII-only ограничения не смягчаются; bundle casefold duplicates запрещены",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "A07",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Переоткрыть объект из второго процесса/контейнера, затем перезапустить только тестовый worker",
+      "original_oracle": "Соответствие root/parent/leaf проверяемо; изменение intent-bound identity вызывает отказ, а не автоматическое rebinding",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B01",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Обычный и конкурентный O_EXCL/create отсутствующего leaf",
+      "original_oracle": "Ровно один successful create; остальные получают exists; bytes победителя не изменены",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B02",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Existing target: одинаковые и разные bytes; также hard-link alias собственного existing файла",
+      "original_oracle": "Existing объект не перезаписан. Ошибка не маскируется новым locator/key",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B03",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Пустой, 1 byte, chunk−1/chunk/chunk+1, binary с NUL; независимые hash/length",
+      "original_oracle": "SHA-256 точных bytes совпадает на descriptor, Linux path и Windows path",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B04",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Short writes 1/7/4096 bytes; write возвращает 0; EIO, EACCES, ENOSPC, fsync error",
+      "original_oracle": "Успешная короткая запись дописывается корректно; отсутствие прогресса/ошибка не получает success. Удержанные partial bytes классифицированы честно",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B05",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Обрыв после exclusive create и в середине payload",
+      "original_oracle": "Partial target допустим для file_create; успешное атомарное появление полного file здесь не обещано. Ни publisher, ни inspect не подтверждают неполные bytes",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B06",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Source меняется при capture; source изменён после freeze",
+      "original_oracle": "Обычный drift обнаруживается либо потребляются доказанно замороженные bytes. Не требовать snapshot hostile writer сверх streaming.py",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B07",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Выполнить high-level publish_file 1.0 и 2.0; expected_digest верный/неверный; overlapping roots; wrong root key",
+      "original_oracle": "Native contract выбран верно; ошибки не переводят операцию на другой route; отдельный inspect с phase_result_root",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "B08",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Границы file v1: 1 MiB и +1; v2: 2 GiB и +1",
+      "original_oracle": "В пределах — полная проверка; сверх — отказ до target mutation. Ограничения не снимаются в рамках квалификации",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "C01",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Holder удерживает flock; contender в другом процессе; затем release и crash holder",
+      "original_oracle": "Нет перекрытия владения; после освобождения/завершения доступ восстанавливается; timeout не выдаёт success",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "C02",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Тот же root из двух контейнеров одного Docker engine; case alias и повторный mount собственного пути",
+      "original_oracle": "Сотрудничающие Phase writers в заявленном coordination domain не обходят lock через aliases",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "C03",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Один key и одна семантическая операция: concurrent, completed replay, lost-response replay",
+      "original_oracle": "Не более одного логического эффекта; existing state проверяется до reuse. High-level refusal existing run/target не считается API гарантией автоматического retry",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "C04",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Один key, изменённые candidate/input bytes",
+      "original_oracle": "same-key conflict без изменения канонического результата",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "C05",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Разные keys, один absent target; затем два version writers с одинаковым expected_current_digest, разными новыми bytes",
+      "original_oracle": "Create имеет одного победителя; stale version writer отклонён. Нет lost update и нет двух ложных claims на разные current bytes",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "C06",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Неизменённые inputs с естественно новым capture timestamp",
+      "original_oracle": "Сопоставить ext4 и NTFS: frozen_at включён в request digest. Не фиксировать timestamp для сокрытия нормального replay defect",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D01",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "os.replace относительно pinned parents; пара reader видит чередование old/new",
+      "original_oracle": "Каждая завершённая выборка — полный old или new, без intentionally missing/partial имени. Открытый до replace reader может дочитать old",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D02",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "renameat2(RENAME_NOREPLACE): absent, existing empty/nonempty target, concurrent publisher",
+      "original_oracle": "Один commit; existing target не заменяется; ENOSYS/EOPNOTSUPP означает отсутствие bundle-примитива в данном стеке",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D03",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Hard-link publication: existing digest object equal/different; remove private source link",
+      "original_oracle": "Проверить fstat/host identity, nlink и exact bytes. Нет перезаписи conflicting object и удаления чужого временного имени",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D04",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "publish_new_version.v1: A→B; stale digest; archive conflict; partial archive/current",
+      "original_oracle": "Archive содержит A; успешный current B. Для v1 не требовать atomic current: contract atomicity=none; partial current должен блокировать ложный успех и небезопасный retry",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D05",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "publish_new_version.v2: A→B; exact existing objects; collisions; fail after objects/before replace/after replace",
+      "original_oracle": "Old/new objects точны; до replace current A; после replace current B либо committed_unverified при недоказанном readback",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D06",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "publish_bundle 1.0 и 2.0, пустой файл/вложенные members; existing target; concurrent bundles",
+      "original_oracle": "Единственная directory publication point; корректны membership, owner record и manifest hashes; не заменять loop из publish_file",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D07",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Bundle: 1024/1025 members, depth 32/33, 2 GiB/file ±1, 4 GiB total ±1, request/manifest limit",
+      "original_oracle": "Проверка существующих bounds; сверх — честный отказ. Новые limits не являются целью",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D08",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Межтомный rename/link только собственных isolated roots",
+      "original_oracle": "Отказ без copy-delete fallback и без ложной atomicity. Atomic replace требуется только внутри одного mounted filesystem",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "D09",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "A→B→C→A и A→A; собрать все requests/receipts/archives; inspect предыдущих run после смены current",
+      "original_oracle": "Байтовая сохранность и способность восстановить порядок оцениваются раздельно; отказ old-run inspect при изменившемся current не скрывается",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E01",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Реальный fsync(file), затем реальный fsync правильного pinned directory fd; проверить errno/order",
+      "original_oracle": "Исполнена текущая гарантия attempted namespace flush, не абсолютная power-loss durability",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E02",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Зафиксировать kernel/VFS/transport путь flush и доступную документацию/trace",
+      "original_oracle": "Отдельно описать guest request, transport forwarding, host flush и persistence: неизвестное не объявляется доказанным",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E03",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Canonical evidence: partial write, fsync failure до/после publication, link/rename failure",
+      "original_oracle": "Canonical имя отсутствует либо содержит полный объект; нет inspectable partial JSON/blob; failure не получает finalized success",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E04",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "O_TMPFILE/linkat путь, фактически выбранный на ext4; реальный fallback на NTFS, если требуется",
+      "original_oracle": "Оба используемых пути под теми же assertions. Отсутствие O_TMPFILE само по себе не отказ, если штатный безопасный fallback доказан",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E05",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Сопоставить request→intent→plan→effect receipts→receipt→result, profile/artifact/root identities",
+      "original_oracle": "Проверены exact bindings и raw/native digests; timestamp/order не заменяют checksum",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E06",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Новый процесс phase_inspect без caller source; независимый Windows reader; повторный inspect",
+      "original_oracle": "Нет доверия одному success envelope; совпадают run/binding/receipt/plan, target bytes и terminal semantics",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E07",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Tamper собственного target/archive/object/intent/plan/receipt/binding/prepared proof по одному",
+      "original_oracle": "Inspect/recovery отвергают несоответствие, не чинят original evidence и не подтверждают tampered объект",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "E08",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Publication status при preparing/intent/effects/receipt, timeout/disconnection",
+      "original_oracle": "status — historical metadata only; target_verified=false; не трактовать его как verification или liveness",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F01",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "До run reservation / после reservation до intent / после intent до effects",
+      "original_oracle": "Нет ложного успеха; сохраняется доступная evidence. Неизвестная ownership reservation не очищается вслепую",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F02",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Во время file payload, bundle staging, записи manifest",
+      "original_oracle": "Partial удержан/классифицирован; существующий target не заменён; observe не дописывает payload",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F03",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "После bundle prepare до rename; отдельно prepared-stage записан, independent preparation-binding ещё не записан",
+      "original_oracle": "Только fully bound bundle_create.v2@1.1.0 может получить commit_prepared. Неполная или чужая proof — отказ",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F04",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "После publication до effect/final receipt; lost MCP/CLI response",
+      "original_oracle": "Inspect/recovery сначала выясняют исход; отсутствие receipt не означает absence of mutation",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F05",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "recover_publication observe для file/bundle, включая receiptless committed case",
+      "original_oracle": "Никаких target mutations; возможна новая recovery observation. Original receipts не изменяются",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F06",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "commit_prepared для bundle 2.0; повтор и два concurrent recoverers; crash после commit",
+      "original_oracle": "Не более одного remaining rename; identity stage/target сохраняется; повтор после commit не перепубликует",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F07",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Recovery unlock/close errors, включая уже состоявшийся commit",
+      "original_oracle": "progress не теряется; success не выдаётся при ошибке finalization даже при target_verified=true; требуется investigation",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F08",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Version v1: after archive / partial current / committed без receipt; v2: after objects / before replace / after replace",
+      "original_oracle": "Использовать имеющиеся hook classification и проверенный Core idempotent continuation, а не recover_publication для versions; ambiguous states блокируют retry",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "F09",
+      "clock_policy": "Original operation/lock/native30s clocks unchanged; large outer watchdog<=1800s does not renew exchange deadlines.",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "original_action": "Повтор исходной операции после обычного worker/container restart",
+      "original_oracle": "Exact saved evidence и root binding проверены; изменение identity — отказ, не новая key/namespace",
+      "payload_policy": "Original limits/counts unchanged. Ordinary64KiB; B07stream32MiB separate; V1old/new64KiB; V2new4097; Bundle16x64KiB+separateemptylayout.",
+      "required_before_write": [
+        "exact accepted frontend/source graph and all actual case variants",
+        "complete source object/member/length/hash/identity manifest and previous retained partition",
+        "all attempts, successful targets, inspections, windows, recovery/seed calls",
+        "exact input/preparation/freeze/private/stage/result/restore copy lifetimes and C/ext4/S placement",
+        "bounded JSON/Base64/evidence/RAW/log/SDK/FS-metadata controls and archive copies",
+        "actual writer/effect concurrency and physical common ext4 flock identity",
+        "two independent plan reviews plus fixed accepted matrix/ledger/collector pins",
+        "fresh identity-bound preflight and whole in-flight reservation; live monitor/no-new-work latch"
+      ],
+      "status": "APPLICABILITY_MAPPED_ADMISSION_CLOSED"
+    },
+    {
+      "case": "G01",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Whole native parent/worker lifecycle, in-flight unknown effects, creation HANDLEs and supported recovery; TEST job cleanup has zero G01 credit.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "INSTALL",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Exact wheel/RECORD/sdist/source graph, fresh test install, CI and rollback; no ordinary qualified profile activation.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "ROLLBACK",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Retain old/new/old/new installations, histories, fixtures and Original outcomes; never switch production.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "SDK",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Fixed verified SDK1638files; each call full client/server census; preserve all failed instrumentation contexts.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "ARCHIVE",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Existing isolated f4 archive256MiB and aggregatefresh384MiB unchanged; complete old negative inputs retained.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "SOURCE_PREPARATION",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Include all Windows receiver/preparation/Core capture representations; no payload JSON for multiGiB.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "SOURCE_REVIEW",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Source working roots/captures have exact per-root allocations inside global32GiB.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    },
+    {
+      "case": "CI",
+      "lanes": [
+        "REF",
+        "MIX"
+      ],
+      "note": "Actual hosted/local CI artifacts and resource jobs; no Phase operation clock enlargement.",
+      "status": "EXACT_DEPLOYMENT_PLAN_REQUIRED_NO_WILDCARD"
+    }
+  ],
+  "classification": "Operational draft applicability map; NOT qualification/admission evidence",
+  "full": false,
+  "new_floor_activation": false,
+  "original_plan": {
+    "bytes": 34175,
+    "document": "QUALIFICATION_PLAN.md",
+    "sha256": "a502b958c18db8cdcf4e79c295da41393a796a47109e36621e987f2739a919f3"
+  },
+  "owner_instruction_digest": "sha256:dc6321e885175ea02e587286d52c18e6a41c026bd2a16a33824757058c2580f7",
+  "rules": [
+    "Replace unjustified universal64GiB with independently justified scenario floors; no extra owner permission for that authorized revision.",
+    "Retain strict32GiB aggregate cap and4GiB reserves, all workload sizes/counts, function/identity/admission gates.",
+    "Cfree must fund directC allocations AND Docker VHDX physical demand; ext4free is another constraint on the same backing capacity.",
+    "No cleanup, VHDX shrink, compressibility, regeneration, case rekey, or discarded Original is a resource credit.",
+    "Per-case fit does not establish whole-program fit; retain cumulative complete history/outputs across every epoch."
+  ]
+}

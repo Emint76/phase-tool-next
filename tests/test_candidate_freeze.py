@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from phase_tool import streaming
 from phase_tool.candidate import capture_raw, capture_structured
 from phase_tool.canonical import canonical_bytes, canonical_digest, digest_bytes, profile_digest_bytes
 from phase_tool.errors import PhaseError
 from phase_tool.freeze import (
     copy_and_hash,
+    freeze_declared_inputs,
     lock_snapshot_revalidate,
     manifest_and_hash,
     revalidate_frozen,
@@ -19,6 +22,176 @@ from phase_tool.freeze import (
     value_snapshot,
 )
 from phase_tool.paths import inspect_target_path, safe_relative_locator
+
+
+_FROZEN_AT = "2026-07-27T00:00:00Z"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires the existing POSIX streaming finalization")
+@pytest.mark.parametrize("length", [65_536, 0])
+def test_native_expected_stream_source_bound_preserves_the_frozen_input(tmp_path, monkeypatch, length):
+    source = tmp_path / "payload.bin"
+    payload = b"a" * length
+    source.write_bytes(payload)
+    expected = (digest_bytes(payload), length)
+    calls = []
+    transfer = streaming.transfer
+
+    def observed(fd, maximum, destination=None):
+        calls.append((maximum, destination is not None))
+        return transfer(fd, maximum, destination)
+
+    monkeypatch.setattr(streaming, "transfer", observed)
+    contract = {"operation": {"mechanism": {"id": streaming.MECHANISM_ID}},
+                "input_bindings": [{"id": "payload", "required": True, "freeze_strategy": "copy_and_hash"}]}
+    frozen = freeze_declared_inputs(
+        contract, {}, {"payload": source}, {}, tmp_path / "blobs",
+        frozen_at=_FROZEN_AT, maximum_structured_bytes=128, _native_expected_inputs={"payload": expected},
+    )["payload"]
+    assert calls == [(length, True), (streaming.FILE_LIMIT, False)]
+    assert (frozen.digest, frozen.length) == expected
+    assert frozen.streamed and frozen.frozen_at == _FROZEN_AT
+    assert frozen.blob_path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("length", [1, 5])
+def test_native_expected_stream_source_size_mismatch_refuses_before_copy(tmp_path, monkeypatch, length):
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"abc")
+    blobs = tmp_path / "blobs"
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("stable expected-length mismatch reached the temporary copy")
+
+    monkeypatch.setattr(streaming, "NamedTemporaryFile", unexpected)
+    with pytest.raises(PhaseError, match="freeze.expected_content_mismatch") as mismatch:
+        streaming.copy_and_hash_stream("payload", tmp_path, source.name, blobs, frozen_at=_FROZEN_AT,
+                                      _expected_input=(digest_bytes(b"abc"), length))
+    assert str(mismatch.value) == "freeze.expected_content_mismatch: payload"
+    assert not list(blobs.iterdir())
+
+
+def test_native_expected_stream_preserves_hard_size_refusal(tmp_path, monkeypatch):
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"a")
+    identity = source.stat()
+    real_stat, real_fstat = Path.stat, os.fstat
+
+    def oversized(point):
+        return SimpleNamespace(st_dev=point.st_dev, st_ino=point.st_ino, st_mode=point.st_mode,
+                               st_size=streaming.FILE_LIMIT + 1, st_mtime_ns=point.st_mtime_ns,
+                               st_ctime_ns=point.st_ctime_ns)
+
+    def named(path, **kwargs):
+        point = real_stat(path, **kwargs)
+        return oversized(point) if path == source else point
+
+    def opened(fd):
+        point = real_fstat(fd)
+        same = (point.st_dev, point.st_ino) == (identity.st_dev, identity.st_ino)
+        return oversized(point) if same else point
+
+    # Model the original stable 2 GiB + 1 observation with a one-byte fixture.
+    monkeypatch.setattr(Path, "stat", named)
+    monkeypatch.setattr(streaming.os, "fstat", opened)
+    blobs = tmp_path / "blobs"
+    with pytest.raises(PhaseError, match="stream.limit_exceeded"):
+        streaming.copy_and_hash_stream("payload", tmp_path, source.name, blobs, frozen_at=_FROZEN_AT,
+                                      _expected_input=(digest_bytes(b"a"), 1))
+    assert not list(blobs.iterdir())
+
+
+def test_native_expected_stream_growth_cannot_write_past_exact_length(tmp_path, monkeypatch):
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"abcdef")
+    blobs = tmp_path / "blobs"
+    amount = [0]
+    read, transfer = os.read, streaming.transfer
+    requests = []
+
+    def grow(fd, count):
+        requests.append(count)
+        if len(requests) == 2:
+            with source.open("ab") as writer:
+                writer.write(b"g")
+        return read(fd, count)
+
+    def observe(fd, maximum, destination):
+        assert maximum == 6
+        return transfer(fd, maximum, destination, write_counter=amount)
+
+    monkeypatch.setattr(streaming, "CHUNK_BYTES", 4)
+    monkeypatch.setattr(streaming, "transfer", observe)
+    monkeypatch.setattr(streaming.os, "read", grow)
+    with pytest.raises(PhaseError, match="freeze.source_changed_during_capture"):
+        streaming.copy_and_hash_stream("payload", tmp_path, source.name, blobs, frozen_at=_FROZEN_AT,
+                                      _expected_input=(digest_bytes(b"abcdef"), 6))
+    assert requests == [4, 3] and amount == [4]
+    assert not list(blobs.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires rename of an open POSIX source")
+def test_native_expected_stream_rejects_same_bytes_on_replaced_path(tmp_path, monkeypatch):
+    source = tmp_path / "payload.bin"
+    replacement = tmp_path / "replacement.bin"
+    for path in (source, replacement):
+        path.write_bytes(b"same")
+    blobs = tmp_path / "blobs"
+    transfer = streaming.transfer
+
+    def replace_after_read(fd, maximum, destination):
+        observed = transfer(fd, maximum, destination)
+        os.replace(replacement, source)
+        return observed
+
+    monkeypatch.setattr(streaming, "transfer", replace_after_read)
+    with pytest.raises(PhaseError, match="freeze.source_changed_during_capture"):
+        streaming.copy_and_hash_stream("payload", tmp_path, source.name, blobs, frozen_at=_FROZEN_AT,
+                                      _expected_input=(digest_bytes(b"same"), 4))
+    assert not list(blobs.iterdir())
+
+
+def test_native_expected_stream_wrong_digest_has_no_linked_blob(tmp_path):
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"bad")
+    blobs = tmp_path / "blobs"
+    with pytest.raises(PhaseError, match="freeze.expected_content_mismatch"):
+        streaming.copy_and_hash_stream("payload", tmp_path, source.name, blobs, frozen_at=_FROZEN_AT,
+                                      _expected_input=(digest_bytes(b"abc"), 3))
+    assert not list(blobs.iterdir())
+
+
+def test_native_expected_stream_does_not_reduce_existing_blob_readback_bound(tmp_path):
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"a")
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    expected = (digest_bytes(b"a"), 1)
+    destination = blobs / expected[0].removeprefix("sha256:")
+    destination.write_bytes(b"longer")
+    with pytest.raises(PhaseError, match="freeze.blob_collision"):
+        streaming.copy_and_hash_stream("payload", tmp_path, source.name, blobs, frozen_at=_FROZEN_AT,
+                                      _expected_input=expected)
+    assert list(blobs.iterdir()) == [destination] and destination.read_bytes() == b"longer"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires the existing POSIX streaming finalization")
+@pytest.mark.parametrize("expectation", [None, ("invalid", 1), (digest_bytes(b"abc"), True)])
+def test_unbound_or_invalid_stream_expectation_preserves_legacy_copy(tmp_path, monkeypatch, expectation):
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"abc")
+    calls = []
+    transfer = streaming.transfer
+
+    def observed(fd, maximum, destination=None):
+        calls.append(maximum)
+        return transfer(fd, maximum, destination)
+
+    monkeypatch.setattr(streaming, "transfer", observed)
+    frozen = streaming.copy_and_hash_stream("payload", tmp_path, source.name, tmp_path / "blobs",
+                                            frozen_at=_FROZEN_AT, _expected_input=expectation)
+    assert calls == [streaming.FILE_LIMIT, streaming.FILE_LIMIT]
+    assert frozen.blob_path.read_bytes() == b"abc"
 
 
 def test_structured_candidate_is_captured_once_and_immutable(tmp_path: Path) -> None:

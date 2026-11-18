@@ -20,9 +20,21 @@ MANIFEST_NAME = "phase-bundle.json"
 OWNER_NAME = "phase-owner.json"
 
 
+class _BundleLimitExceeded(PhaseError):
+    """An exact upper bound measured by an existing Bundle guard."""
+
+    def __init__(self, code, kind, observed, maximum):
+        super().__init__(code)
+        self.kind = kind
+        self.observed = observed
+        self.maximum = maximum
+
+
 def validate_members(members: object) -> list[str]:
-    if type(members) is not list or not 1 <= len(members) <= MAX_MEMBERS:
+    if type(members) is not list or not members:
         raise PhaseError("bundle.member_count_limit")
+    if len(members) > MAX_MEMBERS:
+        raise _BundleLimitExceeded("bundle.member_count_limit", "member_count", len(members), MAX_MEMBERS)
     paths: list[str] = []
     aliases: set[str] = set()
     for value in members:
@@ -30,8 +42,10 @@ def validate_members(members: object) -> list[str]:
             raise PhaseError("bundle.invalid_member_path")
         path = safe_relative_locator(value)
         parts = path.split("/")
-        if len(parts) > MAX_DEPTH or parts[0].casefold() in {MANIFEST_NAME, OWNER_NAME}:
+        if parts[0].casefold() in {MANIFEST_NAME, OWNER_NAME}:
             raise PhaseError("bundle.reserved_or_deep_path")
+        if len(parts) > MAX_DEPTH:
+            raise _BundleLimitExceeded("bundle.reserved_or_deep_path", "member_depth", len(parts), MAX_DEPTH)
         folded = path.casefold()
         if folded in aliases:
             raise PhaseError("bundle.duplicate_path")

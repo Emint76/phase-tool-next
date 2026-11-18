@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from tempfile import TemporaryFile
 
 from ..errors import PhaseError
-from ..streaming import FILE_LIMIT, hash_file, observe_target, open_regular_target, transfer
+from ..streaming import FILE_LIMIT, _verified_blob_snapshot, hash_file, observe_target, open_regular_target, transfer
 from .exclusive_create import _receipt, _unknown
 
 
@@ -15,19 +14,10 @@ def execute_stream_create(effect, target_root: Path, blob: Path, *, run_id: str,
     expected = (effect["content_digest"], effect["content_length"])
     if hash_file(blob, FILE_LIMIT) != expected:
         raise PhaseError("mechanism.content_binding_mismatch")
-    # An anonymous private file, not the re-openable evidence pathname, is the
-    # mechanism input. Verify the bytes copied into it BEFORE creating target.
-    # It is disk-backed and consumed by the same descriptor (bounded RSS).
-    with TemporaryFile(dir=blob.parent) as snapshot:
-        source = os.open(blob,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            captured = transfer(source,FILE_LIMIT,snapshot.fileno())
-        finally:
-            os.close(source)
-        if captured != expected:
-            raise PhaseError("mechanism.content_binding_mismatch")
-        os.lseek(snapshot.fileno(),0,os.SEEK_SET)
-        return _execute_snapshot(effect,target_root,snapshot.fileno(),run_id=run_id,
+    # Reuse the SAME private-copy validation/FD lifetime. The existing shared
+    # blob precheck above remains before capture; neither check is admission.
+    with _verified_blob_snapshot(blob, expected) as source:
+        return _execute_snapshot(effect,target_root,source,run_id=run_id,
                                  timestamp=timestamp,authority_provider=authority_provider)
 
 

@@ -30,3 +30,9 @@ Repository target locators must begin with `toolkit/`. Evidence and preparation 
 7. Hand the exact request to `phase-verified-execution` for direct MCP execute -> inspect.
 
 Supported adapters: create, publish_new_version, and append. Other routed domains require their dedicated preparation skill; absence of an adapter is a blocker, never permission for direct write.
+
+## Fixed NTFS experiments
+
+When the task or approved Hermes rules expressly allow the operation and result directory, resolve that authority through the deployment's existing approved installation scopes. A path mentioned in a task is not a grant. Ask only if the task authority is missing or ambiguous. If the authorized directory falls outside an admitted runtime scope, report that runtime limit.
+
+The native preparation adapter assembles per-run bindings and requests for the fixed File v2 and Bundle v1 selectors. Stage the returned files in the approved installation and preparation locations, then call the standard native CLI or prepared MCP tool and start a fresh inspect. This needs no operator to hand-assemble each request. Follow the native installation guide for scope separation and retained history.

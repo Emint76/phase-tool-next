@@ -104,7 +104,7 @@ class StagedDynamicA05Tests(unittest.TestCase):
     def record_report(self, path, value):
         self.reports.append((path.name, deepcopy(value)))
 
-    def vector(self, role, *, change_fixture=None, change_scope=None, change_sidecar=None, change_config=None):
+    def vector(self, role, *, change_fixture=None, change_scope=None, change_sidecar=None, change_config=None, launcher_digest=None):
         doc, manifests, graph = deepcopy((self.doc, self.manifests, self.graph))
         if change_fixture:
             change_fixture(doc)
@@ -150,7 +150,7 @@ class StagedDynamicA05Tests(unittest.TestCase):
         sidecar_raw = canonical_bytes(sidecar)
         self.fixed.update({self.scope_path: scope_raw, self.binding_path: sidecar_raw})
         deps = {str(path): digest_bytes(body) for path, body in self.fixed.items() if path != self.launcher}
-        graph['launcher_digest'] = staged._LAUNCHER_DIGEST
+        graph['launcher_digest'] = (staged._LAUNCHER_DIGEST if launcher_digest is None else launcher_digest)
         graph['windows']['dependency_file_digests'] = deps
         for value in manifests.values():
             value['composition']['artifact_graph_digest'] = canonical_digest(graph)
@@ -298,6 +298,40 @@ class StagedDynamicA05Tests(unittest.TestCase):
         with self.assertRaisesRegex(PhaseError, staged._CODE):
             self.select(vector)
         self.assertEqual(self.fixed_reads, [self.launcher])
+
+
+    def test_two_exact_launcher_pins_require_their_own_held_bytes(self):
+        prior = digest_bytes(self.launcher_raw)
+        qualified = 'sha256:d5f5d37cdd000afb7887f04c06988507ae9f29b903bf18ca435d78aa46267449'
+        # Model just the projected launcher digest in portable CI. All other
+        # files, the old launcher and the manifest use the real hash function.
+        candidate = b'candidate launcher digest model'
+        self.model_sys.argv[1] = 'input-mcp'
+        with patch.object(staged, 'digest_bytes',
+                          side_effect=lambda body: qualified if body == candidate else digest_bytes(body)):
+            for pin, same, other in ((prior, self.launcher_raw, candidate),
+                                     (qualified, candidate, self.launcher_raw)):
+                with self.subTest(pin=pin):
+                    vector = self.vector('File1', launcher_digest=pin)
+                    self.fixed[self.launcher] = same
+                    self.assertEqual(self.select(vector)._require_mcp_startup(vector.startup), vector.run_id)
+                    self.fixed_reads.clear()
+                    self.fixed[self.launcher] = other
+                    with self.assertRaisesRegex(PhaseError, staged._CODE):
+                        self.select(vector)
+                    self.assertEqual(self.fixed_reads, [self.launcher])
+        self.assertEqual(self.events, [])
+
+    def test_unlisted_or_malformed_launcher_digest_refuses_before_held_read(self):
+        ordinary = files('phase_tool').joinpath('data/native/native_phase_candidate_launcher_v1.py.in').read_bytes()
+        self.fixed[self.launcher] = ordinary
+        for pin in (digest_bytes(ordinary), ['malformed']):
+            with self.subTest(pin=pin):
+                vector = self.vector('File1', launcher_digest=pin)
+                with self.assertRaisesRegex(PhaseError, staged._CODE):
+                    self.select(vector)
+                self.assertEqual(self.fixed_reads, [])
+        self.assertEqual(self.events, [])
 
     def test_other_fixed_role_cannot_select(self):
         vector = self.vector('Bundle2')

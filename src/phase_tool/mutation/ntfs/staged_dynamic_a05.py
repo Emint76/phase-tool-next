@@ -15,6 +15,7 @@ from .native import NativeIdentity, _require
 
 
 _LAUNCHER_DIGEST = 'sha256:5578642465bf1ddf627b6220712747eafb8c134f713f105793e9b8cab5e5d9ac'
+_LAUNCHER_DIGESTS = {_LAUNCHER_DIGEST, 'sha256:d5f5d37cdd000afb7887f04c06988507ae9f29b903bf18ca435d78aa46267449'}
 _SIDECAR = 'dynamic-a05-staged-test.json'
 _SCOPE = 'native-input-scope.json'
 _CODE = 'ntfs.staged_dynamic_a05_binding'
@@ -31,14 +32,15 @@ def _canonical(raw):
 def _owned_launcher(config, manifest):
     path = Path(config['windows_launcher'])
     graph = config['artifact_graph']
+    launcher_digest = graph.get('launcher_digest') if type(graph) is dict else None
     main_file = getattr(sys.modules.get('__main__'), '__file__', None)
     _require(os.name == 'nt' and sys.argv[1:] in (['publish-input'], ['input-mcp'])
         and type(main_file) is str and path.is_absolute()
         and Path(main_file).absolute() == Path(sys.argv[0]).absolute() == path
         and config.get('native_launch_version') == '3.0'
-        and graph['launcher_digest'] == _LAUNCHER_DIGEST
+        and type(launcher_digest) is str and launcher_digest in _LAUNCHER_DIGESTS
         and canonical_digest(graph) == manifest['composition']['artifact_graph_digest']
-        and digest_bytes(_read_dynamic_a05_fixed(path)) == _LAUNCHER_DIGEST, _CODE)
+        and digest_bytes(_read_dynamic_a05_fixed(path)) == launcher_digest, _CODE)
     return path
 
 

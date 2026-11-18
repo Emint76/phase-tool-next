@@ -484,7 +484,9 @@ def run_native_inspection(launch):
 
 def run_native_original(launch):
     from .original_endpoint import native_original_query
-    _require(not launch._inspection_only, 'ntfs.inspection_only_operation_forbidden')
+    request = launch.invocation['request']
+    _require(launch._inspection_only is (request.get('action') == 'publication_status'),
+        'ntfs.inspection_only_operation_forbidden')
     launch.check_runtime()
     identities=_linux_stdio_identity()
     # Existing reader/parser return only after their evidence FDs are closed.
@@ -503,6 +505,25 @@ def run_native_original(launch):
     return 0
 
 
+def _run_native_publication_status(launch):
+    from .bootstrap import _NativeAcceptedLaunch
+    from ...publication_status import PublicationStatus
+
+    _require(type(launch) is _NativeAcceptedLaunch and launch._inspection_only is True,
+        'ntfs.fixed_inspection_role_required')
+    launch.check_runtime()
+    value = launch._query_original('publication_status', None)
+    _require(type(value) is dict and set(value) == set(PublicationStatus.model_fields),
+        'ntfs.parent_command_binding_mismatch')
+    status = PublicationStatus.model_validate(value)
+    _require(status.run_id == launch.run_id and
+        ((status.query_succeeded and status.exit_code == 0 and status.error is None)
+         or (not status.query_succeeded and status.exit_code == 10 and bool(status.error))),
+        'ntfs.parent_command_binding_mismatch')
+    return {'protocol': 'phase.native.command', 'version': '1.0', 'channel_id': launch.channel_id,
+            'run_id': launch.run_id, 'result': status.model_dump(), 'exit_code': status.exit_code}
+
+
 class _ClosedStagedFileInspectionLoss(Exception):
     """The unary reader's owned Windows process and pipes were finalized."""
 
@@ -516,6 +537,12 @@ class _ClosedStagedFileInspectionLoss(Exception):
 def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None,
                       _c05_transport=None, _report_closed_staged_inspection_loss=False,
                       _qualification_inspection=False):
+    request = launch.invocation['request']
+    if type(request) is dict and request.get('operation') == 'publication_status':
+        _require(not _qualification_inspection and not _report_closed_staged_inspection_loss
+            and all(hook is None for hook in (_prepared_ack_test, _dynamic_a05_test,
+                _g01_creation_handle_test, _c05_transport)), 'ntfs.fixed_inspection_role_required')
+        return _run_native_publication_status(launch)
     from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
     from .input_stage import _qualification_bulk_deadline_ns

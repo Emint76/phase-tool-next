@@ -4,8 +4,10 @@ Only accepted installed launch data select roots/registry. Query data cannot.
 """
 from __future__ import annotations
 import base64
+import os
 from pathlib import Path
 import re
+import sys
 
 from ...canonical import canonical_bytes, parse_json_bytes
 from ...errors import PhaseError
@@ -172,11 +174,43 @@ def _require_bundle_publication_original(*,intent,plan,parsed,query,binding):
         'ntfs.original_bundle_publication_mismatch')
 
 
+def _publication_status_query(launch, query):
+    from ...application import PhaseApplication
+    from ...installation import _native_read_binding_for_launch
+    from ...publication_status import publication_status
+
+    _require(launch._inspection_only is True
+        and type(query) is dict and set(query) == _QUERY_FIELDS | {'wait_seconds'}
+        and query['native_original_query_version'] == '1.0'
+        and query['action'] == 'publication_status' and query['intent_digest'] is None
+        and query['run_id'] == launch.run_id and query['operation_nonce'] == launch.operation_nonce
+        and query['channel_id'] == launch.channel_id
+        and query['installation_digest'] == launch.installation_digest
+        and type(query['wait_seconds']) is int and 0 <= query['wait_seconds'] <= 60
+        and launch.invocation['request'] == query,
+        'ntfs.original_query_binding_mismatch')
+    _require(sys.platform == 'linux', 'ntfs.original_linux_reader_required')
+    binding = _native_read_binding_for_launch(launch)
+    root = binding.check_evidence_root()
+    _require(bool(os.statvfs(root).f_flag & os.ST_RDONLY), 'ntfs.original_readonly_contour_required')
+    manifest = launch.manifest
+    response = publication_status(PhaseApplication(registry=binding.registry), evidence_root=root,
+        run_id=query['run_id'], wait_seconds=query['wait_seconds'], _expected_contract=manifest['contract'],
+        _expected_evidence_identity=manifest['evidence_identity'])
+    _require(binding.check_evidence_root() == root and bool(os.statvfs(root).f_flag & os.ST_RDONLY),
+        'ntfs.original_readonly_contour_required')
+    launch.check_runtime()
+    return {'query': query, 'value': response.payload, 'required_evidence_reads_finalized': True}
+
+
 def native_original_query(launch,query):
     from .bootstrap import _NativeAcceptedLaunch
     from ...evidence import _confirm_native_original_absent
     _require(type(launch) is _NativeAcceptedLaunch,'ntfs.accepted_launch_binding_required')
     launch.check_runtime()
+    if type(query) is dict and query.get('action') == 'publication_status':
+        return _publication_status_query(launch, query)
+    _require(launch._inspection_only is False, 'ntfs.inspection_only_operation_forbidden')
     staged=None
     if type(query)is dict and query.get('native_original_query_version')=='1.4':
         _require(set(query)==_QUERY_FIELDS|{'staged_publication_request'}

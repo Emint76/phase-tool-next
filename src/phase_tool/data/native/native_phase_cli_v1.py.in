@@ -1,6 +1,6 @@
 """Stdlib-only caller for one accepted fixed native Phase installation.
 
-Usage: accepted-python -I -S -B -u cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR
+Usage: accepted-python -I -S -B -u cli.py execute|inspect|publication-status|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR
 Install beside the accepted launcher.py and native-phase.json. Requests use the
 existing {run_id,request} envelope and prepared execute or unary known-run inspect.
 Operational delivery captures are separate from Core receipts and evidence.
@@ -144,7 +144,7 @@ _QUALIFICATION_CAPTURE_ACTIONS=_INPUT_ACTIONS|{'inspect','execute'}
 def reconciliation_role(action,value,outer):
     """Pure routing; accepted parent/factory still verifies every exact binding."""
     if action not in {'recover-publication','continue-version'}:
-        return 'publish-input'if action in _INPUT_ACTIONS else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action=='inspect'else'parent'
+        return 'publish-input'if action in _INPUT_ACTIONS else'publish-bundle'if action=='publish-bundle'else'inspect-parent'if action in {'inspect','publication-status'}else'parent'
     request=value['request'];manifest=strict(base64.b64decode(outer['manifest_base64'],validate=True))
     role=manifest['contract']['id']
     need(type(request['request_id'])is str and 0<len(request['request_id'])<=128
@@ -171,6 +171,26 @@ def reconciliation_role(action,value,outer):
         and type(v[0])is str and re.fullmatch('sha256:[0-9a-f]{64}',v[0])is not None
         and type(v[1])is int and v[1]>=0 for k,v in expected.items()),'fixed expected inputs')
     return 'parent'
+
+
+def publication_status_result(candidate,run_id):
+    """Correlate the closed saved-state result from the verified launcher."""
+    fields={'publication_status_version','run_id','query_succeeded','stage','request_id',
+        'intent_digest','receipt_digest','recorded_terminal_status','recorded_mutation_attempted',
+        'verification_performed','target_verified','process_liveness','wait_expired','error','exit_code'}
+    need(type(candidate)is dict and set(candidate)==fields
+        and candidate['publication_status_version']=='1.0' and candidate['run_id']==run_id
+        and candidate['verification_performed'] is False and candidate['target_verified'] is False
+        and candidate['process_liveness']=='not_checked'
+        and candidate['stage'] in ('not_observed','preparing','intent_recorded','effects_recorded','receipt_recorded')
+        and type(candidate['wait_expired'])is bool,'native publication status correlation')
+    need(all(candidate[key] is None or type(candidate[key])is str for key in (
+        'request_id','intent_digest','receipt_digest','recorded_terminal_status'))
+        and (candidate['recorded_mutation_attempted'] is None
+            or type(candidate['recorded_mutation_attempted'])is bool),'native publication status metadata')
+    need((candidate['query_succeeded'] is True and candidate['exit_code']==0 and candidate['error'] is None)
+        or (candidate['query_succeeded'] is False and candidate['exit_code']==10 and type(candidate['error'])is str),
+        'native publication status query result')
 
 
 def asserted_file_inspection(value,outer):
@@ -371,7 +391,7 @@ def bounded_delivery(report):
 
 
 def main():
-    need(len(sys.argv)in {4,5} and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
+    need(len(sys.argv)in {4,5} and sys.argv[1]in _INPUT_ACTIONS|{'execute','inspect','publication-status','publish-bundle','recover-publication','continue-version'},'usage: cli.py execute|inspect|publication-status|publish-bundle|publish-input|publish-file|recover-publication|continue-version REQUEST_JSON|- NEW_CAPTURE_DIR')
     action,source,destination=sys.argv[1:4]
     started_ns=time.perf_counter_ns() if action in _QUALIFICATION_CAPTURE_ACTIONS else None
     prebound_deadline_ns=None
@@ -382,6 +402,8 @@ def main():
         _check_input_deadline(prebound_deadline_ns)
         need(prebound_deadline_ns<=started_ns+900_000_000_000,'fixed qualification publication deadline cap')
     launcher,outer=bindings()
+    if action=='publication-status':
+        need(outer.get('native_fixed_startup_version') in {'3.0','4.0'},'publication status requires fixed startup 3.0 or 4.0')
     seconds=_qualification_cold_publication_seconds(outer) if started_ns is not None else None
     if prebound_deadline_ns is not None:
         need(seconds==900,'fixed qualification publication timeout')
@@ -402,9 +424,14 @@ def main():
     expected=({'operation','native_version_continuation_request_version','original_run_id','request_id','expected_intent_digest','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'}if action=='continue-version'else{'operation','native_bundle_recovery_request_version','request_id','expected_intent_digest','mode'}if action=='recover-publication'else{'operation','input_scope','source_locator','target_locator','request_id','members','expected_current_digest'}if action=='publish-input'else{'operation','source_locator','target_locator','request_id','members'}if action=='publish-bundle'else
         {'operation','input_scope','source_locator','target_locator','request_id','publication_version','expected_digest',
             'root_binding'}if action=='publish-file'else{'operation'}if action=='inspect'else
+        {'operation','wait_seconds'}if action=='publication-status'else
         {'operation','candidate_path','input_paths','expected_inputs','maximum_candidate_bytes'})
     asserted_inspect=action=='inspect' and set(request)=={'operation','root_binding'}
     need(asserted_inspect or set(request)==expected,'closed fixed CLI request required')
+    if action=='publication-status':
+        need(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',value['run_id']) is not None
+            and type(request['wait_seconds'])is int and 0<=request['wait_seconds']<=60,
+            'fixed publication status run and wait')
     child_role=reconciliation_role(action,value,outer)
     body=canon(value);need(0<len(body)<=MAX_REQUEST,'bounded canonical request')
     # Preserve the caller assertion in capture. The fixed reader still accepts
@@ -502,8 +529,12 @@ def main():
                 and native['protocol']=='phase.native.command'and native['version']=='1.0'
                 and native['run_id']==value['run_id']and type(native['channel_id'])is str
                 and re.fullmatch('[0-9a-f]{32}',native['channel_id'])is not None,'native envelope correlation')
-            candidate=native['result'];need(type(candidate)is dict and candidate.get('command')==('execute'if action=='continue-version'else action)
-                and candidate.get('run_id')in (None,value['run_id']),'native command correlation')
+            candidate=native['result']
+            if action=='publication-status':
+                publication_status_result(candidate,value['run_id'])
+            else:
+                need(type(candidate)is dict and candidate.get('command')==('execute'if action=='continue-version'else action)
+                    and candidate.get('run_id')in (None,value['run_id']),'native command correlation')
         need(type(native['exit_code'])is int and type(candidate.get('exit_code'))is int
             and 0<=native['exit_code']<=255 and native['exit_code']==candidate['exit_code']==report['process_exit'],
             'native command/exit correlation')

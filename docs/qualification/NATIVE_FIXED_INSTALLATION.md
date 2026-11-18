@@ -137,7 +137,17 @@ Initialize the session and read `list_tools`. In the fixed experimental context,
 
 Use SDK `call_tool` with those exact argument names. The execute tool takes its arguments directly, without the CLI's outer `request` envelope or `operation` field. Decode the actual tool result; neither a declared `outputSchema` nor `structuredContent` is mandatory for this route. Do not infer success from discovery or successful SDK transport alone. Preserve the returned command fields and original receipt/intent/effect-plan digest bindings.
 
-For a fresh read-only inspection, start a separate standard SDK session with the same command and flags, changing the final role to `inspect-mcp`. That server exposes only unary `phase_inspect(run_id)`. It uses the fixed compatible reader for the same known run.
+For a fresh read-only inspection, start a separate standard SDK session with the same command and flags, changing the final role to `inspect-mcp`. Call `phase_inspect(run_id)` to verify the current result against its Original.
+
+## Read saved publication status
+
+The fixed startup 3.0 and 4.0 read-only server also exposes `phase_publication_status(run_id, wait_seconds=0)`. Use the same installation that owns the run. The wait is an integer from 0 to 60 seconds. The Windows CLI action is `publication-status` with a new capture directory and this request body:
+
+```json
+{"run_id":"publish-example-001","request":{"operation":"publication_status","wait_seconds":0}}
+```
+
+The existing RO Original reader can serve this action while the Core container is stopped. The response records the saved stage and any matching intent and receipt metadata. `preparing` records the presence of a run directory. Every response reports `target_verified=false` and `process_liveness="not_checked"`. Use `inspect` for current bytes and identities. Preserve the known run ID and any transport failure in its capture.
 
 ## Recover an existing corrected Bundle2 publication
 

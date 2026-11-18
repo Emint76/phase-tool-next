@@ -19,6 +19,7 @@ from ...errors import PhaseError
 from ...command_result import validate_command_result
 from ...evidence import validate_run_id
 from ...installation import _native_registry_for_manifest
+from ...publication_status import PublicationStatus
 from .bootstrap import _NativeAcceptedLaunch
 from .entrypoint import _ClosedStagedFileInspectionLoss, run_native_parent
 from .native import _require
@@ -252,6 +253,20 @@ class _InspectionMCPCallOwner:
             _require(type(response) is dict and type(response.get('result')) is dict
                 and type(response.get('exit_code')) is int,'ntfs.parent_command_binding_mismatch')
             result=response['result']
+            if request.get('operation') == 'publication_status':
+                _require(inspection_only is True
+                    and set(response) == {'protocol', 'version', 'channel_id', 'run_id', 'result', 'exit_code'}
+                    and response['protocol'] == 'phase.native.command' and response['version'] == '1.0'
+                    and response['channel_id'] == invocation['channel_id'] and response['run_id'] == run_id
+                    and set(result) == set(PublicationStatus.model_fields),
+                    'ntfs.parent_command_binding_mismatch')
+                status = PublicationStatus.model_validate(result)
+                _require(status.run_id == run_id and status.exit_code == response['exit_code']
+                    and ((status.query_succeeded and status.exit_code == 0 and status.error is None)
+                         or (not status.query_succeeded and status.exit_code == 10 and bool(status.error))),
+                    'ntfs.parent_command_binding_mismatch')
+                self._held_launch = None
+                return status
             if request.get('operation')=='continue_version' or (inspection_only and request.get('operation')=='recover_publication'):
                 from .recovery_frontdoor import validate_observe_delivery,validate_continuation_delivery
                 if inspection_only:validate_observe_delivery(response,launch)
@@ -559,6 +574,13 @@ class _InspectionMCPCallOwner:
         """Inspect a known run using only fixed read-only installation bindings."""
         return self._call(run_id,{'operation':'inspect'},inspection_only=True,_standalone_inspection=True)
 
+    def publication_status(self, run_id: StrictStr,
+            wait_seconds: Annotated[StrictInt, Field(ge=0, le=60)] = 0) -> PublicationStatus:
+        """Read historical status through the fixed Original reader."""
+        _require(type(wait_seconds) is int and 0 <= wait_seconds <= 60, 'publication.invalid_wait')
+        return self._call(run_id, {'operation': 'publication_status', 'wait_seconds': wait_seconds},
+            inspection_only=True)
+
     def inspect_prepared(self, run_id: StrictStr, request_id: StrictStr | None = None,
             target_locator: StrictStr | None = None, expected_digest: StrictStr | None = None,
             expected_receipt_digest: StrictStr | None = None) -> dict:
@@ -820,6 +842,8 @@ def _inspection_server(*,config_bytes,expected_config_digest,manifest_bytes,expe
     server=FastMCP('Phase native inspection candidate',
         instructions='Fixed installation, read-only inspection; qualification required.',json_response=True)
     server.tool(name='phase_inspect')(owner.inspect)
+    if config_bytes and parse_json_bytes(config_bytes).get('native_launch_version') in {'3.0', '4.0'}:
+        server.tool(name='phase_publication_status')(owner.publication_status)
     return _closed_arguments(server)
 
 

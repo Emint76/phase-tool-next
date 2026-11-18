@@ -105,6 +105,32 @@ if mode=='oversized-diagnostic':
 if request['request']['operation']=='inspect':
     assert request['request']=={'operation':'inspect'} and sys.argv[1]=='inspect-parent'
     assert len(sys.argv)==2 or (len(sys.argv)==3 and sys.argv[2].startswith('--input-deadline-ns='))
+if request['request']['operation']=='publication_status' and mode!='status-legacy-frame':
+    assert sys.argv[1:]==['inspect-parent']
+    wait=request['request']['wait_seconds'];assert type(wait) is int and 0<=wait<=60
+    proof='sha256:'+'d'*64
+    result={'publication_status_version':'1.0','run_id':request['run_id'],'query_succeeded':True,
+        'stage':'receipt_recorded','request_id':'request-a','intent_digest':proof,'receipt_digest':proof,
+        'recorded_terminal_status':'succeeded_verified','recorded_mutation_attempted':True,
+        'verification_performed':False,'target_verified':False,'process_liveness':'not_checked',
+        'wait_expired':False,'error':None,'exit_code':0}
+    if mode=='status-refused':
+        assert wait==0
+        code=10
+        result.update(query_succeeded=False,stage='not_observed',request_id=None,intent_digest=None,
+            receipt_digest=None,recorded_terminal_status=None,recorded_mutation_attempted=None,
+            error='publication.status_unavailable',exit_code=10)
+    if mode=='status-verified':result['target_verified']=True
+    if mode=='status-verification-performed':result['verification_performed']=True
+    if mode=='status-running':result['process_liveness']='running'
+    if mode=='status-live-result':result['live_result']={}
+    if mode=='status-nested-result':result['recorded_terminal_status']={'live_result':True}
+    if mode=='status-wrong-body-run':result['run_id']='different-run'
+    if mode=='status-positive':assert wait==60
+    reply.update(result=result,exit_code=code)
+    if mode=='status-wrong-outer-run':reply['run_id']='different-run'
+    b=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
+    if mode=='status-wrong-exit':code=10
 if request['request']['operation']=='publish_file':
     assert len(sys.argv)==3 and sys.argv[1]=='publish-input'
     assert sys.argv[2].startswith('--input-deadline-ns=') and int(sys.argv[2].split('=')[1])>0
@@ -177,7 +203,7 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         self.temp.cleanup()
 
     def call_model(self,mode,*,input_role=None,staged_file_role=None,inspect_binding=None,qualification=None,
-            prebound_deadline_ns=None):
+            prebound_deadline_ns=None,status_request=None,status_startup='4.0'):
         (self.binding/'mode.json').write_text(json.dumps(mode))
         capture=self.output/('fresh'if input_role is None else input_role+'-'+mode)
         outer={'manifest_digest':'sha256:'+'b'*64}
@@ -218,6 +244,11 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                 request={'operation':'inspect','root_binding':inspect_binding}
             self.request.write_text(json.dumps({'run_id':'model-cli-run','request':request}),encoding='utf-8')
             capture=self.output/(action+'-'+version+'-'+mode)
+        if status_request is not None:
+            action='publication-status'
+            self.request.write_text(json.dumps(status_request),encoding='utf-8')
+            outer['native_fixed_startup_version']=status_startup
+            capture=self.output/(action+'-'+mode)
         if qualification is not None and action in {'execute','inspect'}:
             config={'native_launch_version':qualification,'qualification_cold_publication_seconds':900}
             outer.update(native_fixed_startup_version=qualification,
@@ -568,6 +599,54 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.call_model('inspect-foreign',inspect_binding='objects_root')
         self.assertEqual(len(self.children),1)
+
+    def test_publication_status_preserves_observation_and_refusal(self):
+        for mode,wait,wanted,startup in (('status-positive',60,0,'3.0'),('status-refused',0,10,'4.0')):
+            with self.subTest(mode=mode):
+                request={'run_id':'model-cli-run','request':{'operation':'publication_status','wait_seconds':wait}}
+                code,out,_,capture=self.call_model(mode,status_request=request,status_startup=startup)
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual(self.child_argv[-1][-1],'inspect-parent')
+                self.assertEqual(json.loads((capture/'request.json').read_bytes()),request)
+                value=json.loads(out)
+                self.assertEqual((code,value['exit_code']),(wanted,wanted))
+                self.assertEqual(value,json.loads((capture/'stdout.bin').read_bytes()[9:-1])['result'])
+                self.assertIs(value['verification_performed'],False)
+                self.assertIs(value['target_verified'],False)
+                self.assertEqual(value['process_liveness'],'not_checked')
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'COMPLETE_NATIVE_COMMAND_FRAME')
+                self.assertEqual(report['outer_owner_finalization'],'closed')
+
+    def test_publication_status_rejects_invalid_request_before_dispatch(self):
+        valid={'operation':'publication_status','wait_seconds':0}
+        requests=[valid|{'wait_seconds':wait} for wait in (True,-1,61,0.5,'1',None)]
+        requests.extend([{'operation':'publication_status'},valid|{'root_binding':'phase_result_root'},
+            valid|{'target_locator':'target.bin'}])
+        for request in requests:
+            with self.subTest(request=request),self.assertRaises(RuntimeError):
+                self.call_model('status-invalid',status_request={'run_id':'model-cli-run','request':request})
+        for run,startup,deadline in (('../unsafe','4.0',None),('model-cli-run','2.0',None),
+                ('model-cli-run','4.0',time.perf_counter_ns()+10**9)):
+            with self.subTest(run=run,startup=startup,deadline=deadline),self.assertRaises(RuntimeError):
+                self.call_model('status-invalid',status_request={'run_id':run,'request':valid},
+                    status_startup=startup,prebound_deadline_ns=deadline)
+        self.assertEqual(self.children,[])
+        self.assertEqual(list(self.output.iterdir()),[])
+
+    def test_publication_status_uncorrelated_or_live_claims_remain_unknown(self):
+        request={'run_id':'model-cli-run','request':{'operation':'publication_status','wait_seconds':0}}
+        for mode in ('status-verified','status-verification-performed','status-running','status-live-result',
+                'status-nested-result','status-wrong-body-run','status-wrong-outer-run','status-wrong-exit',
+                'status-legacy-frame'):
+            with self.subTest(mode=mode):
+                code,out,_,capture=self.call_model(mode,status_request=request)
+                self.assert_outer_closed_before_fixture_cleanup()
+                self.assertEqual((code,out),(50,b''))
+                self.assertTrue((capture/'stdout.bin').read_bytes())
+                report=json.loads((capture/'delivery.json').read_bytes())
+                self.assertEqual(report['child_delivery'],'UNKNOWN')
+                self.assertIs(report['retry_authorized'],False)
 
     def test_real_pipe_positive_preserves_nullable_actual_result(self):
         code,out,err,capture=self.call_model('positive')

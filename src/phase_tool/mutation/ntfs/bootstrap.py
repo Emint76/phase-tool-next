@@ -209,6 +209,13 @@ def _original_query_request(launch,action,digest):
         'intent_digest':digest,'operation_nonce':launch.operation_nonce,'channel_id':launch.channel_id,
         'installation_digest':launch.installation_digest}
     request=launch.invocation['request']
+    if action == 'publication_status':
+        _require(digest is None and type(request) is dict
+            and set(request) == {'operation', 'wait_seconds'} and request['operation'] == action
+            and type(request['wait_seconds']) is int and 0 <= request['wait_seconds'] <= 60,
+            'ntfs.fixed_native_request_required')
+        query['wait_seconds'] = request['wait_seconds']
+        return query
     if action=='read_executing' and type(request)is dict and 'native_staged_publication_request_version'in request:
         from .input_stage import _scope_for_launch,_require_staged_publication_request
         scope,role,scope_digest=_scope_for_launch(launch)
@@ -616,7 +623,12 @@ class _NativeAcceptedLaunch:
 
     def _spawn(self,args):
         self._windows_required()
-        self._check_linux_contours()
+        request = self.invocation['request'] if self._inspection_only else None
+        if type(request) is dict and request.get('operation') == 'publication_status':
+            _require(args == self._linux_command('original'), 'ntfs.fixed_linux_role_required')
+            self._check_linux_contours(_original_only=True)
+        else:
+            self._check_linux_contours()
         deadline = _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)
         if self._file2_input_pipes(args[-1]) or self._file1_input_pipes(args[-1]):
             from .private_stdio import _PrivateSizedStdio, _private_stdio_failure
@@ -692,6 +704,7 @@ class _NativeAcceptedLaunch:
         self._core_spawn_attempted=True
         # Existing identified RO reader contour; no new container or mount.
         request=self.invocation['request']
+        _require(request.get('operation') != 'publication_status', 'ntfs.fixed_inspection_role_required')
         if request.get('operation')=='recover_publication':
             from .recovery_frontdoor import _manifest_role,_OBSERVE_ROLES
             from .bundle_recovery_entrypoint import validate_request
@@ -809,7 +822,11 @@ class _NativeAcceptedLaunch:
         return fact
 
     def _query_original(self,action,digest,*,_original_nonce=None):
-        _require(not self._inspection_only,'ntfs.inspection_only_operation_forbidden')
+        status = action == 'publication_status'
+        _require(self._inspection_only is status, 'ntfs.inspection_only_operation_forbidden')
+        if status:
+            _require(_original_nonce is None and self._config.get('native_launch_version') in {'3.0', '4.0'},
+                'ntfs.fixed_inspection_role_required')
         from .process_witness import WindowsProcessWitness
         self._windows_required()
         _require(not self._original_query_attempted,'ntfs.original_query_consumed')
@@ -825,6 +842,8 @@ class _NativeAcceptedLaunch:
             _require(type(g01)is _G01CreationHandleTest and staged is None and _original_nonce is None,
                 'ntfs.g01_test_original_reader_binding')
         request=_original_query_request(self,action,digest)
+        status_deadline = (time.perf_counter_ns() + (30 + request['wait_seconds']) * 1_000_000_000
+                           if status else None)
         if _original_nonce is not None:
             _require(self.manifest['native_read_installation_version']=='1.9' and action in {'read_executing','read_recovery'}
                 and type(_original_nonce) is str and re.fullmatch('[0-9a-f]{32}',_original_nonce) is not None,
@@ -838,11 +857,20 @@ class _NativeAcceptedLaunch:
             witness=WindowsProcessWitness(process)
             pipe=self._pipe(process)
             deadline = _cap_input_deadline(time.perf_counter_ns()+30_000_000_000)
-            pipe.send_frame(canonical_bytes(request),deadline)
-            if (self._version1 or self._version2) and action == 'read_executing':
+            if status:
+                # Wait for the first byte under the status budget. Once the
+                # reader starts its reply the ordinary frame limit applies.
+                pipe._bind_qualification_exchange_deadline(status_deadline)
+                deadline = min(deadline, status_deadline)
+            pipe.send_frame(canonical_bytes(request), deadline)
+            if action == 'read_executing' and (self._version1 or self._version2):
                 answer = _receive_version1_original(self,pipe,request,deadline,_version2=self._version2)
             else:
-                raw,_=pipe.receive_frame(_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
+                if status:
+                    raw,_ = pipe._receive_inspection_frame(status_deadline, maximum_bytes=8192)
+                    pipe._expect_eof(status_deadline)
+                else:
+                    raw,_ = pipe.receive_frame(_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
                 answer=parse_json_bytes(raw,maximum_bytes=2*1024**2)
             if type(answer) not in (ParsedNativeVersion1,ParsedNativeVersion2):
                 _require(type(answer) is dict and set(answer)=={'query','value','required_evidence_reads_finalized'}
@@ -853,7 +881,9 @@ class _NativeAcceptedLaunch:
         finally:
             try:
                 _require(witness is not None,'ntfs.reader_creation_witness_unavailable')
-                fact=witness.wait_for_exit(_input_observation_timeout_ms(60000))
+                wait_ms = (_input_observation_timeout_ms(60000) if not status else
+                    max(0, min(60000, (status_deadline - time.perf_counter_ns()) // 1_000_000)))
+                fact=witness.wait_for_exit(wait_ms)
                 _require(fact['worker_exit_established'] is True and fact['exit_code']==0,
                     'ntfs.reader_owner_exit_not_established')
                 close_wait=self._finalize_exited(process,pipe)
@@ -864,6 +894,8 @@ class _NativeAcceptedLaunch:
                     except BaseException:pass
         if primary is not None:raise primary
         self.check_runtime()
+        if status and time.perf_counter_ns() >= status_deadline:
+            raise TimeoutError('Native publication status deadline')
         if staged is not None:
             # Existing successful finalization already sealed the pipe and closed
             # the actual creation HANDLE and streams. Keep the real first wait
@@ -902,7 +934,7 @@ class _NativeAcceptedLaunch:
             'ntfs.original_query_binding_mismatch')
 
 
-    def _check_linux_contours(self):
+    def _check_linux_contours(self, *, _original_only=False):
         """Actual identified own deployment; not loaded-code authentication.
 
         The accepted launcher additionally supplies immutable source/runtime
@@ -918,6 +950,11 @@ class _NativeAcceptedLaunch:
             'ntfs.accepted_linux_contour_required')
         template='{"id":{{json .Id}},"image":{{json .Image}},"user":{{json .Config.User}},"readonly_rootfs":{{json .HostConfig.ReadonlyRootfs}},"cap_drop":{{json .HostConfig.CapDrop}},"security_options":{{json .HostConfig.SecurityOpt}},"network_mode":{{json .HostConfig.NetworkMode}},"mounts":{{json .Mounts}},"pids_limit":{{json .HostConfig.PidsLimit}},"memory":{{json .HostConfig.Memory}},"nano_cpus":{{json .HostConfig.NanoCpus}},"running":{{json .State.Running}}}'
         roles=(('core','core_container_id'),('original','reader_container_id'))
+        if _original_only:
+            _require(self._inspection_only is True and
+                self.invocation['request']['operation'] == 'publication_status',
+                'ntfs.fixed_inspection_role_required')
+            roles = (roles[1],)
         deadline = _active_input_deadline_ns()
         # Input publication already has one absolute budget. Keep each legacy
         # standalone inspect's separate 30-second bound outside that scope.
@@ -938,7 +975,7 @@ class _NativeAcceptedLaunch:
                     _require(type(declared['mounts']) is list
                         and all(row['RW'] is False for row in declared['mounts']),
                         'ntfs.original_readonly_contour_required')
-                if deadline is not None:
+                if deadline is not None or _original_only:
                     _require(type(config[field]) is str and re.fullmatch('[0-9a-f]{64}',config[field]) is not None,
                         'ntfs.accepted_linux_contour_required')
                 declared_by_id[config[field]]=declared

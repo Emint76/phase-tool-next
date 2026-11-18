@@ -242,6 +242,10 @@ def receive_initial(_input_deadline_ns=None, *, _linux_role=None, _linux_startup
             need(transport._read(1,deadline)==b'\n' and time.monotonic()<deadline)
             return raw
         def ready_frame(body):
+            nonlocal deadline
+            if _linux_role=='inspect':
+                # Startup and offer checks may outlast the ingress frame.
+                deadline=time.monotonic()+30
             transport._write(f'{len(body):08x}\n'.encode('ascii')+body+b'\n',deadline)
             need(time.monotonic()<deadline)
         raw=only_frame(2*1024**2)
@@ -353,7 +357,7 @@ def main():
         # Private, same-QPC handoff from the fixed CLI or qualification owner.
         import time
         match=re.fullmatch(r'--input-deadline-ns=([1-9][0-9]{0,18})',sys.argv[2])
-        need(role in {'publish-input','input-mcp'} and match is not None)
+        need(role in {'publish-input','input-mcp','inspect-parent'} and match is not None)
         input_deadline_ns=int(match[1]);started_ns=time.perf_counter_ns()
         if started_ns>=input_deadline_ns:
             raise TimeoutError('native input request deadline')
@@ -364,7 +368,7 @@ def main():
         seconds=_qualification_cold_publication_seconds(json.loads(config_raw))
         version=outer['native_fixed_startup_version']
         need(seconds is None or (version=='4.0' and admission is None) or (version=='3.0' and admission is not None))
-        need(role!='input-mcp' or seconds==900)
+        need(role not in {'input-mcp','inspect-parent'} or seconds==900)
         need(input_deadline_ns<=started_ns+(30 if seconds is None else seconds)*1_000_000_000)
         if time.perf_counter_ns()>=input_deadline_ns:
             raise TimeoutError('native input request deadline')
@@ -419,8 +423,8 @@ def main():
         return run_native_inspection_mcp(config_bytes=config_raw,
             expected_config_digest=outer['config_digest'],manifest_bytes=manifest_raw,
             expected_manifest_digest=outer['manifest_digest'],_experimental_admission_context=admission)
-    if role=='core':
-        initial,initial_transport,initial_deadline_ns=receive_initial(_linux_role='core',_linux_startup={
+    if role in {'core','inspect'}:
+        initial,initial_transport,initial_deadline_ns=receive_initial(_linux_role=role,_linux_startup={
             'config_bytes':config_raw,'expected_config_digest':outer['config_digest'],
             'manifest_bytes':manifest_raw,'expected_manifest_digest':outer['manifest_digest'],
             '_experimental_admission_context':admission})
@@ -487,9 +491,19 @@ def main():
         _inspection_only=role in {'inspect-parent','inspect','observe-recovery'},_experimental_admission_context=admission)
     launch.check_runtime()
     if role in {'parent','inspect-parent'}:
-        result=entrypoint.run_native_parent(launch)
         import time
-        initial_transport.send_frame(canonical_bytes(result),time.perf_counter_ns()+30_000_000_000)
+        if input_deadline_ns is None:
+            result=entrypoint.run_native_parent(launch)
+            delivery_deadline=time.perf_counter_ns()+30_000_000_000
+        else:
+            from phase_tool.mutation.ntfs.input_stage import (_InputOperationDeadline,_input_operation_scope,
+                _windows_input_frame_deadline_ns)
+            need(role=='inspect-parent' and invocation['request']=={'operation':'inspect'})
+            token=_InputOperationDeadline(_initial_deadline_ns=input_deadline_ns,_qualification_cold_publication_seconds=900)
+            with _input_operation_scope(token):
+                result=entrypoint.run_native_parent(launch,_qualification_inspection=True)
+            delivery_deadline=_windows_input_frame_deadline_ns(input_deadline_ns)
+        initial_transport.send_frame(canonical_bytes(result),delivery_deadline)
         initial_transport.seal()
         return result['exit_code']
     if role=='worker':
@@ -497,11 +511,11 @@ def main():
             return entrypoint.run_native_worker(launch,initial,initial_transport,
                 _transfer_deadline_ns=worker_exchange_deadline_ns,_qualification_exchange_deadline=True)
         return entrypoint.run_native_worker(launch,initial,initial_transport,_transfer_deadline_ns=initial_deadline_ns)
-    if role=='core':
+    if role in {'core','inspect'}:
         from phase_tool.mutation.ntfs.exchange_deadline import linux_exchange_scope
         with linux_exchange_scope(initial_deadline_ns):
-            return entrypoint.run_native_core(launch)
-    if role in {'inspect','observe-recovery'}:return entrypoint.run_native_inspection(launch)
+            return entrypoint.run_native_core(launch) if role=='core' else entrypoint.run_native_inspection(launch)
+    if role=='observe-recovery':return entrypoint.run_native_inspection(launch)
     return entrypoint.run_native_original(launch)
 
 

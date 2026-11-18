@@ -416,7 +416,11 @@ def run_native_inspection(launch):
     from ...installation import _native_registry_for_launch,_native_installation_for_manifest
     from .parent_result import (_native_file_result_mode,_native_bundle_result_mode,
         _native_bundle_inspection_expectations,validate_native_bundle_result_delivery)
+    from .exchange_deadline import linux_exchange_deadline_ns
     launch.check_runtime();_require(launch._inspection_only,'ntfs.fixed_inspection_role_required')
+    cutoff=linux_exchange_deadline_ns()
+    if cutoff is not None:
+        _require(time.monotonic_ns()<cutoff,'ntfs.channel_deadline_expired')
     identities=_linux_stdio_identity();request=launch.invocation['request']
     bundle_result=_native_bundle_result_mode(request)
     _require(not bundle_result or launch._bundle,'ntfs.original_bundle_effect_required')
@@ -510,10 +514,24 @@ class _ClosedStagedFileInspectionLoss(Exception):
 
 
 def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None, _g01_creation_handle_test=None,
-                      _c05_transport=None, _report_closed_staged_inspection_loss=False):
+                      _c05_transport=None, _report_closed_staged_inspection_loss=False,
+                      _qualification_inspection=False):
     from .parent import _NativeWindowsParent,_FailFirstPreparedAck
     from .process_witness import WindowsProcessWitness
     from .input_stage import _qualification_bulk_deadline_ns
+    inspection_deadline = None
+    if _qualification_inspection:
+        from .bootstrap import _NativeAcceptedLaunch
+        from .input_stage import _active_input_deadline_ns, _left
+        from .owner_directory_launch import _qualification_cold_publication_seconds
+        inspection_deadline = _active_input_deadline_ns()
+        _require(_qualification_inspection is True and type(launch) is _NativeAcceptedLaunch
+            and launch._inspection_only is True and launch.invocation['request'] == {'operation': 'inspect'}
+            and _qualification_cold_publication_seconds(launch._config) == 900
+            and _report_closed_staged_inspection_loss is False
+            and all(hook is None for hook in (_prepared_ack_test, _dynamic_a05_test,
+                _g01_creation_handle_test, _c05_transport)), 'ntfs.fixed_inspection_role_required')
+        _left(inspection_deadline)
     deadline = None
     if _report_closed_staged_inspection_loss is not False:
         from .input_stage import _active_input_deadline_ns
@@ -547,6 +565,8 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
             'ntfs.fixed_c05_transport_required')
         _c05_transport.check_launch(launch)
     launch.check_runtime()
+    if inspection_deadline is not None:
+        _left(inspection_deadline)
     bulk_deadline = (_qualification_bulk_deadline_ns(launch) if all(hook is None for hook in
         (_prepared_ack_test, _dynamic_a05_test, _g01_creation_handle_test, _c05_transport)) else None)
     process=(launch.spawn_inspection() if launch._inspection_only else launch.spawn_core())
@@ -556,7 +576,11 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
     try:
         witness=WindowsProcessWitness(process)
         pipe=launch._pipe(process)
-        if bulk_deadline is None:
+        if inspection_deadline is not None:
+            from .exchange_deadline import send_linux_invocation
+            pipe._bind_qualification_exchange_deadline(inspection_deadline)
+            send_linux_invocation(pipe, launch._invocation_bytes, role='inspect', deadline_ns=inspection_deadline)
+        elif bulk_deadline is None:
             pipe.send_frame(launch._invocation_bytes,_cap_input_deadline(time.perf_counter_ns()+30_000_000_000))
         else:
             from .exchange_deadline import send_linux_invocation
@@ -569,7 +593,8 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
         else:
             owner=(_NativeWindowsParent(launch,pipe) if _prepared_ack_test is None else
                 _NativeWindowsParent(launch,pipe,_prepared_ack_test=_prepared_ack_test))
-        response=owner.serve()
+        response=(owner.serve() if inspection_deadline is None
+            else owner.serve(_inspection_deadline_ns=inspection_deadline))
     except BaseException as error:primary=error
     finally:
         try:
@@ -609,6 +634,8 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
         _c05_transport.observe(launch,process,witness,fact,closing,response)
     if bulk_deadline is not None:
         _require(time.perf_counter_ns() < bulk_deadline, 'input_stage.deadline')
+    if inspection_deadline is not None:
+        _left(inspection_deadline)
     return response
 
 def _run_version1_worker_transfer(launch,original,pipe,deadline,*,_version2=False):

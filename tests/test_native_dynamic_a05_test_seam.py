@@ -147,10 +147,10 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     assert fixed_functions.keys().isdisjoint(ordinary_only)
     from hashlib import sha256
     reviewed_owner_delta = {'fixed_admission': {'ordinary': 'c2558cdb925497f1c9397a831c080baaf2a2d45b8a507e1ba6c31bb5db7791dd', 'historical_a05': 'b0ec48f145a99e1e5f2b77885212a799a2f3def65afd1e3cb6c5fde2a2742f49'}, 'fixed_windows_mcp_sdk_bootstrap': {'ordinary': 'f4761e8035b4a278afd90bcbd1d683b7fc7466ddfc1a129e9b0e579bd267a4bc', 'historical_a05': '9c160d04f16c3253f0b422606f9d2e57b55faa3d898bd6ecce33bf62de2e9d25'}, 'fixed_startup': {'ordinary': '78dfe253b2a845498cc52e5cb07186db4b482bd2278ced5894fb16ea38e9f7d7', 'historical_a05': 'a3a96a44d8ecc92ec55350fc4aed159ab838a2ac29f99005aec36d5f3592c53d'}, 'fixed_startup_version': {'ordinary': '1c3ac0f5f14fc3d012b1a058a2e200c4519592e6f5b0f855abe86df64fa96c0d', 'historical_a05': '0ab49cbb580624cd803b3d29a6729ca3a02f2be71b068bf688f8eed241bd2f7d'}}
-    # The ordinary staged CLI can pass its remaining deadline to the fixed
-    # Windows launcher. The historical launcher keeps its original reader.
+    # The ordinary staged and unary inspect CLI preserve their entry deadline.
+    # The historical launcher keeps its original reader.
     reviewed_owner_delta['receive_initial'] = {
-        'ordinary': '0f606a91e5f929fa0e87741872cc7e03aaf52e9d79fa543251cf5f460ef3a93f',
+        'ordinary': '8ee31d0398a9c3c6a6f69f4156752ff23c8582421ebc73f5b003de322d16705c',
         'historical_a05': '8ddb6944526e319dcbdd6e272abd87dbbc428f86b7501d8f9f6b9adb0f6284ed',
     }
     def stable_ast(node):
@@ -162,7 +162,7 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     for name, expected in ordinary_only.items():
         assert sha256(stable_ast(normal_functions[name]).encode()).hexdigest() == expected, name
     main_digests = (
-        'ef8a041a8e767b74d228afe4ce0b31e3792fdf200385c6bb2e86a54cb3f7ee95',
+        '59f114935ebd143360a02774849b13e233975661cb83781188c8ea2d541868d8',
         'e0046e7d09f2e123349cf0b37d51ab796c14a56e390f6246a1d562fcd4dc3268',
     )
     assert tuple(sha256(stable_ast(group['main']).encode()).hexdigest()

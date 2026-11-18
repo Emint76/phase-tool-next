@@ -175,6 +175,7 @@ class LinuxNativeChannel:
         raw = None
         primary = None
         value = None
+        inspection_deadline = None
         try:
             self._usable()
             _require(self._gate.acquire(blocking=False), 'ntfs.channel_reentrant_call')
@@ -187,12 +188,25 @@ class LinuxNativeChannel:
             raw = canonical_bytes(common | payload)
             _require(0 < len(raw) <= _MAX_FRAME, 'ntfs.channel_frame_limit')
             deadline = time.monotonic() + 30.0
+            if getattr(self, '_inspection_only', False):
+                from .exchange_deadline import linux_exchange_deadline_ns, linux_frame_deadline
+                inspection_deadline = linux_exchange_deadline_ns()
+                if inspection_deadline is not None:
+                    _require(kind == 'observe_file', 'ntfs.inspection_only_operation_forbidden')
+                    self._qualification_exchange_deadline_ns = inspection_deadline
+                    deadline = linux_frame_deadline(inspection_deadline / 1_000_000_000)
             self._sequence += 1
             # Conservative and sticky, before any possible mutating frame write.
             if kind in self._EXECUTE_KINDS:
                 self._possible_dispatch = True
             self._write(f'{len(raw):08x}\n'.encode('ascii') + raw + b'\n', deadline)
-            header = self._read(9, deadline)
+            prefix = b''
+            if inspection_deadline is not None:
+                # The Windows observer can take longer than a frame read.
+                absolute = inspection_deadline / 1_000_000_000
+                prefix = self._read(1, absolute)
+                deadline = linux_frame_deadline(absolute)
+            header = prefix + self._read(9 - len(prefix), deadline)
             _require(re.fullmatch(b'[0-9a-f]{8}\n', header) is not None, 'ntfs.channel_bad_header')
             length = int(header[:8], 16)
             _require(0 < length <= _MAX_FRAME, 'ntfs.channel_frame_limit')
@@ -234,6 +248,9 @@ class LinuxNativeChannel:
                 # channel after the in-gate check. Never return a positive ACK
                 # over newly failed owner/sticky state; no wire retry is allowed.
                 self._usable()
+                if inspection_deadline is not None:
+                    _require(time.monotonic_ns() < inspection_deadline
+                        and time.monotonic() < deadline, 'ntfs.channel_deadline_expired')
             except BaseException as error:
                 self._failed = True
                 primary = error

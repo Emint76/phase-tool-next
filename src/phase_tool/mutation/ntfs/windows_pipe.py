@@ -220,7 +220,8 @@ class WindowsPipeFrames:
             _require(bool(data), 'ntfs.pipe_eof')
         return bytes(value)
 
-    def _frame(self, sending: bool, raw: bytes | None, deadline_ns: int, maximum_bytes: int):
+    def _frame(self, sending: bool, raw: bytes | None, deadline_ns: int, maximum_bytes: int,
+               *, _wait_inspection: bool = False):
         progress = {'wire_bytes': 0, 'would_block': 0, 'zero_writes': 0, 'prefix_hex': ''}
         acquired, primary, answer = False, None, None
         try:
@@ -228,9 +229,14 @@ class WindowsPipeFrames:
             _require(acquired, 'ntfs.pipe_reentrant')
             _require(type(maximum_bytes) is int and 1 <= maximum_bytes <= MAX_FRAME,
                      'ntfs.pipe_frame_limit')
-            deadline_ns = self._owned_frame_deadline(deadline_ns)
-            _require(type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 30_000_000_000,
-                     'ntfs.pipe_invalid_deadline')
+            if _wait_inspection:
+                _require(not sending and deadline_ns == self._qualification_exchange_deadline_ns
+                    and type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 900_000_000_000,
+                    'ntfs.pipe_exchange_deadline_binding')
+            else:
+                deadline_ns = self._owned_frame_deadline(deadline_ns)
+                _require(type(deadline_ns) is int and 0 < self._time(deadline_ns) <= 30_000_000_000,
+                         'ntfs.pipe_invalid_deadline')
             self._identity(0)
             self._identity(1)
             if sending:
@@ -239,7 +245,13 @@ class WindowsPipeFrames:
                 self._write(f'{len(raw):08x}\n'.encode('ascii') + raw + b'\n', deadline_ns, progress)
                 answer = dict(progress)
             else:
-                header = self._read(9, deadline_ns, progress)
+                prefix = b''
+                if _wait_inspection:
+                    # The already admitted peer may still be searching its
+                    # history. A partial frame still has at most 30 seconds.
+                    prefix = self._read(1, deadline_ns, progress)
+                    deadline_ns = self._owned_frame_deadline(deadline_ns)
+                header = prefix + self._read(9 - len(prefix), deadline_ns, progress)
                 _require(re.fullmatch(rb'[0-9a-f]{8}\n', header) is not None, 'ntfs.pipe_invalid_header')
                 length = int(header[:8], 16)
                 _require(1 <= length <= maximum_bytes, 'ntfs.pipe_frame_limit')
@@ -281,6 +293,9 @@ class WindowsPipeFrames:
         # A consumer may only reduce the control bound; reject length from the
         # header before reading or allocating its body. Terminal errors stay so.
         return self._frame(False, None, deadline_ns, maximum_bytes)
+
+    def _receive_inspection_frame(self, deadline_ns: int, *, maximum_bytes: int = MAX_FRAME):
+        return self._frame(False, None, deadline_ns, maximum_bytes, _wait_inspection=True)
 
     def _expect_eof(self, deadline_ns: int) -> dict:
         """Finite trailing-byte check; actual peer HANDLE exit is separate.

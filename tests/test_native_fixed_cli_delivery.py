@@ -103,7 +103,8 @@ if request['request']['operation']=='publish_input':
 if mode=='oversized-diagnostic':
     b=b'{"broken":1.'+b'3'*70000+b'}'
 if request['request']['operation']=='inspect':
-    assert request['request']=={'operation':'inspect'} and sys.argv[1:]==['inspect-parent']
+    assert request['request']=={'operation':'inspect'} and sys.argv[1]=='inspect-parent'
+    assert len(sys.argv)==2 or (len(sys.argv)==3 and sys.argv[2].startswith('--input-deadline-ns='))
 if request['request']['operation']=='publish_file':
     assert len(sys.argv)==3 and sys.argv[1]=='publish-input'
     assert sys.argv[2].startswith('--input-deadline-ns=') and int(sys.argv[2].split('=')[1])>0
@@ -270,7 +271,8 @@ class NativeFixedCLIDeliveryTests(unittest.TestCase):
                     self.assertEqual(code,10)
                     self.assertEqual(err,b'modeled-child-diagnostic\n')
                     self.assertEqual(json.loads(out)['command'],'execute' if binding is None else 'inspect')
-                    self.assertEqual(self.child_argv[-1][-1],role)
+                    suffix=[role] if binding is None else [role,f'--input-deadline-ns={cutoff}']
+                    self.assertEqual(self.child_argv[-1][-len(suffix):],suffix)
                     self.assertTrue((capture/'delivery.json').is_file())
                     self.assert_outer_closed_before_fixture_cleanup()
 
@@ -808,7 +810,7 @@ class NativeInputLauncherDeadlineTests(unittest.TestCase):
         for route in (('publish-input','--input-deadline-ns=+50000000001'),
                       ('publish-input',f'--input-deadline-ns={self.now+900_000_000_001}'),
                       ('publish-input','--input-deadline-ns=0001'),
-                      ('inspect-parent',f'--input-deadline-ns={self.deadline}'),
+                      ('inspect-parent',f'--input-deadline-ns={self.now+900_000_000_001}'),
                       ('worker',f'--input-deadline-ns={self.deadline}')):
             with self.subTest(route=route),self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
                 self.invoke(*route)
@@ -818,6 +820,46 @@ class NativeInputLauncherDeadlineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
             self.invoke('publish-input',f'--input-deadline-ns={self.deadline+1}')
         self.assertEqual(self.events,['fixed-startup'])
+
+    def test_ordinary_inspect_private_handoff_requires_the_sealed_policy(self):
+        with self.assertRaisesRegex(RuntimeError,'Native accepted startup unavailable'):
+            self.invoke('inspect-parent',f'--input-deadline-ns={self.deadline}')
+        self.assertEqual(self.events,['fixed-startup'])
+
+    def test_ordinary_inspect_private_handoff_preserves_exact_entry_cutoff(self):
+        self.config={'qualification_cold_publication_seconds':900}
+        self.ordinary=True
+        self.request={'run_id':'model','request':{'operation':'inspect'}}
+        cutoff=self.now+900_000_000_000
+        self.modules['phase_tool.mutation.ntfs.input_stage']=stage=types.ModuleType('input_stage')
+        stage._InputOperationDeadline=lambda **kwargs:kwargs
+        @contextlib.contextmanager
+        def scope(token):
+            self.events.append(('owner',token))
+            yield
+        stage._input_operation_scope=scope
+        stage._windows_input_frame_deadline_ns=lambda absolute:min(absolute,self.now+30_000_000_000)
+        module=self.modules['phase_tool.mutation.ntfs.entrypoint']
+        def inspect(launch,**options):
+            self.events.append(('inspect',json.loads(launch.invocation_bytes),options))
+            self.now+=61_000_000_000
+            return {'exit_code':10}
+        module.run_native_parent=inspect
+        self.send_frame=lambda raw,end:self.events.append(('send',json.loads(raw),end))
+        self.seal=lambda:self.events.append('seal')
+        original_startup=self.fixed_startup
+        def startup():
+            outer,config,manifest,_,admission=original_startup()
+            def launch(**kwargs):
+                return types.SimpleNamespace(**kwargs,check_runtime=lambda:None)
+            return outer,config,manifest,launch,admission
+        self.fixed_startup=startup
+        self.assertEqual(self.invoke('inspect-parent',f'--input-deadline-ns={cutoff}'),10)
+        self.assertEqual(self.events[:3],['fixed-startup',('receive',self.deadline+4_000_000_000),
+            ('owner',{'_initial_deadline_ns':cutoff,'_qualification_cold_publication_seconds':900})])
+        self.assertEqual(self.events[3][1]['request'],{'operation':'inspect'})
+        self.assertEqual(self.events[3][2],{'_qualification_inspection':True})
+        self.assertEqual(self.events[4:], [('send',{'exit_code':10},self.now+30_000_000_000),'seal'])
 
     def test_qualification_whole_cutoff_and_local_initial_frame_window_are_distinct(self):
         self.config={'qualification_cold_publication_seconds':900}

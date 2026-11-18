@@ -427,9 +427,9 @@ def main():
         'scope':'operational outer delivery only; not receipt/evidence, worker proof or caller ACK'}
     try:
         args=[sys.executable,'-I','-S','-B','-u',str(launcher),child_role]
-        # The request/role protocol remains the original unary inspect
-        # or prepared execute. Only staged input accepts a private token.
-        if action in _INPUT_ACTIONS and deadline_ns is not None:
+        # The public request is unchanged. A qualified unary reader receives
+        # the same private QPC cutoff as its owning Windows CLI pump.
+        if deadline_ns is not None and (action in _INPUT_ACTIONS or action=='inspect'):
             args.append(f'--input-deadline-ns={deadline_ns}')
         _check_input_deadline(deadline_ns)
         process=subprocess.Popen(args,cwd=str(HERE),

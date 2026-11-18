@@ -6,6 +6,7 @@ further calls. No journal, queue, preparation writer or retry mechanism exists.
 Accepted startup/lifetime and profile qualification remain mandatory.
 """
 from __future__ import annotations
+from contextlib import nullcontext
 import threading
 import time
 from typing import Annotated
@@ -156,7 +157,9 @@ class _InspectionMCPCallOwner:
         self._publication_ack=None  # One transient ACK, never a durable journal or retry record.
         self._closed_staged_inspection_deadline=None
 
-    def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False):
+    def _call(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,
+            _standalone_inspection=False):
+        started_ns=time.perf_counter_ns() if _standalone_inspection else None
         from .parent_result import _native_file_result_mode,_native_bundle_result_mode
         _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
             and not(_include_canonical_result and _include_bundle_manifest)
@@ -169,8 +172,24 @@ class _InspectionMCPCallOwner:
         primary=None
         value=None
         try:
-            value=self._call_locked(run_id,request,inspection_only=inspection_only,
-                _include_canonical_result=_include_canonical_result,_include_bundle_manifest=_include_bundle_manifest)
+            scope=nullcontext()
+            options={}
+            if _standalone_inspection:
+                from .input_stage import _InputOperationDeadline, _input_operation_scope, _left
+                from .owner_directory_launch import _accepted_cold_publication_seconds
+                _require(_standalone_inspection is True and inspection_only is True
+                    and request=={'operation':'inspect'}, 'ntfs.fixed_inspection_role_required')
+                if _accepted_cold_publication_seconds(**self._startup)==900:
+                    cutoff=started_ns+900_000_000_000
+                    token=_InputOperationDeadline(_initial_deadline_ns=cutoff,
+                        _qualification_cold_publication_seconds=900)
+                    scope=_input_operation_scope(token)
+                    options['_qualification_inspection']=True
+            with scope:
+                value=self._call_locked(run_id,request,inspection_only=inspection_only,
+                    _include_canonical_result=_include_canonical_result,_include_bundle_manifest=_include_bundle_manifest,
+                    **options)
+                if options:_left(cutoff)
         except BaseException as error:
             self._unavailable=True
             primary=error
@@ -186,7 +205,8 @@ class _InspectionMCPCallOwner:
         return value
 
     def _call_locked(self,run_id,request,*,inspection_only,_include_canonical_result=False,_include_bundle_manifest=False,
-            _retain_launch=False,_staged_a05=None,_c05_transport=None,_report_closed_staged_inspection_loss=False):
+            _retain_launch=False,_staged_a05=None,_c05_transport=None,_report_closed_staged_inspection_loss=False,
+            _qualification_inspection=False):
         from .parent_result import _native_file_result_mode,_native_bundle_result_mode
         from .bootstrap import _is_bundle_recovery_launch
         _require(type(_include_canonical_result)is bool and type(_include_bundle_manifest)is bool
@@ -211,7 +231,11 @@ class _InspectionMCPCallOwner:
             launch=_NativeAcceptedLaunch(**self._startup,
                 invocation_bytes=canonical_bytes(invocation),_inspection_only=inspection_only)
             self._held_launch=launch  # Retain BEFORE any process/pipe can be created.
-            if _c05_transport is not None:
+            if _qualification_inspection:
+                _require(_staged_a05 is _c05_transport is None and not _retain_launch
+                    and not _report_closed_staged_inspection_loss, 'ntfs.fixed_inspection_role_required')
+                response=run_native_parent(launch,_qualification_inspection=True)
+            elif _c05_transport is not None:
                 from .c05_windows_transport import _C05WindowsTransport
                 _require(type(_c05_transport) is _C05WindowsTransport and _retain_launch
                     and not inspection_only and _staged_a05 is None,'ntfs.fixed_c05_transport_required')
@@ -533,7 +557,7 @@ class _InspectionMCPCallOwner:
 
     def inspect(self,run_id:StrictStr)->dict:
         """Inspect a known run using only fixed read-only installation bindings."""
-        return self._call(run_id,{'operation':'inspect'},inspection_only=True)
+        return self._call(run_id,{'operation':'inspect'},inspection_only=True,_standalone_inspection=True)
 
     def inspect_prepared(self, run_id: StrictStr, request_id: StrictStr | None = None,
             target_locator: StrictStr | None = None, expected_digest: StrictStr | None = None,
@@ -906,7 +930,8 @@ class _InputScopeSession:
                     owner.publish_staged_file(**arguments,_c05_transport=capture))
             else:
                 _require(method=='inspect','ntfs.fixed_native_request_required')
-                result=owner.inspect(**arguments)
+                result=(owner.inspect(**arguments) if selection is capture is None else
+                    owner._call(arguments['run_id'],{'operation':'inspect'},inspection_only=True))
             if cutoff is not None:_left(cutoff)
             if owner._unavailable:
                 self.unknown=True

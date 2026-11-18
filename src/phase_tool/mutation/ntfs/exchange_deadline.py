@@ -1,4 +1,4 @@
-"""Fixed bulk publication clock handoff over the existing owned launch pipe."""
+"""Fixed qualification clock handoff over the existing owned launch pipe."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -11,7 +11,7 @@ from .native import _require
 
 
 _FIELD = 'qualification_exchange_deadline_version'
-_ROLES = frozenset({'prepare-input', 'core'})
+_ROLES = frozenset({'prepare-input', 'core', 'inspect'})
 _BULK_ROLES = {'1.3': 'File2', '1.6': 'Bundle1', '1.9': 'Bundle2'}
 _POLICY_NS = 900_000_000_000
 _FRAME_NS = 30_000_000_000
@@ -71,10 +71,13 @@ def _qualify_offer(invocation, role, startup):
     from .owner_directory_launch import _accepted_cold_publication_seconds
 
     _require(_accepted_cold_publication_seconds(**startup) == 900, 'ntfs.linux_exchange_deadline_binding')
+    request = invocation['request']
+    if role == 'inspect':
+        _require(request == {'operation': 'inspect'}, 'ntfs.linux_exchange_deadline_binding')
+        return
     manifest = parse_json_bytes(startup['manifest_bytes'])
     bulk_role = bulk_publication_role(manifest)
     _require(bulk_role is not None, 'ntfs.linux_exchange_deadline_binding')
-    request = invocation['request']
     if role == 'core':
         _require_staged_publication_request(request, role=bulk_role)
     else:
@@ -93,7 +96,10 @@ def send_linux_invocation(pipe, raw, *, role, deadline_ns):
     binding = _binding(role, invocation)
     pipe.send_frame(canonical_bytes({_FIELD: '1.0', 'role': role, 'invocation': invocation}),
         _windows_input_frame_deadline_ns(deadline_ns))
-    wire, _ = pipe.receive_frame(_windows_input_frame_deadline_ns(deadline_ns), maximum_bytes=_CONTROL)
+    if role == 'inspect':
+        wire, _ = pipe._receive_inspection_frame(deadline_ns, maximum_bytes=_CONTROL)
+    else:
+        wire, _ = pipe.receive_frame(_windows_input_frame_deadline_ns(deadline_ns), maximum_bytes=_CONTROL)
     anchor = _control(wire)
     _require(set(anchor) == set(binding) | {'anchor_ns'}
         and all(anchor[key] == value for key, value in binding.items())

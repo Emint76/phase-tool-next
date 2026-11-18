@@ -329,7 +329,9 @@ class StagedDynamicA05Tests(unittest.TestCase):
         with patch.object(inspection_mcp, '_InspectionMCPCallOwner') as owner:
             owner.return_value._unavailable = False
             session.inspect(vector.run_id)
-            owner.return_value.inspect.assert_called_once_with(run_id=vector.run_id)
+            owner.return_value._call.assert_called_once_with(
+                vector.run_id, {'operation':'inspect'}, inspection_only=True)
+            owner.return_value.inspect.assert_not_called()
             owner.reset_mock()
             with self.assertRaisesRegex(PhaseError, staged._CODE):
                 session._invoke('publish_staged_file', {'run_id': vector.run_id})

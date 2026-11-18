@@ -6,6 +6,7 @@ the real inspector attachment block/equality guard execute. The Linux case uses
 default unpatched ext4 IO/root validation. No Core/NativeIO/worker is run.
 """
 import ast
+import base64
 import os
 from copy import deepcopy
 from dataclasses import replace
@@ -16,12 +17,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from phase_tool import inspection
-from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes
+from phase_tool import inspection,installation
+from phase_tool.canonical import canonical_bytes,digest_bytes,parse_json_bytes,profile_digest
 from phase_tool.errors import PhaseError
 from phase_tool.mutation.ntfs import owner_directory_fixture as owner
+from phase_tool.registry import BundledRegistry
 from tests.test_native_owner_directory_fixture import fixture,rows,capture,original
 from tests.test_native_mixed_experimental_history import bindings_fixture
+from tests.test_native_intent_v12 import fixture as intent_fixture
+from tests.test_owner_semantic_source_closure_v2 import current_readers,history
 
 
 def verifier():
@@ -86,17 +90,95 @@ def controls(row,root):
     return run,directory,receipt,known,base
 
 
-def inspect_accounting(row,root,run,directory,receipt,base):
+def inspect_accounting(row,root,run,directory,receipt,base,*,issuer=None):
     verify=verifier();disk=DiskMetadataModel()
     def actual_bounded_verification(admission,binding,run_id,actual_receipt=None):
         return verify(admission,binding,run_id,actual_receipt,_io=disk)
     scope=dict(inspection.__dict__,_native_authority=SimpleNamespace(read_binding=row),
+        original_binding=row if issuer is None else issuer,
         run_id=run,run_root=directory,receipt=receipt,attachment_digests=set(base),
         claimed=set(receipt['evidence']['attachment_digests']))
     with patch.object(type(row),'check_evidence_root',return_value=root),patch.object(
         type(row.experimental_admission),'verify_attachment',actual_bounded_verification):
         exec(inspector_attachment_block(),scope)
     return scope['attachment_digests']
+
+
+@pytest.fixture(scope='module')
+def reciprocal_owner3_file1():
+    first,first_raw=current_readers()
+    second_fixture=parse_json_bytes(first_raw)
+    second_fixture['wheel_digest']=digest_bytes(b'other installed wheel')
+    second_raw=canonical_bytes(second_fixture)
+    second=[]
+    for reader in first:
+        kind=type(reader.experimental_admission)
+        manifest=parse_json_bytes(reader.manifest_bytes)
+        manifest['installation_id']=owner.installation_id(kind,second_raw)
+        raw=canonical_bytes(manifest)
+        second.append(installation._native_experimental_read_binding(manifest_bytes=raw,
+            expected_manifest_digest=digest_bytes(raw),admission=kind(second_raw)))
+    sides=((first,first_raw),(tuple(second),second_raw))
+    result=[]
+    for (current,raw),(previous,capability) in (sides,sides[::-1]):
+        active=current[0]
+        predecessor={'family':'owner3','role':'File1',
+            'manifest_base64':base64.b64encode(previous[0].manifest_bytes).decode('ascii'),
+            'manifest_digest':previous[0].manifest_digest,
+            'admission_base64':base64.b64encode(capability).decode('ascii'),
+            'admission_digest':digest_bytes(capability)}
+        config=canonical_bytes(history(current,raw,[predecessor]))
+        readers=installation._resolve_native_history_bindings(active,config,digest_bytes(config))
+        assert len(readers)==7 and readers[-1].experimental_admission.raw==capability
+        result.append((active,readers))
+    return tuple(result)
+
+
+@pytest.mark.parametrize('direction',[0,1])
+def test_reciprocal_owner3_inspect_uses_original_for_exact_evidence_only(tmp_path_factory,reciprocal_owner3_file1,direction):
+    root=tmp_path_factory.mktemp('owner3')
+    active,readers=reciprocal_owner3_file1[direction]
+    issuer=readers[-1]
+    run,directory,receipt,known,base=controls(issuer,root)
+    manifest=parse_json_bytes(issuer.manifest_bytes)
+    intent=intent_fixture(BundledRegistry.load())
+    intent.update(run_id=run,contract=manifest['contract'],core=manifest['core'],
+        registry_snapshot_digest=manifest['registry_snapshot_digest'])
+    intent['operation']['mechanism']=manifest['mechanism']
+    intent['implementation_binding']['mechanism']=manifest['mechanism']
+    intent['native_binding'].update(
+        installation={'id':manifest['installation_id'],'descriptor_digest':issuer.manifest_digest},
+        evidence_identity=manifest['evidence_identity'],composition=manifest['composition'])
+    receipt.update(run_id=run,contract=intent['contract'],core=intent['core'],
+        terminal_status='succeeded_verified',execution_disposition='executed')
+    receipt['evidence']['intent_digest']=profile_digest('intent',intent)
+    bound=object.__new__(installation._NativeFileCreateInstallation)
+    bound.authority=SimpleNamespace(read_binding=active,_inspection_only=True)
+    bound.read_binding,bound.history_bindings=active,readers
+    # Adapt only Linux authority construction and the canonical intent read.
+    # Both issued readers and the trusted reciprocal selector are real.
+    with (patch.object(inspection,'is_semantic_owner_authority',side_effect=lambda authority,role: role=='File1'),
+            patch('phase_tool.mutation.ntfs.proof._canonical',return_value=(intent,canonical_bytes(intent)))):
+        selected=inspection._owner_directory_inspect_original(bound,bound.authority,directory,receipt)
+        assert selected is issuer and bound.authority.read_binding is active
+        assert inspect_accounting(active,root,run,directory,receipt,base,issuer=selected)==known|base
+        untrusted=deepcopy(intent)
+        untrusted['native_binding']['installation']['descriptor_digest']=digest_bytes(b'untrusted issuer')
+        bad_receipt=deepcopy(receipt)
+        bad_receipt['evidence']['intent_digest']=profile_digest('intent',untrusted)
+        with (patch('phase_tool.mutation.ntfs.proof._canonical',return_value=(untrusted,canonical_bytes(untrusted))),
+                pytest.raises(PhaseError,match='ntfs.original_history_binding_mismatch')):
+            inspection._owner_directory_inspect_original(bound,bound.authority,directory,bad_receipt)
+        bound.history_bindings=reciprocal_owner3_file1[1-direction][1]
+        with pytest.raises(PhaseError,match='ntfs.original_history_binding_mismatch'):
+            inspection._owner_directory_inspect_original(bound,bound.authority,directory,receipt)
+        bound.authority._inspection_only=False
+        assert inspection._owner_directory_inspect_original(bound,bound.authority,directory,receipt) is active
+
+    # Showing up in the active fixture does not authorize rebinding issued proof.
+    (directory/'attachments/experimental-admission.json').write_bytes(active.experimental_admission.raw)
+    with pytest.raises(PhaseError,match='ntfs.owner_fixture_evidence_mismatch'):
+        inspect_accounting(active,root,run,directory,receipt,base,issuer=issuer)
 
 
 @pytest.mark.parametrize('role',owner._ROLES)

@@ -378,17 +378,22 @@ def _check_native_intent_binding(intent, contract, authority, *, original_bindin
 def _owner_directory_inspect_original(installation, authority, run_root, receipt):
     # Keep the Original's descriptor for evidence only. The current inspection
     # authority owns namespace observation and channel sealing.
-    from ..installation import _NativeFileCreateInstallation
+    from ..installation import _NativeFileCreateInstallation, _native_history_binding_for_original
     from ..mutation.ntfs.owner_directory import owner_directory_original_binding, require_owner_directory_binding
     from ..mutation.ntfs.proof import _canonical as read_original_control
     if (type(installation) is not _NativeFileCreateInstallation
             or installation.authority is not authority
             or installation.read_binding is not authority.read_binding
-            or authority._inspection_only is not True
-            or not any(is_owner_directory_authority(authority, role) for role in ROLES)
-            or receipt['terminal_status'] != 'succeeded_verified'):
+            or authority._inspection_only is not True):
         return authority.read_binding
     active = installation.read_binding
+    ordinary = any(is_owner_directory_authority(authority, role) for role in ROLES)
+    if not ordinary and (active.experimental_admission is None
+            or active.experimental_admission.document().get('experimental_admission_version') != '3.0'
+            or not any(is_semantic_owner_authority(authority, role) for role in ROLES)):
+        return active
+    if receipt['terminal_status'] != 'succeeded_verified':
+        return active
     history = installation.history_bindings
     if type(history) is tuple and len(history) == 6:
         return active
@@ -405,7 +410,7 @@ def _owner_directory_inspect_original(installation, authority, run_root, receipt
             raise PhaseError('ntfs.original_intent_mismatch')
         original_installation = intent['native_binding']['installation']
         registry_digest = intent['registry_snapshot_digest']
-    elif (active._owner_directory_context.role in ('Bundle1', 'Bundle2')
+    elif (ordinary and active._owner_directory_context.role in ('Bundle1', 'Bundle2')
             and disposition == 'reused_existing' and intent_digest is None
             and receipt['evidence']['finalization_status'] == 'finalized'):
         # Select an issuing reader for the receipt's exact proof only.
@@ -421,6 +426,21 @@ def _owner_directory_inspect_original(installation, authority, run_root, receipt
         return active
     if original_installation.get('descriptor_digest') == active.manifest_digest:
         return active
+    if not ordinary:
+        if (type(history) is not tuple or not history or type(history[0]) is not type(active)
+                or history[0]._owner_directory_context is not None
+                or history[0].experimental_admission is None
+                or history[0].experimental_admission.raw != active.experimental_admission.raw
+                or not any(
+                    type(row) is type(active) and row.manifest_digest == active.manifest_digest
+                    and row.manifest_bytes == active.manifest_bytes
+                    and row.experimental_admission is not None
+                    and row.experimental_admission.raw == active.experimental_admission.raw
+                    for row in history[:len(ROLES)])):
+            raise PhaseError('ntfs.original_history_binding_mismatch')
+        return _native_history_binding_for_original(history, run_id=receipt['run_id'],
+            contract=receipt['contract'], core=receipt['core'], installation=original_installation,
+            registry_snapshot_digest=registry_digest)
     original = owner_directory_original_binding(history, run_id=receipt['run_id'],
         contract=receipt['contract'], core=receipt['core'], installation=original_installation,
         registry_snapshot_digest=registry_digest)
@@ -690,9 +710,9 @@ def inspect_run(
         claimed = set(receipt["evidence"]["attachment_digests"])
         if _native_authority is not None:
             from ..mutation.ntfs.experimental_file1 import _experimental_admission
-            admission = _experimental_admission(_native_authority.read_binding)
+            admission = _experimental_admission(original_binding)
             if admission is not None:
-                verified_admission_digests=admission.verify_attachment(_native_authority.read_binding, run_id, receipt)
+                verified_admission_digests=admission.verify_attachment(original_binding, run_id, receipt)
                 if admission.document().get('experimental_admission_version')in {'2.0','3.0'}:
                     if type(verified_admission_digests)is not frozenset or admission.digest not in verified_admission_digests:
                         raise PhaseError('inspection.attachment_set_mismatch')

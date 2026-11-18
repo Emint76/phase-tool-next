@@ -229,16 +229,22 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
         '_linux_command':['self','role'],'spawn_core':['self'],'spawn_worker':['self'],
         'spawn_inspection':['self'],'spawn_input_stage':['self'],
         '_query_original':['self','action','digest']}
+    keyword_signatures = {'_query_original': ('_original_nonce', None),
+                          '_check_linux_contours': ('_original_only', False)}
     for name,args in signatures.items():
         found=[n for n in owner.body if isinstance(n,ast.FunctionDef) and n.name==name]
         if len(found)!=1:return False
         f=found[0]
         if ([n.arg for n in f.args.args]!=args or f.args.posonlyargs or f.args.defaults
                 or f.args.vararg or f.args.kwarg):return False
-        if f.args.kwonlyargs:
-            if (name!='_query_original' or [n.arg for n in f.args.kwonlyargs]!=['_original_nonce']
-                    or len(f.args.kw_defaults)!=1 or not isinstance(f.args.kw_defaults[0],ast.Constant)
-                    or f.args.kw_defaults[0].value is not None):return False
+        keyword = keyword_signatures.get(name)
+        if keyword is None:
+            if f.args.kwonlyargs or f.args.kw_defaults:return False
+        else:
+            field, default = keyword
+            if ([n.arg for n in f.args.kwonlyargs]!=[field] or len(f.args.kw_defaults)!=1
+                    or not isinstance(f.args.kw_defaults[0],ast.Constant)
+                    or f.args.kw_defaults[0].value is not default):return False
         if any(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda))
             for n in ast.walk(f) if n is not f):return False
         methods[name]=f
@@ -274,13 +280,17 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
     if not isinstance(inspect_path,ast.For) or ast.unparse(inspect_path.target)!='batch' or ast.unparse(inspect_path.iter)!='batches':return False
     shape=(
         "roles = (('core', 'core_container_id'), ('original', 'reader_container_id'))",
+        "if _original_only:\n"
+        "    _require(self._inspection_only is True and self.invocation['request']['operation'] == 'publication_status', "
+        "'ntfs.fixed_inspection_role_required')\n"
+        "    roles = (roles[1],)",
         'deadline = _active_input_deadline_ns()',
         'batches = (roles,) if deadline is not None else tuple(((role,) for role in roles))',
     )
     scope=methods['_check_linux_contours'].body
     if inspect_path not in scope:return False
     path_index=scope.index(inspect_path)
-    if [ast.dump(n) for n in scope[path_index-3:path_index]]!=[ast.dump(ast.parse(s).body[0]) for s in shape]:return False
+    if [ast.dump(n) for n in scope[path_index-len(shape):path_index]]!=[ast.dump(ast.parse(s).body[0]) for s in shape]:return False
     if len(inspect_path.body)<3 or ast.unparse(inspect_path.body[0])!='declared_by_id = {}':return False
     role_loop=inspect_path.body[1]
     if (not isinstance(role_loop,ast.For) or ast.unparse(role_loop.target)!='(role, field)'
@@ -315,8 +325,16 @@ def _native_launch_process_inventory(relative: str,tree: ast.AST) -> bool:
             if not isinstance(comparison,ast.Compare) or ast.unparse(comparison)!=exact:return False
     from copy import deepcopy
     from hashlib import sha256
-    # Pin the sole new spawn branch, the closed File1 and File2 selectors and the no-ingress error gate.
-    pinned_methods = {'_spawn': '8298829773b497bf1d06714b68a60a98066db71a7fbb2b0729186c2b4889a7f7', '_file2_input_pipes': '97ca780dbda3df602736903b33e13ab2dd460424b4adf37fb986c077cad7c107', '_file1_input_pipes': '4bf968ec64ad50b7e31db31cbd8e6380214531be2438e7f28970e60a21d46acd', '_pipe': 'ee3988adf248519db4f05bc2d3fd84e4d43ae05b61f2b21bbd4688d1368cea5d', '_require_private_stdio_ready': '684a619ca332dbb634256812e573fb87977731609c01ff27d28976b8006afbe0', 'worker_pipe': '308d934c91104a0dabd73fc6d79be3758c631c546356e44698656f49556b7f15'}
+    # The E08 status branch may inspect only the admitted RO Original and
+    # retains the same process creation, limited output and finalization.
+    pinned_methods = {'_spawn': '2c5e2624ac9f07cbcf376ab1cdd0d64b2acec220a9bbfd614251c72b2efe8f28',
+        '_check_linux_contours': 'd55f290d1974ebf729d9ddd13b467b4f40be2cb90c2b133cb8ee0399e0c44e77',
+        '_query_original': '40074805fa2bc86a70cc2b5f303a119f1e22cf4705912a5a29bc50c105ba4fdb',
+        '_file2_input_pipes': '97ca780dbda3df602736903b33e13ab2dd460424b4adf37fb986c077cad7c107',
+        '_file1_input_pipes': '4bf968ec64ad50b7e31db31cbd8e6380214531be2438e7f28970e60a21d46acd',
+        '_pipe': 'ee3988adf248519db4f05bc2d3fd84e4d43ae05b61f2b21bbd4688d1368cea5d',
+        '_require_private_stdio_ready': '684a619ca332dbb634256812e573fb87977731609c01ff27d28976b8006afbe0',
+        'worker_pipe': '308d934c91104a0dabd73fc6d79be3758c631c546356e44698656f49556b7f15'}
     for name, expected_digest in pinned_methods.items():
         node = deepcopy(methods[name])
         for part in ast.walk(node):
@@ -345,6 +363,7 @@ _require(self._inspection_only,'ntfs.fixed_inspection_role_required')
 _require(not self._core_spawn_attempted,'ntfs.core_spawn_consumed')
 self._core_spawn_attempted=True
 request=self.invocation['request']
+_require(request.get('operation') != 'publication_status', 'ntfs.fixed_inspection_role_required')
 if request.get('operation')=='recover_publication':
     from .recovery_frontdoor import _manifest_role,_OBSERVE_ROLES
     from .bundle_recovery_entrypoint import validate_request
@@ -752,6 +771,25 @@ def test_native_process_inventory_rejects_nonclosed_original_query_keywords(repl
     old='*, _original_nonce=None'
     assert source.count(old)==1
     assert not _native_launch_process_inventory('mutation/ntfs/bootstrap.py',ast.parse(source.replace(old,replacement)))
+
+
+@pytest.mark.parametrize('old,new', [
+    ('*, _original_only=False', '*, _original_only=True'),
+    ('*, _original_only=False', '*, _original_only=0'),
+    ('*, _original_only=False', '*, _original_only=False, target=None'),
+    ("args == self._linux_command('original')", "args == self._linux_command('core')"),
+    ('roles = (roles[1],)', 'roles = (roles[0],)'),
+    ('if deadline is not None or _original_only:', 'if deadline is not None:'),
+    ("and all(row['RW'] is False for row in declared['mounts'])", "and bool(declared['mounts'])"),
+    ("_require(self._inspection_only is status, 'ntfs.inspection_only_operation_forbidden')", "pass"),
+    ("_require(request.get('operation') != 'publication_status', 'ntfs.fixed_inspection_role_required')", "pass"),
+])
+def test_native_process_inventory_rejects_status_authority_widening(old, new):
+    relative = 'mutation/ntfs/bootstrap.py'
+    source = (PACKAGE / relative).read_text('utf-8')
+    assert _native_launch_process_inventory(relative, ast.parse(source))
+    assert source.count(old) == 1
+    assert not _native_launch_process_inventory(relative, ast.parse(source.replace(old, new)))
 
 
 @pytest.mark.parametrize('old,new',[

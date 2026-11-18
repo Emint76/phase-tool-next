@@ -54,6 +54,7 @@ class NativeCurrentStartupRegistryTests(unittest.TestCase):
 
     def original_shell(self):
         launch=object.__new__(_NativeAcceptedLaunch)
+        launch._inspection_only=False
         launch._invocation_bytes=canonical_bytes({'run_id':'synthetic-original','channel_id':'b'*32,
             'operation_nonce':'a'*32,'request':{}})
         launch._manifest_bytes,launch._manifest_digest=startup_shell()

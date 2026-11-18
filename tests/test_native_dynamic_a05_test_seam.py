@@ -162,7 +162,7 @@ def test_fixture_exact_source_and_owner_startup_delta_are_code_pinned():
     for name, expected in ordinary_only.items():
         assert sha256(stable_ast(normal_functions[name]).encode()).hexdigest() == expected, name
     main_digests = (
-        '59f114935ebd143360a02774849b13e233975661cb83781188c8ea2d541868d8',
+        '3bbd08a7283b38cfafd3f302a08eafd0cb50d26805ff92eed58e965f2285da39',
         'e0046e7d09f2e123349cf0b37d51ab796c14a56e390f6246a1d562fcd4dc3268',
     )
     assert tuple(sha256(stable_ast(group['main']).encode()).hexdigest()

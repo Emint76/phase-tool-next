@@ -151,6 +151,7 @@ class NativeVersion1PublicationQueryTests(unittest.TestCase):
         raw=canonical_bytes({'native_read_installation_version':'1.2','registry_snapshot_digest':registry.digest,
             'contract':{'id':'publish_new_version.v1'}})
         launch=object.__new__(bootstrap._NativeAcceptedLaunch)
+        launch._inspection_only=False
         launch._manifest_bytes=raw;launch._manifest_digest=digest_bytes(raw)
         launch._invocation_bytes=canonical_bytes({'run_id':'synthetic-version1','channel_id':'b'*32,
             'operation_nonce':'a'*32,'request':{'operation':'execute'}})

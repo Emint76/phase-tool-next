@@ -483,7 +483,10 @@ def run_native_inspection(launch):
 
 
 def run_native_original(launch):
+    from .bootstrap import _NativeAcceptedLaunch
     from .original_endpoint import native_original_query
+
+    _require(type(launch) is _NativeAcceptedLaunch, 'ntfs.inspection_only_operation_forbidden')
     request = launch.invocation['request']
     _require(launch._inspection_only is (request.get('action') == 'publication_status'),
         'ntfs.inspection_only_operation_forbidden')

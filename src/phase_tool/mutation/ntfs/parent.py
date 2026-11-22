@@ -594,8 +594,8 @@ class _NativeWindowsParent:
                         else _InputExecutePipeBoundary.FIRST_RECEIVE)
                 if _inspection_deadline_ns is not None:
                     raw,_=self._pipe._receive_inspection_frame(_inspection_deadline_ns)
-                elif _bulk_core_deadline_ns is not None and not received_core_frame:
-                    raw,_=self._pipe._receive_bulk_core_first_frame(_bulk_core_deadline_ns)
+                elif _bulk_core_deadline_ns is not None and not self._failed:
+                    raw,_=self._pipe._receive_bulk_core_frame(_bulk_core_deadline_ns)
                 else:
                     raw,_=self._pipe.receive_frame(_deadline())
                 pipe_boundary = None

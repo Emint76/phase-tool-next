@@ -1,5 +1,6 @@
-"""First admitted Core wait keeps one deadline and bounded frame progress."""
+"""Admitted Core waits share one deadline and keep bounded frame progress."""
 
+import errno
 import os
 import threading
 from types import SimpleNamespace
@@ -39,7 +40,7 @@ def test_only_bound_bulk_first_byte_can_cross_frame_window(monkeypatch, clock, q
         return result
     monkeypatch.setattr(os, "read", read)
     pipe._bind_qualification_exchange_deadline(CUTOFF)
-    invoke = (lambda: pipe._receive_bulk_core_first_frame(CUTOFF-int(wrong))) if qualified else (
+    invoke = (lambda: pipe._receive_bulk_core_frame(CUTOFF-int(wrong))) if qualified else (
         lambda: pipe.receive_frame(31*SECOND))
     if expected is None:
         raw, progress = invoke()
@@ -80,28 +81,56 @@ def test_bulk_first_wait_requires_same_active_noninspection_deadline(monkeypatch
     instance = owner(monkeypatch, clock, admitted=admitted, inspection=inspection)
     def forbidden(*args):
         raise AssertionError("rejected scope accessed the pipe")
-    instance._pipe = SimpleNamespace(_receive_bulk_core_first_frame=forbidden, receive_frame=forbidden)
+    instance._pipe = SimpleNamespace(_receive_bulk_core_frame=forbidden, receive_frame=forbidden)
     with pytest.raises(PhaseError, match="ntfs.pipe_exchange_deadline_binding"):
         instance.serve(_bulk_core_deadline_ns=requested)
     assert instance._failed
 
 
-def test_core_first_wait_does_not_extend_following_frames(monkeypatch, clock):
+@pytest.mark.parametrize("late_part,response_deadlines", [
+    (False, [32*SECOND, 95*SECOND]),
+    (True, [32*SECOND]),
+])
+def test_admitted_core_interframe_wait_reuses_absolute_deadline(
+    monkeypatch, clock, late_part, response_deadlines,
+):
     instance = owner(monkeypatch, clock, admitted=CUTOFF)
-    events = []
-    def first(deadline):
-        events.append(("bulk", deadline))
-        return canonical_bytes({"protocol": "phase.native.pipe", "version": "1.0", "kind": "observe_file"}), {}
-    def following(deadline):
-        events.append(("ordinary", deadline))
-        raise PhaseError("test.following_frame")
-    instance._pipe = SimpleNamespace(_receive_bulk_core_first_frame=first, receive_frame=following,
-        send_frame=lambda raw, deadline: events.append(("send", deadline)))
+    pipe = pipe_fixture(monkeypatch)
+    pipe._bind_qualification_exchange_deadline(CUTOFF)
+    raw = canonical_bytes({"protocol": "phase.native.pipe", "version": "1.0", "kind": "observe_file"})
+    frame = f"{len(raw):08x}\n".encode("ascii") + raw + b"\n"
+    wire = bytearray(frame * 2)
+    observed_response_deadlines = []
+
+    def read(fd, length):
+        assert fd == 190
+        if not wire:
+            clock.ns = CUTOFF
+            raise BlockingIOError(errno.EAGAIN, "no next frame")
+        if len(wire) == 2 * len(frame):
+            clock.ns = 2*SECOND
+        if len(wire) == len(frame):
+            clock.ns = 65*SECOND
+        if late_part and len(wire) == len(frame) - 1:
+            clock.ns = 96*SECOND
+            raise BlockingIOError(errno.EAGAIN, "incomplete next frame")
+        data = bytes(wire[:length])
+        del wire[:length]
+        return data
+
+    monkeypatch.setattr(os, "read", read)
+    monkeypatch.setattr(pipe, "send_frame",
+        lambda raw, deadline: observed_response_deadlines.append(deadline))
+    instance._pipe = pipe
     instance._request = lambda raw: ({}, {})
-    with pytest.raises(PhaseError, match="test.following_frame"):
+    with pytest.raises(PhaseError, match="ntfs.pipe_frame_unknown") as failure:
         instance.serve(_bulk_core_deadline_ns=CUTOFF)
-    assert instance._failed and events == [
-        ("bulk", CUTOFF), ("send", 31*SECOND), ("ordinary", 31*SECOND)]
+    error = failure.value
+    assert error.details["primary"]["code"] == "ntfs.pipe_deadline_expired"
+    assert error.details["progress"]["wire_bytes"] == int(late_part)
+    assert error._input_execute_pipe_boundary is windows_pipe._InputExecutePipeBoundary.LATER_RECEIVE
+    assert instance._failed and pipe._failed
+    assert observed_response_deadlines == response_deadlines
 
 
 def test_ordinary_parent_keeps_default_frame_window(monkeypatch, clock):

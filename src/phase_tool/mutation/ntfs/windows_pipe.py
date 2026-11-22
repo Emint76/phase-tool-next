@@ -297,8 +297,8 @@ class WindowsPipeFrames:
     def _receive_inspection_frame(self, deadline_ns: int, *, maximum_bytes: int = MAX_FRAME):
         return self._frame(False, None, deadline_ns, maximum_bytes, _wait_inspection=True)
 
-    def _receive_bulk_core_first_frame(self, deadline_ns: int):
-        """Wait for an admitted staged Core before applying the frame cap."""
+    def _receive_bulk_core_frame(self, deadline_ns: int):
+        """Wait until the first byte with the admitted absolute deadline."""
         return self._frame(False, None, deadline_ns, MAX_FRAME, _wait_inspection=True)
 
     def _expect_eof(self, deadline_ns: int) -> dict:

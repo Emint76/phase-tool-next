@@ -623,8 +623,12 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
         else:
             owner=(_NativeWindowsParent(launch,pipe) if _prepared_ack_test is None else
                 _NativeWindowsParent(launch,pipe,_prepared_ack_test=_prepared_ack_test))
-        response=(owner.serve() if inspection_deadline is None
-            else owner.serve(_inspection_deadline_ns=inspection_deadline))
+        if inspection_deadline is not None:
+            response=owner.serve(_inspection_deadline_ns=inspection_deadline)
+        elif bulk_deadline is not None:
+            response=owner.serve(_bulk_core_deadline_ns=bulk_deadline)
+        else:
+            response=owner.serve()
     except BaseException as error:primary=error
     finally:
         try:

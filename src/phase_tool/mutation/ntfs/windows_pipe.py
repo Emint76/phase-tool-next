@@ -247,8 +247,8 @@ class WindowsPipeFrames:
             else:
                 prefix = b''
                 if _wait_inspection:
-                    # The already admitted peer may still be searching its
-                    # history. A partial frame still has at most 30 seconds.
+                    # An admitted peer may still be preparing its response.
+                    # The frame has at most 30 seconds after its first byte.
                     prefix = self._read(1, deadline_ns, progress)
                     deadline_ns = self._owned_frame_deadline(deadline_ns)
                 header = prefix + self._read(9 - len(prefix), deadline_ns, progress)
@@ -296,6 +296,10 @@ class WindowsPipeFrames:
 
     def _receive_inspection_frame(self, deadline_ns: int, *, maximum_bytes: int = MAX_FRAME):
         return self._frame(False, None, deadline_ns, maximum_bytes, _wait_inspection=True)
+
+    def _receive_bulk_core_first_frame(self, deadline_ns: int):
+        """Wait for an admitted staged Core before applying the frame cap."""
+        return self._frame(False, None, deadline_ns, MAX_FRAME, _wait_inspection=True)
 
     def _expect_eof(self, deadline_ns: int) -> dict:
         """Finite trailing-byte check; actual peer HANDLE exit is separate.

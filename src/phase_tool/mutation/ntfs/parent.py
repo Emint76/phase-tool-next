@@ -564,7 +564,7 @@ class _NativeWindowsParent:
             test.fail(self._launch,message,ack_raw)
         pipe.send_frame(ack_raw,deadline)
 
-    def serve(self, *, _inspection_deadline_ns=None):
+    def serve(self, *, _inspection_deadline_ns=None, _bulk_core_deadline_ns=None):
         """Core requests and its final serialized response share owned framing.
 
         Stdout is only control; no concurrent stderr result drainer or queue.
@@ -578,6 +578,12 @@ class _NativeWindowsParent:
             if _inspection_deadline_ns is not None:
                 _require(self._inspection_only and _active_input_deadline_ns() == _inspection_deadline_ns,
                     'ntfs.fixed_inspection_role_required')
+            if _bulk_core_deadline_ns is not None:
+                from .input_stage import _qualification_bulk_deadline_ns
+                _require(_inspection_deadline_ns is None and not self._inspection_only
+                    and type(_bulk_core_deadline_ns) is int
+                    and _qualification_bulk_deadline_ns(self._launch) == _bulk_core_deadline_ns,
+                    'ntfs.pipe_exchange_deadline_binding')
             attribute_pipe = not self._inspection_only and _active_input_deadline_ns() is not None
             while True:
                 _require(self._owner==(os.getpid(),threading.get_ident()) and not self._finished,
@@ -586,8 +592,12 @@ class _NativeWindowsParent:
                 if attribute_pipe:
                     pipe_boundary = (_InputExecutePipeBoundary.LATER_RECEIVE if received_core_frame
                         else _InputExecutePipeBoundary.FIRST_RECEIVE)
-                raw,_=(self._pipe.receive_frame(_deadline()) if _inspection_deadline_ns is None
-                    else self._pipe._receive_inspection_frame(_inspection_deadline_ns))
+                if _inspection_deadline_ns is not None:
+                    raw,_=self._pipe._receive_inspection_frame(_inspection_deadline_ns)
+                elif _bulk_core_deadline_ns is not None and not received_core_frame:
+                    raw,_=self._pipe._receive_bulk_core_first_frame(_bulk_core_deadline_ns)
+                else:
+                    raw,_=self._pipe.receive_frame(_deadline())
                 pipe_boundary = None
                 received_core_frame = True
                 value=parse_json_bytes(raw,maximum_bytes=2*1024**2)

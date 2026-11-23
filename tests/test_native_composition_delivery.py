@@ -21,7 +21,7 @@ from unittest.mock import Mock, call, patch
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import bootstrap, entrypoint, input_stage, parent, parent_result, process_witness
+from phase_tool.mutation.ntfs import bootstrap, entrypoint, exchange_deadline, input_stage, parent, parent_result, process_witness
 from phase_tool.mutation.ntfs.bootstrap import _NativeAcceptedLaunch
 from phase_tool.mutation.ntfs.windows_pipe import WindowsPipeFrames
 
@@ -58,10 +58,12 @@ class NativeComposedDeliveryTests(unittest.TestCase):
         authority.seal.assert_called_once_with(intent_digest=None)
 
     @contextmanager
-    def delivery(self, *, inspection=False, receive_error=None, seal_failure=False, closed_reader=False):
+    def delivery(self, *, inspection=False, receive_error=None, seal_failure=False, closed_reader=False, qualified=False):
         """Real orchestration and strict seal, synthetic OS/process boundary."""
         launch=object.__new__(_NativeAcceptedLaunch)
-        launch._config_bytes=(canonical_bytes({'native_launch_version':'4.0'}) if closed_reader else legacy_config_bytes())
+        config={'native_launch_version':'4.0'}
+        if qualified:config['qualification_cold_publication_seconds']=900
+        launch._config_bytes=canonical_bytes(config) if closed_reader else legacy_config_bytes()
         launch._inspection_only=inspection
         launch._manifest_bytes,launch._manifest_digest=startup_shell()
         launch._finalization_attempted=set()
@@ -79,6 +81,8 @@ class NativeComposedDeliveryTests(unittest.TestCase):
         pipe._failed=pipe._sealed=False
         pipe.send_frame=Mock()
         pipe.receive_frame=Mock(return_value=(canonical_bytes(frame),None),side_effect=receive_error)
+        pipe._qualification_exchange_deadline_ns=None
+        pipe._receive_inspection_frame=Mock(side_effect=receive_error)
         class HandleShell:
             def __init__(self):self.closed=False;self.close_count=0
             def Close(self):self.close_count+=1;self.closed=True
@@ -153,18 +157,30 @@ class NativeComposedDeliveryTests(unittest.TestCase):
             self.assert_finalized_once(fixture)
 
     def test_staged_read_loss_requires_positive_same_process_finalization(self):
-        for seal_failure in (False, True):
+        for qualified,seal_failure in ((False,False),(False,True),(True,False),(True,True)):
             primary = PhaseError('ntfs.pipe_frame_unknown', details={'direction':'receive'})
             primary.__cause__ = PhaseError('ntfs.pipe_eof')
             signal = PhaseError if seal_failure else entrypoint._ClosedStagedFileInspectionLoss
+            deadline=time.perf_counter_ns()+10_000_000_000
             with (
-                self.subTest(seal_failure=seal_failure),
+                self.subTest(qualified=qualified,seal_failure=seal_failure),
                 self.delivery(inspection=True, receive_error=primary, seal_failure=seal_failure,
-                              closed_reader=True) as fixture,
-                patch.object(input_stage,'_active_input_deadline_ns',return_value=time.perf_counter_ns()+10_000_000_000),
+                              closed_reader=True, qualified=qualified) as fixture,
+                patch.object(input_stage,'_active_input_deadline_ns',return_value=deadline),
+                patch.object(parent,'_active_input_deadline_ns',return_value=deadline),
+                patch.object(exchange_deadline,'send_linux_invocation') as handshake,
                 self.assertRaises(signal) as caught,
             ):
-                entrypoint.run_native_parent(fixture.launch,_report_closed_staged_inspection_loss=True)
+                entrypoint.run_native_parent(fixture.launch,_report_closed_staged_inspection_loss=True,
+                    _qualification_inspection=qualified)
+            if qualified:
+                handshake.assert_called_once_with(fixture.pipe,fixture.launch._invocation_bytes,
+                    role='inspect',deadline_ns=deadline)
+                fixture.pipe._receive_inspection_frame.assert_called_once_with(deadline)
+                fixture.pipe.receive_frame.assert_not_called()
+            else:
+                handshake.assert_not_called()
+                fixture.pipe._receive_inspection_frame.assert_not_called()
             if seal_failure:
                 self.assertIs(caught.exception,primary)
             else:

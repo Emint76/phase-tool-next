@@ -182,15 +182,36 @@ class NativeInputMCPClosedSchemaTests(unittest.TestCase):
                     blockers=[],error=None,exit_code=0)
             ack,inspect=command('execute'),command('inspect')
             validate_command_result(ack,app.registry);validate_command_result(inspect,app.registry)
-            with self.subTest(role=role),patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),\
-                    patch.object(input_stage,'run_windows_input_stage',return_value=(prepared,role,{},content)),\
-                    patch.object(owner,'_call_locked',side_effect=[ack,inspect])as call:
-                result=owner.publish_input(**arguments)
-                self.assertIs(result['command_ack'],ack);self.assertIs(result['independent_inspection'],inspect)
-                self.assertEqual(result['role'],role);self.assertEqual(result['source_digest'],digest_bytes(payload))
-                self.assertEqual(call.call_count,2);self.assertFalse(owner._unavailable)
-                self.assertEqual(call.call_args_list[0].args[1]['source_length'],len(payload))
-                self.assertEqual(call.call_args_list[1].args[1],{'operation':'inspect'})
+            for seconds in (None,900):
+                second=1_000_000_000
+                clock=SimpleNamespace(now=second)
+                clock.perf_counter_ns=lambda:clock.now
+                cutoff=clock.now+(seconds or 30)*second
+                qualified=seconds==900 and role in {'File2','Bundle1','Bundle2'}
+
+                def dispatch(run_id,request,**options):
+                    self.assertEqual(input_stage._active_input_deadline_ns(),cutoff)
+                    self.assertEqual(run_id,run)
+                    if request['operation']=='execute':
+                        self.assertEqual(options,{'inspection_only':False,'_retain_launch':True})
+                        clock.now+=(seconds or 30)*second-2*second
+                        return ack
+                    self.assertEqual(request,{'operation':'inspect'})
+                    self.assertEqual(options.get('_qualification_inspection'),True if qualified else None)
+                    self.assertEqual(cutoff-clock.now,2*second)
+                    return inspect
+
+                with (self.subTest(role=role,seconds=seconds),
+                      patch.object(input_stage,'os',SimpleNamespace(name='nt',getpid=os.getpid)),
+                      patch.object(input_stage,'time',clock),patch.object(inspection_mcp,'time',clock),
+                      patch.object(owner_directory_launch,'_accepted_cold_publication_seconds',return_value=seconds),
+                      patch.object(input_stage,'run_windows_input_stage',return_value=(prepared,role,{},content)),
+                      patch.object(owner,'_call_locked',side_effect=dispatch)as call):
+                    result=owner.publish_input(**arguments)
+                    self.assertIs(result['command_ack'],ack);self.assertIs(result['independent_inspection'],inspect)
+                    self.assertEqual(result['role'],role);self.assertEqual(result['source_digest'],digest_bytes(payload))
+                    self.assertEqual(call.call_count,2);self.assertFalse(owner._unavailable)
+                    self.assertEqual(call.call_args_list[0].args[1]['source_length'],len(payload))
 
     def test_real_sdk_delivers_closed_file_refusals_and_retains_session(self):
         registry=PhaseApplication().registry

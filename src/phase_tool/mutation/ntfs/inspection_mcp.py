@@ -233,9 +233,12 @@ class _InspectionMCPCallOwner:
                 invocation_bytes=canonical_bytes(invocation),_inspection_only=inspection_only)
             self._held_launch=launch  # Retain BEFORE any process/pipe can be created.
             if _qualification_inspection:
-                _require(_staged_a05 is _c05_transport is None and not _retain_launch
-                    and not _report_closed_staged_inspection_loss, 'ntfs.fixed_inspection_role_required')
-                response=run_native_parent(launch,_qualification_inspection=True)
+                _require(_staged_a05 is _c05_transport is None and not _retain_launch,
+                    'ntfs.fixed_inspection_role_required')
+                options={'_qualification_inspection':True}
+                if _report_closed_staged_inspection_loss and getattr(launch,'_owner_directory_context',None) is not None:
+                    options['_report_closed_staged_inspection_loss']=True
+                response=run_native_parent(launch,**options)
             elif _c05_transport is not None:
                 from .c05_windows_transport import _C05WindowsTransport
                 _require(type(_c05_transport) is _C05WindowsTransport and _retain_launch
@@ -469,6 +472,10 @@ class _InspectionMCPCallOwner:
                         report_loss=(_c05_transport is None and _staged_a05 is None
                             and self._startup.get('_experimental_admission_context') is None)
                         options={'_report_closed_staged_inspection_loss':True} if report_loss else {}
+                        # Reuse the active publication cutoff for the fresh reader.
+                        # The special contours never select a cold policy above.
+                        if seconds==900 and role in {'File2','Bundle1','Bundle2'}:
+                            options['_qualification_inspection']=True
                         try:
                             inspected=self._call_locked(run_id,{'operation':'inspect'},inspection_only=True,**options)
                         except _ClosedStagedFileInspectionLoss as error:

@@ -12,7 +12,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from phase_tool.application import PhaseApplication
 from phase_tool.canonical import canonical_bytes, digest_bytes
 from phase_tool.errors import PhaseError
-from phase_tool.mutation.ntfs import bootstrap, input_stage, inspection_mcp, native, scoped
+from phase_tool.mutation.ntfs import bootstrap, input_stage, inspection_mcp, native, owner_directory_launch, scoped
 from phase_tool.mutation.ntfs.owner_semantic_contracts import semantic_owner_contract
 from .test_native_input_stage_protocol import NativeModel, native_fixture
 
@@ -164,12 +164,16 @@ class NativeStagedFilePublicationTests(unittest.TestCase):
                     self.assertEqual(kwargs,{})
                     return {'result':ack,'exit_code':0}
                 self.assertIs(launch,reader)
-                self.assertEqual(kwargs,{'_report_closed_staged_inspection_loss':True})
+                expected={'_report_closed_staged_inspection_loss':True}
+                if role=='File2':
+                    expected['_qualification_inspection']=True
+                self.assertEqual(kwargs,expected)
                 raise inspection_mcp._ClosedStagedFileInspectionLoss(reader)
 
             with (
                 self.subTest(role=role),
                 patch.object(inspection_mcp.FastMCP,'run',autospec=True) as run,
+                patch.object(owner_directory_launch,'_accepted_cold_publication_seconds',return_value=900),
                 patch.object(input_stage,'run_windows_input_stage',return_value=(prepared,role,{},None)) as stage,
                 patch.object(inspection_mcp,'_NativeAcceptedLaunch',side_effect=[effect,reader]),
                 patch('phase_tool.installation._native_registry_for_launch',return_value=PhaseApplication().registry),

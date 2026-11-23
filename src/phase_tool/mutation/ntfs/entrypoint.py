@@ -558,7 +558,6 @@ def run_native_parent(launch, *, _prepared_ack_test=None, _dynamic_a05_test=None
         _require(_qualification_inspection is True and type(launch) is _NativeAcceptedLaunch
             and launch._inspection_only is True and launch.invocation['request'] == {'operation': 'inspect'}
             and _qualification_cold_publication_seconds(launch._config) == 900
-            and _report_closed_staged_inspection_loss is False
             and all(hook is None for hook in (_prepared_ack_test, _dynamic_a05_test,
                 _g01_creation_handle_test, _c05_transport)), 'ntfs.fixed_inspection_role_required')
         _left(inspection_deadline)

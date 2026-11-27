@@ -1,0 +1,75 @@
+{
+  "$id": "https://phase-tool.local/schemas/native-parent-failure-1.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "effect_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "installation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "native_parent_failure_version": {
+      "const": "1.0"
+    },
+    "operation_nonce": {
+      "pattern": "^[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "outcome": {
+      "const": "unresolved"
+    },
+    "parent_error": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "const": "ntfs.parent_execution_unresolved"
+        },
+        "details": {
+          "type": "object"
+        },
+        "message": {
+          "maxLength": 4096,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "details"
+      ],
+      "type": "object"
+    },
+    "registry_snapshot_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "retry_authorized": {
+      "const": false
+    },
+    "run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "native_parent_failure_version",
+    "run_id",
+    "intent_digest",
+    "effect_plan_digest",
+    "installation_digest",
+    "registry_snapshot_digest",
+    "operation_nonce",
+    "outcome",
+    "retry_authorized",
+    "parent_error"
+  ],
+  "title": "Native parent unresolved diagnostic; never an authority or receipt",
+  "type": "object"
+}

@@ -1020,3 +1020,66 @@ def test_regular_file_write_root_is_a_stable_pre_mutation_rejection(tmp_path: Pa
     assert "Not a directory" not in serialized
     run_root = evidence / ".phase" / "runs" / "root-file-rejection"
     assert sorted(path.name for path in run_root.iterdir()) == ["receipt.json"]
+
+
+def test_operational_opener_keeps_append_bytes_and_parent_creation(tmp_path):
+    from phase_tool import evidence
+    path = tmp_path/'new-parent'/'legacy.lock'
+    stream = evidence._open_operational_lock(path)
+    try:
+        assert path.is_file()
+        stream.write(b'original'); stream.flush()
+    finally:
+        stream.close()
+    stream = evidence._open_operational_lock(path)
+    try:
+        stream.seek(0)
+        assert stream.read() == b'original'
+        stream.write(b'-append'); stream.flush()
+    finally:
+        stream.close()
+    assert path.read_bytes() == b'original-append'
+
+
+@pytest.mark.parametrize('windows', [True, False])
+def test_operational_lock_retains_platform_lifecycle(tmp_path, monkeypatch, windows):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import phase_tool.core as core_module
+    stream = Mock(); stream.fileno.return_value = 17
+    opened = Mock(return_value=stream)
+    monkeypatch.setattr(core_module, '_open_operational_lock', opened)
+    monkeypatch.setattr(core_module, 'os', SimpleNamespace(name='nt' if windows else 'posix'))
+    api = SimpleNamespace(LK_LOCK=1, LK_UNLCK=2, LOCK_EX=4, LOCK_NB=8, LOCK_UN=16,
+        locking=Mock(), flock=Mock())
+    monkeypatch.setitem(sys.modules, 'msvcrt' if windows else 'fcntl', api)
+    path = tmp_path/'modeled.lock'
+    lock = core_module._OperationalFileLock(path)
+    assert lock.__enter__() is lock
+    opened.assert_called_once_with(path)
+    assert not stream.close.called
+    if windows:
+        api.locking.assert_called_once_with(17, api.LK_LOCK, 1)
+        stream.seek.assert_called_once_with(0)
+    else:
+        api.flock.assert_called_once_with(17, api.LOCK_EX | api.LOCK_NB)
+    lock.__exit__(None, None, None)
+    assert lock._stream is None
+    stream.close.assert_called_once_with()
+    if windows:
+        assert api.locking.call_args.args == (17, api.LK_UNLCK, 1)
+    else:
+        assert api.flock.call_args.args == (17, api.LOCK_UN)
+
+
+def test_checked_lock_selection_never_uses_legacy_opener(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    import phase_tool.core as core_module
+    legacy = Mock(side_effect=AssertionError('legacy opener reached'))
+    checked = Mock(return_value='modeled-checked-result')
+    monkeypatch.setattr(core_module, '_open_operational_lock', legacy)
+    monkeypatch.setattr(core_module._OperationalFileLock, '_enter_checked', checked)
+    lock = core_module._OperationalFileLock(tmp_path/'checked.lock', _checked_release=True)
+    assert lock.__enter__() == 'modeled-checked-result'
+    checked.assert_called_once_with()
+    legacy.assert_not_called()

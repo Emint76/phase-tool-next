@@ -58,6 +58,7 @@ def freeze_declared_inputs(
     *,
     frozen_at: str,
     maximum_structured_bytes: int,
+    _native_expected_inputs: Mapping[str, tuple[str, int]] | None = None,
 ) -> dict[str, FrozenInput]:
     frozen: dict[str, FrozenInput] = {}
     for declaration in contract_document["input_bindings"]:
@@ -87,8 +88,13 @@ def freeze_declared_inputs(
             continue
         if strategy == "copy_and_hash":
             from ..streaming import MECHANISM_ID, copy_and_hash_stream
-            capture = copy_and_hash_stream if contract_document["operation"]["mechanism"]["id"] == MECHANISM_ID else copy_and_hash
-            frozen[binding_id] = capture(binding_id, path.parent, path.name, blob_root, frozen_at=frozen_at)
+            if contract_document["operation"]["mechanism"]["id"] == MECHANISM_ID:
+                expected = None if _native_expected_inputs is None else _native_expected_inputs.get(binding_id)
+                frozen[binding_id] = copy_and_hash_stream(
+                    binding_id, path.parent, path.name, blob_root, frozen_at=frozen_at, _expected_input=expected
+                )
+            else:
+                frozen[binding_id] = copy_and_hash(binding_id, path.parent, path.name, blob_root, frozen_at=frozen_at)
         elif strategy == "manifest_and_hash":
             frozen[binding_id] = manifest_and_hash(binding_id, path, frozen_at=frozen_at)
         elif strategy == "lock_snapshot_revalidate":
@@ -123,15 +129,7 @@ def _read_file_stable(path: Path, maximum_bytes: int) -> bytes:
     return data
 
 
-def copy_and_hash(
-    binding_id: str,
-    input_root: Path,
-    relative_locator: str,
-    blob_root: Path,
-    *,
-    frozen_at: str,
-    maximum_bytes: int = 16 * 1024 * 1024,
-) -> FrozenInput:
+def _read_copy_input(input_root: Path, relative_locator: str, maximum_bytes: int) -> tuple[Path, bytes]:
     try:
         source = contained_read_path(input_root, relative_locator)
         if not os.path.isfile(_platform_path(source)):
@@ -143,6 +141,19 @@ def copy_and_hash(
         raise PhaseError("freeze.input_unavailable") from exc
     if len(data) > maximum_bytes:
         raise PhaseError("freeze.input_too_large", relative_locator)
+    return source, data
+
+
+def copy_and_hash(
+    binding_id: str,
+    input_root: Path,
+    relative_locator: str,
+    blob_root: Path,
+    *,
+    frozen_at: str,
+    maximum_bytes: int = 16 * 1024 * 1024,
+) -> FrozenInput:
+    _, data = _read_copy_input(input_root, relative_locator, maximum_bytes)
     digest = digest_bytes(data)
     _ensure_directory_durable(blob_root, parents=True)
     if blob_root.is_symlink():

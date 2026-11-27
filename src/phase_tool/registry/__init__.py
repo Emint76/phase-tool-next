@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib import resources as package_resources
@@ -9,6 +13,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.validators import validator_for
 from referencing import Registry, Resource
 
 from ..canonical import canonical_bytes, canonical_digest, digest_bytes, parse_json_bytes
@@ -33,24 +38,124 @@ class ResolvedContract:
     contract_hook: dict[str, Any] | None = None
 
 
+class _SchemaCheckPass:
+    """Successful JSON meta-schema checks in one fixed metadata resolution."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.checked = set()
+        self.active = True
+
+    @classmethod
+    def _schema_key(cls, value):
+        # JSON Schema compares exact codepoints and distinguishes JSON types.
+        # Copy container structure only. Leaves are immutable JSON scalars.
+        if type(value) is dict:
+            if not all(type(key) is str for key in value):
+                raise TypeError('non-JSON schema key')
+            return dict, tuple((key, cls._schema_key(child)) for key, child in value.items())
+        if type(value) is list:
+            return list, tuple(cls._schema_key(child) for child in value)
+        if type(value) in (str, int, bool, type(None)):
+            return type(value), value
+        raise TypeError('non-JSON schema value')
+
+    def check(self, schema):
+        if not self.active or self.owner != (os.getpid(), threading.get_ident()):
+            raise PhaseError('registry.schema_check_pass_owner_mismatch')
+
+        validator = Draft202012Validator
+        check = validator.check_schema
+        meta = validator.META_SCHEMA
+        formats = validator.FORMAT_CHECKER
+        if (type(meta) is not dict or type(formats) is not FormatChecker
+                or type(formats.checkers) is not dict or type(validator.VALIDATORS) is not dict
+                or validator_for(meta, default=validator) is not validator):
+            check(schema)
+            return
+
+        # The caller has already verified and parsed the actual resource.
+        # Compare an exact immutable JSON tree and checker state. No parsed document,
+        # result, package byte check or implementation read is shared.
+        try:
+            key = (check, self._schema_key(meta), tuple(formats.checkers.items()),
+                   tuple(validator.VALIDATORS.items()), self._schema_key(schema))
+            already_checked = key in self.checked
+        except (TypeError, RecursionError):
+            check(schema)
+            return
+        if not already_checked:
+            check(schema)
+            self.checked.add(key)
+
+
+_SCHEMA_CHECK_PASS = ContextVar('phase_native_schema_check_pass', default=None)
+
+
+@contextmanager
+def _native_schema_check_pass():
+    owner = os.getpid(), threading.get_ident()
+    current = _SCHEMA_CHECK_PASS.get()
+    if current is not None:
+        if not current.active or current.owner != owner:
+            raise PhaseError('registry.schema_check_pass_owner_mismatch')
+        yield
+        return
+
+    scope = _SchemaCheckPass(owner)
+    token = _SCHEMA_CHECK_PASS.set(scope)
+    try:
+        yield
+    finally:
+        scope.active = False
+        scope.checked.clear()
+        _SCHEMA_CHECK_PASS.reset(token)
+
+
 class RegistrySnapshot:
     """An in-memory immutable registry snapshot. It never performs external lookup."""
 
     def __init__(self, document: dict[str, Any], resources: Mapping[str, bytes]) -> None:
         frozen_document = parse_json_bytes(canonical_bytes(document))
+        self._initialize_document(frozen_document, resources)
+
+    def _initialize_document(self, frozen_document, resources, *, digest=None):
         self._document = frozen_document
         self._resources = MappingProxyType({str(name): bytes(data) for name, data in resources.items()})
-        self.digest = canonical_digest(frozen_document)
+        self.digest = canonical_digest(frozen_document) if digest is None else digest
+        self._qualification_context = None
         if frozen_document.get("registry_snapshot_version") != "1.0":
             raise PhaseError("registry.unsupported_snapshot")
         if not isinstance(frozen_document.get("entries"), list):
             raise PhaseError("registry.invalid_snapshot")
 
     @classmethod
+    def _from_pinned_native_registry(cls, raw: bytes, resources: Mapping[str, bytes],
+                                     expected_digest: str) -> "RegistrySnapshot":
+        """Build one private snapshot from its independently pinned native resource."""
+        digest = digest_bytes(raw)
+        if digest != expected_digest:
+            raise PhaseError("ntfs.native_registry_digest_mismatch")
+        document = parse_json_bytes(raw, maximum_bytes=256 * 1024)
+        if canonical_bytes(document) != raw:
+            raise PhaseError("ntfs.native_registry_noncanonical")
+        # The strict parser created this private document from the exact
+        # canonical bytes. Resource ownership and snapshot checks are unchanged.
+        registry = cls.__new__(cls)
+        registry._initialize_document(document, resources, digest=digest)
+        return registry
+
+    @classmethod
     def from_document(cls, document: dict[str, Any], resources: Mapping[str, bytes]) -> "RegistrySnapshot":
         return cls(deepcopy(document), resources)
 
     def to_document(self) -> dict[str, Any]:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.document(self)
         return json.loads(canonical_bytes(self._document).decode("utf-8"))
 
     def contract_bindings(self) -> dict[str, dict[str, str]]:
@@ -194,7 +299,30 @@ class RegistrySnapshot:
         entry = self._schema_entry(schema_ref, digest)
         return parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
 
+    def _check_schema(self, schema) -> None:
+        context = self._qualification_context
+        if context is None:
+            scope = _SCHEMA_CHECK_PASS.get()
+            if scope is None:
+                Draft202012Validator.check_schema(schema)
+            else:
+                scope.check(schema)
+        else:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            context.check_schema(self, schema)
+
     def schema_registry(self) -> Registry:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.schema_registry(self)
+        return self._schema_registry_uncached()
+
+    def _schema_registry_uncached(self) -> Registry:
         registry = Registry()
         for entry in self._document["entries"]:
             if entry.get("kind") != "schema" or entry.get("current", True) is not True:
@@ -224,7 +352,7 @@ class RegistrySnapshot:
         self._verify_entry(entry)
         vocabulary = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
         vocabulary_schema = self.schema_document("https://phase-tool.local/schemas/mutation-guarantee-vocabulary.schema.json")
-        Draft202012Validator.check_schema(vocabulary_schema)
+        self._check_schema(vocabulary_schema)
         errors = sorted(Draft202012Validator(vocabulary_schema).iter_errors(vocabulary), key=lambda item: list(item.path))
         if errors:
             raise PhaseError("guarantee_vocabulary.schema_invalid", errors[0].message)
@@ -234,6 +362,15 @@ class RegistrySnapshot:
         return deepcopy(vocabulary)
 
     def resolve_guarantee_profile(self, binding: Mapping[str, Any]) -> dict[str, Any]:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.resolve_guarantee_profile(self, binding)
+        return self._resolve_guarantee_profile_uncached(binding)
+
+    def _resolve_guarantee_profile_uncached(self, binding: Mapping[str, Any]) -> dict[str, Any]:
         matches = [
             entry
             for entry in self._document["entries"]
@@ -249,11 +386,35 @@ class RegistrySnapshot:
         entry = matches[0]
         if entry.get("capability") != "mutation_authority":
             raise PhaseError("registry.capability_mismatch", str(binding.get("id", "unknown")))
+        # A package-bound profile requires an actual artifact list. In the
+        # generic verifier an absent/null package is optional; it is not here.
+        package_artifacts = entry.get("package_artifacts")
+        if type(package_artifacts) is not list or any(
+            type(item) is not dict or type(item.get("resource")) is not str
+            or type(item.get("digest")) is not str
+            or ("archive_resource" in item and type(item["archive_resource"]) is not str)
+            for item in package_artifacts
+        ):
+            raise PhaseError("guarantee_profile.schema_unbound", str(binding.get("id", "unknown")))
         self._verify_entry(entry)
         descriptor = parse_json_bytes(self.resource_bytes(self._entry_resource(entry)))
 
-        profile_schema = self.schema_document("https://phase-tool.local/schemas/mutation-guarantee-profile.schema.json")
-        Draft202012Validator.check_schema(profile_schema)
+        # Closed version dispatch. Both old and new schemas are pinned by the
+        # exact immutable profile package, never selected via current/$schema.
+        schema_resources = {
+            "1.0": "schemas/mutation-guarantee-profile.schema.json",
+            "1.1": "schemas/mutation-guarantee-profile-1.1.schema.json",
+        }
+        version = descriptor.get("descriptor_version")
+        resource = schema_resources.get(version) if type(version) is str else None
+        if resource is None:
+            raise PhaseError("guarantee_profile.schema_unsupported", str(descriptor.get("descriptor_version")))
+        schema_bindings = [item["digest"] for item in package_artifacts
+            if item["resource"] == resource]
+        if len(schema_bindings) != 1:
+            raise PhaseError("guarantee_profile.schema_unbound", descriptor["id"])
+        profile_schema = self.schema_document("https://phase-tool.local/" + resource, schema_bindings[0])
+        self._check_schema(profile_schema)
         errors = sorted(Draft202012Validator(profile_schema).iter_errors(descriptor), key=lambda item: list(item.path))
         if errors:
             raise PhaseError("guarantee_profile.schema_invalid", errors[0].message)
@@ -267,6 +428,10 @@ class RegistrySnapshot:
         if sorted(conformance) != sorted(provided) or len(conformance) != len(set(conformance)):
             raise PhaseError("guarantee_profile.conformance_incomplete", descriptor["id"])
 
+        self._check_profile_implementation(descriptor)
+        return deepcopy(descriptor)
+
+    def _check_profile_implementation(self, descriptor):
         implementation = descriptor["implementation"]
         prefix = "phase_tool/"
         artifact = implementation["artifact"]
@@ -275,7 +440,6 @@ class RegistrySnapshot:
         implementation_bytes = package_resources.files("phase_tool").joinpath(artifact[len(prefix) :]).read_bytes()
         if digest_bytes(implementation_bytes) != implementation["artifact_digest"]:
             raise PhaseError("guarantee_profile.implementation_digest_mismatch", descriptor["id"])
-        return deepcopy(descriptor)
 
     def resolve_contract_hook(self, binding: Mapping[str, Any]) -> dict[str, Any]:
         entry = self._resolve_binding(kind="contract_hook", binding=binding, capability="contract_hook")
@@ -285,6 +449,15 @@ class RegistrySnapshot:
         return descriptor
 
     def resolve_contract(self, identifier: str, version: str, package_digest: str, *, core_version: str) -> ResolvedContract:
+        context = self._qualification_context
+        if context is not None:
+            from ..mutation.ntfs.qualification_catalog import _CatalogRegistryContext
+            if type(context) is not _CatalogRegistryContext:
+                raise PhaseError('ntfs.history_catalog_context_mismatch')
+            return context.resolve_contract(self, identifier, version, package_digest, core_version=core_version)
+        return self._resolve_contract_uncached(identifier, version, package_digest, core_version=core_version)
+
+    def _resolve_contract_uncached(self, identifier: str, version: str, package_digest: str, *, core_version: str) -> ResolvedContract:
         matches = self._exact_entries(kind="contract", identifier=identifier, version=version, package_digest=package_digest)
         if not matches:
             raise PhaseError("registry.entry_not_found", f"{identifier}@{version}")
@@ -308,7 +481,7 @@ class RegistrySnapshot:
             if len(matches) != 1:
                 raise PhaseError("contract.schema_unbound")
             contract_schema = self.schema_document("https://phase-tool.local/" + resource, matches[0])
-        Draft202012Validator.check_schema(contract_schema)
+        self._check_schema(contract_schema)
         errors = sorted(Draft202012Validator(contract_schema, format_checker=FormatChecker()).iter_errors(contract), key=lambda item: list(item.path))
         if errors:
             raise PhaseError("contract.schema_invalid", errors[0].message)

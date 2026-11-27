@@ -55,14 +55,14 @@ def _phase(*arguments: str) -> subprocess.CompletedProcess[str]:
 def test_product_cli_reports_version_health_and_registry_contracts() -> None:
     version = _phase("--version")
     assert version.returncode == 0
-    assert version.stdout.strip() == "phase 1.1.0"
+    assert version.stdout.strip() == "phase 1.2.0-rc.1"
     assert version.stderr == ""
 
     doctor = _phase("doctor")
     assert doctor.returncode == 0, doctor.stderr
     health = json.loads(doctor.stdout)
     assert health["success"] is True
-    assert health["version"] == "1.1.0"
+    assert health["version"] == "1.2.0-rc.1"
     assert health["registry"]["contract_count"] >= 6
     assert health["mcp_sdk"]["compatible"] is True
 
@@ -239,8 +239,23 @@ def test_cli_mcp_and_application_are_contract_agnostic_thin_adapters() -> None:
         assert "knowledge_admission" not in source
     assert "PhaseCore" not in cli_source
     assert "PhaseCore" not in mcp_source
-    assert "PhaseCore(self.registry, self.installation).run(" in application_source
-    assert application_source.count("PhaseCore(") == 1
+    application_tree = ast.parse(application_source)
+    constructor, = [node for node in ast.walk(application_tree) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name) and node.func.id == "PhaseCore"]
+    operate, = [node for node in ast.walk(application_tree) if isinstance(node, ast.FunctionDef)
+                and constructor in ast.walk(node)]
+    core_assignment, = [node for node in ast.walk(operate) if isinstance(node, ast.Assign)
+                        and node.value is constructor]
+    assert ast.unparse(core_assignment) == "core = PhaseCore(self.registry, self.installation)"
+    core_store, = [node for node in ast.walk(operate) if isinstance(node, ast.Name)
+                   and node.id == "core" and isinstance(node.ctx, ast.Store)]
+    assert core_assignment.targets == [core_store]
+    dispatch, = [node for node in ast.walk(operate) if isinstance(node, ast.If)
+                 and ast.unparse(node.test) == "_native_version_continuation is None"]
+    assert [ast.unparse(node) for node in dispatch.body] == ["outcome = core.run(request, execute=operation == 'execute')"]
+    continuation, = [node for branch in dispatch.orelse for node in ast.walk(branch)
+                     if isinstance(node, ast.Call) and ast.unparse(node.func) == "continue_version"]
+    assert [ast.unparse(arg) for arg in continuation.args] == ["core", "request"]
 
     mcp_tree = ast.parse(mcp_source)
     tool_names = {
@@ -402,7 +417,7 @@ def test_publication_metadata_documentation_and_linux_ci_are_complete() -> None:
     import tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["version"] == "1.1.0"
+    assert project["version"] == "1.2.0rc1"
     assert project["readme"] == "README.md"
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
@@ -484,9 +499,9 @@ def test_wheel_sdist_clean_install_uninstall_reinstall_acceptance() -> None:
     assert summary["installed_outside_checkout"] is True
     assert summary["editable_install"] is False
     assert summary["pythonpath_present"] is False
-    assert summary["import_version"] == "1.1.0"
+    assert summary["import_version"] == "1.2.0-rc.1"
     assert summary["help_discovery"] is True
-    assert summary["version"] == "phase 1.1.0"
+    assert summary["version"] == "phase 1.2.0-rc.1"
     assert summary["doctor"]["success"] is True
     assert summary["contracts"]["count"] >= 6
     assert summary["cli_parse_rejections"] is True

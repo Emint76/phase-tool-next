@@ -617,8 +617,9 @@ def _resolve_native_history_bindings(active, raw, expected_digest):
             from contextlib import nullcontext
             from .registry import _native_schema_check_pass
             from .mutation.ntfs.owner_directory_fixture import is_fixture
-            semantic = active.experimental_admission.document()['experimental_admission_version'] == '3.0'
-            with _native_schema_check_pass() if semantic else nullcontext():
+            admission_version = active.experimental_admission.document()['experimental_admission_version']
+            semantic = admission_version == '3.0'
+            with _native_schema_check_pass() if admission_version in {'2.0', '3.0'} else nullcontext():
                 if (semantic and active._owner_directory_context is None
                         and is_fixture(active.experimental_admission.raw)):
                     from .mutation.ntfs.owner_semantic_history import _resolve_owner3_history_bindings
